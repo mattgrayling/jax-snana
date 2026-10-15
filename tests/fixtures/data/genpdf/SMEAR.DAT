@@ -1,0 +1,7 @@
+DOCUMENTATION:
+  PURPOSE: GENMAG_SMEAR carried in a GENPDF file with no maps (sntools_genPDF.c:221);
+    a map for a variable the sim input also gives a Gaussian would be ambiguous
+    (prioritize_genPDF_ASYMGAUSS)
+DOCUMENTATION_END:
+
+GENMAG_SMEAR: 0.10

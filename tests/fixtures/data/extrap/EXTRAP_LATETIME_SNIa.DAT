@@ -1,0 +1,20 @@
+# Late-time SNIa extrapolation model for validation
+# F(t) = exp(-t/TAU1) + EXPRATIO * exp(-t/TAU2)
+# where t = day - EXTRAP_DAYMIN (rest-frame days past peak)
+#
+# TAU1: fast component (~Co56 gamma deposition, ~40-60d)
+# TAU2: slow component (~Co56 positron deposition, ~100-200d)
+# EXPRATIO: ratio of slow/fast amplitudes at t=0
+#
+# Based on Wygoda+ 2019 and Graur+ 2016 late-time Ia light curves.
+# Wavelength dependence: bluer bands fade faster (higher opacity).
+
+EXTRAP_DAYMIN: 45.0
+
+# LAM(A)   TAU1    TAU2    EXPRATIO
+EXTRAP_PARLIST:  3500.0   35.0   120.0   0.08
+EXTRAP_PARLIST:  4500.0   40.0   140.0   0.10
+EXTRAP_PARLIST:  5500.0   45.0   160.0   0.12
+EXTRAP_PARLIST:  6500.0   50.0   180.0   0.15
+EXTRAP_PARLIST:  8000.0   55.0   200.0   0.18
+EXTRAP_PARLIST: 10000.0   60.0   220.0   0.20

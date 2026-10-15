@@ -1,0 +1,124 @@
+DOCUMENTATION:
+  OVERVIEW:
+    TIME_START:   2026-10-14  10:35  # UT
+    SURVEY:       DES
+    GENMODEL:     fixtures/models/BAYESN.W22
+    SNIA:         True
+    HOST_MACHINE: (null)
+    USERNAME:     $USER
+    SNDATA_ROOT:  $SNDATA_ROOT
+    SNANA_DIR:     $SNANA_DIR
+    SNANA_VERSION: v12_02d-12-g74dfb2c5
+    CWD:   .
+    INPUT_FILE:
+    - tests/fixtures/snana/bbc_des_bayesn_biascor/input.input
+# 
+  INPUT_KEYS:
+# Output data
+    GENVERSION:              JAX_TEST_BBC_DES_BAYESN_BIASCOR
+    NGENTOT_LC:              4000  
+    FORMAT_MASK:             32  #  += 2,32,16 -> TEXT, FITS, randomCID
+    WRFLAG_MODELPAR:         1  
+    GENTYPE:                 10  # true type
+    SNTYPE:                  1  101  # spec Type, photID type
+    CIDRAN_MIN:              0  
+    CIDRAN_MAX:              3000000  
+# Source model
+    GENMODEL:                $JAX_TEST_FIXTURE_ROOT/models/BAYESN.W22 
+    GENMODEL_MSKOPT:         64 
+# Cosmology inputs
+    OMEGA_MATTER:            0.3000  
+    OMEGA_LAMBDA:            0.7000  
+    w0_LAMBDA:               -1.0000  
+    wa_LAMBDA:               0  
+# Instrumental inputs
+    GENFILTERS:          griz 
+    CALIB_FILE:          $JAX_TEST_FIXTURE_ROOT/kcor/JAX_TEST_DES.fits    # aka KCOR_FILE
+    SIMLIB_FILE:             $JAX_TEST_FIXTURE_ROOT/simlib/JAX_TEST_DES.SIMLIB 
+    SMEARFLAG_FLUX:      1  # 1->add Poisson noise
+    SMEARFLAG_ZEROPT:    1  # +=1->apply scatter, +=2->add to FLUXERRCAL
+# SEARCHEFF/detections
+    SEARCHEFF_PIPELINE_LOGIC_FILE:  NONE
+    NEWMJD_DIF:              7.0000e-03  # day-sep if > 1 detections required
+    SEARCHEFF_PIPELINE_EFF_FILE:  NONE
+    SEARCHEFF_SPEC_FILE:     NONE
+    SEARCHEFF_zHOST_FILE:    NONE
+    APPLY_SEARCHEFF_OPT:     0  # += 1,2,4 => pipe,spec,zhost
+# Redshift inputs
+    GENRANGE_REDSHIFT:       0.0500  0.2100  
+    GENSIGMA_REDSHIFT:       1.0000e-03  
+    GENSIGMA_VPEC:           0  # true vpec scatter (km/sec)
+    VPEC_ERR:                0  # vpec error after correction (km/sec)
+# Epoch & sky coverage inputs
+    GENRANGE_PEAKMJD:        56150.0000  56365.0000  
+    GENSIGMA_PEAKMJD:        1.0000  
+    GENRANGE_TREST:          -20.0000  50.0000  
+    SOLID_ANGLE:             4.5600e-03  
+# Galactic extinction
+    OPT_MWEBV:        0   
+    OPT_MWCOLORLAW:   99   
+# Population and rate-model params
+    GENPEAK_DELTAM:          0  
+    GENSIGMA_DELTAM:         0.1000  0.1000  
+    GENRANGE_DELTAM:         -0.4000  0.4000  
+    GENPEAK_THETA:           0  
+    GENSIGMA_THETA:          0.7000  0.7000  
+    GENRANGE_THETA:          -1.5000  1.5000  
+    GENTAU_AV:               0.4000  
+    GENRANGE_AV:             0  0.5000  
+    GENPEAK_RV:              3.1000  
+    GENSIGMA_RV:             0.3000  0.3000  
+    GENRANGE_RV:             2.5000  3.5000  
+    DNDZ:                    POWERLAW2 2.5E-5 1.5 0.0 0.4 
+# Misc inputs
+    GENSOURCE:               RANDOM
+    RANSEED:                 987654  
+    DEBUG_FLAG:              0  
+    CIDRAN_MIN:              0 
+    CIDRAN_MAX:              3000000 
+    SIMGEN_DUMPALL:          12 CID GENTYPE SNTYPE GENZ LIBID PEAKMJD MU MWEBV CUTMASK AV RV THETA 
+# CUTWIN inputs
+    APPLY_CUTWIN_OPT:        1  
+    CUTWIN_NEPOCH:           5 -5. 
+    CUTWIN_SNRMAX:           5 griz 2 -20. 80. 
+    CUTWIN_TRESTMIN:         -10.0 2.0 
+    CUTWIN_TRESTMAX:         10.0 35.0 
+# 
+  FILTERS:   # mean wavelength (A)
+    g:  4827.7
+    r:  6434.8
+    i:  7828.1
+    z:  9181.2
+# 
+  INPUT_NOTES:
+  - Poisson noise is ON 
+  - Reported flux-uncertainty includes SKY+GALAXY+SOURCE
+  - SB-dependent flux scatter is OFF
+  -  POWERLAW RATE MODEL:  2.50e-05*(1+z)^1.50  (0.0 < z < 0.4) 
+  -     MODEL_RATE(z=0.05) = 2.690e-05/Mpc^3/yr  dV/dz=1.876e+08   
+  -  Calculated Number of EVENTS per season =    15 
+  - H0 =  70.00 km/s/Mpc 
+  - Omega_{M,L} =  0.300, 0.700     w0,wa = -1.00,0.000
+  - APPLY_SEARCHEFF_OPT=0 --> No trigger requirements 
+  - PIPELINE requires 0 detections among  (MJD dif > 0.0070 days) 
+#
+  GENTYPE_TO_NAME:  # GENTYPE:  [non]Ia   type  
+    10:  Ia       BAYESN.W22
+# 
+  OUTPUT_SUMMARY:
+    RANDOM_SYNC: 
+    - List=1  FIRST=0.632908  LAST=0.601072   AVG(wrap) = 0.5 +_ 0.1 
+    - List=2  FIRST=0.102480  LAST=0.535226   AVG(wrap) = 0.2 +_ 0.0 
+    - List=3  FIRST=0.684171  LAST=0.482476   AVG(wrap) = 0.0 +_ 0.0 
+# 
+    CPU_MINUTES:       0.08  
+    NGENEV_TOT:        4000    # (800/sec, total events)
+    NGENLC_TOT:        4000    # (800/sec, total LC)
+    NGENLC_WRITE:      2937    # (587/sec, LC passing trigger)
+    NGENSPEC_WRITE:    0  
+    EFF(SEARCH+CUTS):  0.7343 +-  0.0070
+    NACCEPT:  [ 2937, 0, 0 ]   # NSN(ACCEPT) for [ SpecID, noSpecID, zHOST]
+    NGEN_PER_SEASON:   15       # NSN(GENLC) in GENRANGE(z,MJD,dOmega)
+    NACC_PER_SEASON:   11 +_ 0  # NSN(ACCEPT) per season  after trigger+cuts
+    NREJECT:  [0,   87, 0, 976]   # [GENRANGE,   NEP<5, SEARCHEFF, CUTWIN] 
+DOCUMENTATION_END:

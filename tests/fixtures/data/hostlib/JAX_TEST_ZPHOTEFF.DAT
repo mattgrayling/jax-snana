@@ -1,0 +1,5 @@
+# HOSTLIB_ZPHOTEFF: host photo-z efficiency against the host's true redshift.
+# Half the hosts lose their photo-z everywhere, so the split between the
+# masked scalar and the reported photo-z is visible in one run.
+0.00  0.5
+1.00  0.5

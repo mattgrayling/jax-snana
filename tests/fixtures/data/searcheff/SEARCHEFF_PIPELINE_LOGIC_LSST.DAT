@@ -1,0 +1,14 @@
+DOCUMENTATION:
+  PURPOSE: define boolean trigger logic for LSST (LOWZ) survey
+  INTENT:      Nominal
+  USAGE_KEY:   SEARCHEFF_PIPELINE_LOGIC
+  USAGE_CODE:  snlc_sim.exe
+  NOTES:
+  - Number after survey is number of required detections
+  - min time between detections is given by NEWMJD_DIF key in sim-input
+  - LOWZ has same bands as LSST, used for SIM-Lowz sample in DC2 analysis
+DOCUMENTATION_END:
+
+
+LSST: 1 u+g+r+i+z+Y   # 1 detection in any filter
+LOWZ: 1 u+g+r+i+z+Y   # used for SIM-Lowz sample in DC2-SNIa cosmology

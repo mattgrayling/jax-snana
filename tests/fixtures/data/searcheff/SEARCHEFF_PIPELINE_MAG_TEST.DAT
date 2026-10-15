@@ -1,0 +1,48 @@
+DOCUMENTATION:
+    PURPOSE: Synthetic MAG-based SEARCHEFF for JAX parity test
+    USAGE_KEY:  SEARCHEFF_PIPELINE_EFF_FILE
+    USAGE_CODE: snlc_sim.exe
+DOCUMENTATION_END:
+
+PHOTFLAG_DETECT: 4096
+PHOTFLAG_TRIGGER: 2048
+
+# Soft step detection curve per filter: eff=1 for bright mags, eff=0 at
+# faint limit. Break-point near zeropoint gives a non-trivial efficiency
+# distribution across the SNII population and sanity-checks the MAG
+# curve path (vs SNR).
+FILTER: u
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0
+
+FILTER: g
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0
+
+FILTER: r
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0
+
+FILTER: i
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0
+
+FILTER: z
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0
+
+FILTER: Y
+MAG: 18.0  1.0
+MAG: 22.0  0.9
+MAG: 24.0  0.5
+MAG: 26.0  0.0

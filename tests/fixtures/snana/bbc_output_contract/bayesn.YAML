@@ -1,0 +1,24 @@
+NEVT_DATA:             381 
+NEVT_BIASCOR:          2937 
+NEVT_CCPRIOR:          0 
+NEVT_REJECT_CUTWIN:    1
+NEVT_REJECT_BIASCOR:   79
+ABORT_IF_ZERO:         381
+NWARN_CRAZYERR:        0
+NFIT_EXEC:             1
+CPU_MINUTES:           0.00
+ISDATA_REAL:           0
+
+SAMPLE_LIST:              ALL, ALL
+IDSAMPLE_LIST:             -1, 0
+NEVT_DATA_bySAMPLE:        381, 381
+NEVT_BIASCOR_bySAMPLE:     2937, 2937
+NEVT_CCPRIOR_bySAMPLE:     0, 0
+
+NREJECT_CUTWIN_bySAMPLE:   1, 1
+NREJECT_BIASCOR_bySAMPLE:  79, 79
+
+BBCFIT_RESULTS:
+  - NSNFIT:              381     20
+  - SIGINT:            0.00000    0
+  - CHI2RED_IA:        0.122    0

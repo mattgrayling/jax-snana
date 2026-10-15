@@ -1,0 +1,6 @@
+/* Separate standalone pages from the preceding captioned navigation group. */
+.wy-menu-vertical > ul + ul {
+    border-top: 1px solid #4e4a4a;
+    margin-top: 1rem;
+    padding-top: 1rem;
+}

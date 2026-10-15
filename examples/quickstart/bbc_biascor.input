@@ -1,0 +1,17 @@
+# Redshift-only bias correction for the small worked example.
+# The pipeline supplies datafile, simfile_biascor and prefix.
+model_lcfit=SALT2
+nzbin=3
+zmin=0.05
+zmax=1.2
+opt_biascor=1
+p1=0.14
+u1=0
+p2=3.1
+u2=0
+sig1=0.10
+p9=0.685
+p10=0
+p11=-1
+p12=0
+write_yaml=1

@@ -1,0 +1,52 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-and-parity:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        jax-version: ["latest"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip wheels
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,redback]"
+          if [ "${{ matrix.jax-version }}" != "latest" ]; then
+            pip install "jax==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
+          fi
+
+      - name: Check test collection
+        run: |
+          pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
+            --collect-only --strict-markers
+
+      - name: Run pytest
+        # one worker keeps peak memory within a hosted runner's limits
+        run: |
+          pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
+            -n 1 --maxfail=5 \
+            --cov --cov-report=term --cov-fail-under=65

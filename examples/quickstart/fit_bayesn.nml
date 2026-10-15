@@ -1,0 +1,22 @@
+! BayeSN G26 fit to the accompanying DES griz simulation.
+ &SNLCINP
+  PRIVATE_DATA_PATH = '.'
+  VERSION_PHOTOMETRY = 'QUICKSTART_BAYESN'
+  SNTABLE_LIST       = 'SNANA FITRES'
+  TEXTFILE_PREFIX    = 'QUICKSTART_BAYESN'
+  KCOR_FILE          = 'tests/fixtures/data/kcor/JAX_TEST_DES.fits'
+  OPT_MWEBV          = 0
+  NFIT_ITERATION     = 3
+  ABORT_ON_NOEPOCHS  = F
+  CUTWIN_REDSHIFT    = 0.05, 1.2
+  CUTWIN_SNRMAX      = 5.0, 1.0E8
+  BATCH_SIZE        = 16
+ &END
+
+ &FITINP
+  FITMODEL_NAME       = 'jax_snlc_core/data/models/BAYESN.G26'
+  FILTLIST_FIT        = 'griz'
+  RESTLAMBDA_FITRANGE = 2800, 10800
+  FITWIN_TREST        = -10.0, 35.0
+  PRIOR_MJDSIG        = 20.0
+ &END

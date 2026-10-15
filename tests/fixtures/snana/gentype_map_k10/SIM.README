@@ -1,0 +1,134 @@
+DOCUMENTATION:
+  OVERVIEW:
+    TIME_START:   2026-10-02  16:33  # UT
+    SURVEY:       DES
+    GENMODEL:     fixtures/models/NON1ASED.K10_TEST
+    SNIA:         False
+    HOST_MACHINE: (null)
+    USERNAME:     $USER
+    SNDATA_ROOT:  $SNDATA_ROOT
+    SNANA_DIR:     $SNANA_DIR
+    SNANA_VERSION: v12_02d-12-g74dfb2c5
+    CWD:   .
+    INPUT_FILE:
+    - tests/fixtures/snana/gentype_map_k10/input.input
+# 
+  INPUT_KEYS:
+# Output data
+    GENVERSION:              JAX_TEST_GENTYPE_MAP
+    NGENTOT_LC:              200  
+    FORMAT_MASK:             32  #  += 2,32,16 -> TEXT, FITS, randomCID
+    WRFLAG_MODELPAR:         1  
+    GENTYPE:                 0  # true type
+    SNTYPE:                  1  101  # spec Type, photID type
+    CIDRAN_MIN:              0  
+    CIDRAN_MAX:              3000000  
+# Source model
+    GENMODEL:                $JAX_TEST_FIXTURE_ROOT/models/NON1ASED.K10_TEST 
+    NON1A_KEYS:              5 INDEX WGT MAGOFF MAGSMEAR SNTYPE 
+    NON1A:                  
+    - 002 0.0800 -0.550 0.640 22 
+    - 021 0.0167 1.480 1.100 33 
+    - 022 0.0167 1.480 1.100 33 
+    - 101 0.0167 1.480 1.100 33 
+    - 102 0.0167 1.480 1.100 33 
+    - 103 0.0200 0.600 0.000 32 
+    - 104 0.0200 0.600 0.000 32 
+    - 105 0.0200 0.600 0.000 32 
+    - 201 0.0246 2.100 1.050 20 
+    - 204 0.0246 2.100 1.050 20 
+    - 206 0.0200 1.500 1.500 21 
+    - 208 0.0246 2.100 1.050 20 
+    - 209 0.0200 1.500 1.500 21 
+    - 210 0.0246 2.100 1.050 20 
+    GENMAG_SMEAR:            1.0000e-03  # coherent scatter (mag)
+# Cosmology inputs
+    OMEGA_MATTER:            0.3000  
+    OMEGA_LAMBDA:            0.7000  
+    w0_LAMBDA:               -1.0000  
+    wa_LAMBDA:               0  
+# Instrumental inputs
+    GENFILTERS:          griz 
+    CALIB_FILE:          $JAX_TEST_FIXTURE_ROOT/kcor/JAX_TEST_DES.fits    # aka KCOR_FILE
+    SIMLIB_FILE:             $JAX_TEST_FIXTURE_ROOT/simlib/JAX_TEST_DES.SIMLIB 
+    SMEARFLAG_FLUX:      1  # 1->add Poisson noise
+    SMEARFLAG_ZEROPT:    1  # +=1->apply scatter, +=2->add to FLUXERRCAL
+# SEARCHEFF/detections
+    SEARCHEFF_PIPELINE_LOGIC_FILE:  NONE
+    NEWMJD_DIF:              7.0000e-03  # day-sep if > 1 detections required
+    SEARCHEFF_PIPELINE_EFF_FILE:  NONE
+    SEARCHEFF_SPEC_FILE:     NONE
+    SEARCHEFF_zHOST_FILE:    NONE
+    APPLY_SEARCHEFF_OPT:     0  # += 1,2,4 => pipe,spec,zhost
+# Redshift inputs
+    GENRANGE_REDSHIFT:       0.1000  0.9800  
+    GENSIGMA_REDSHIFT:       1.0000e-03  
+    GENSIGMA_VPEC:           0  # true vpec scatter (km/sec)
+    VPEC_ERR:                0  # vpec error after correction (km/sec)
+# Epoch & sky coverage inputs
+    GENRANGE_PEAKMJD:        56150.0000  56365.0000  
+    GENSIGMA_PEAKMJD:        1.0000  
+    GENRANGE_TREST:          -40.0000  70.0000  
+    SOLID_ANGLE:             4.5600e-03  
+# Galactic extinction
+    OPT_MWEBV:        0   
+    OPT_MWCOLORLAW:   99   
+# Population and rate-model params
+    DNDZ:                    POWERLAW 6.8E-5 3.6 
+# Misc inputs
+    GENSOURCE:               RANDOM
+    RANSEED:                 12945  
+    DEBUG_FLAG:              0  
+    CIDRAN_MIN:              0 
+    CIDRAN_MAX:              3000000 
+# CUTWIN inputs
+    APPLY_CUTWIN_OPT:        1  
+    CUTWIN_NEPOCH:           5 -5. 
+    CUTWIN_SNRMAX:           5 griz 2 -20. 80. 
+# 
+  FILTERS:   # mean wavelength (A)
+    g:  4827.7
+    r:  6434.8
+    i:  7828.1
+    z:  9181.2
+# 
+  INPUT_NOTES:
+  - Poisson noise is ON 
+  - Reported flux-uncertainty includes SKY+GALAXY+SOURCE
+  - SB-dependent flux scatter is OFF
+  -  POWERLAW RATE MODEL:  6.80e-05*(1+z)^3.60  (0.0 < z < 10.0) 
+  -     MODEL_RATE(z=0.10) = 9.583e-05/Mpc^3/yr  dV/dz=7.153e+08   
+  -     MODEL_RATE(z=0.30) = 1.749e-04/Mpc^3/yr  dV/dz=5.241e+09   
+  -     MODEL_RATE(z=0.50) = 2.927e-04/Mpc^3/yr  dV/dz=1.167e+10   
+  -     MODEL_RATE(z=0.70) = 4.593e-04/Mpc^3/yr  dV/dz=1.824e+10   
+  -     MODEL_RATE(z=0.90) = 6.855e-04/Mpc^3/yr  dV/dz=2.404e+10   
+  -  Calculated Number of EVENTS per season =  8470 
+  - H0 =  70.00 km/s/Mpc 
+  - Omega_{M,L} =  0.300, 0.700     w0,wa = -1.00,0.000
+  - APPLY_SEARCHEFF_OPT=0 --> No trigger requirements 
+  - PIPELINE requires 0 detections among  (MJD dif > 0.0070 days) 
+#
+  GENTYPE_TO_NAME:  # GENTYPE:  [non]Ia   type  
+    20:  nonIa    IIP
+    21:  nonIa    IIN
+    22:  nonIa    IIL
+    32:  nonIa    Ib
+    33:  nonIa    Ibc+Ic
+# 
+  OUTPUT_SUMMARY:
+    RANDOM_SYNC: 
+    - List=1  FIRST=0.204429  LAST=0.502001   AVG(wrap) = 0.6 +_ 0.2 
+    - List=2  FIRST=0.657709  LAST=0.255730   AVG(wrap) = 0.3 +_ 0.0 
+    - List=3  FIRST=0.983177  LAST=0.292714   AVG(wrap) = 0.0 +_ 0.0 
+# 
+    CPU_MINUTES:       0.03  
+    NGENEV_TOT:        200    # (100/sec, total events)
+    NGENLC_TOT:        200    # (100/sec, total LC)
+    NGENLC_WRITE:      15    # (8/sec, LC passing trigger)
+    NGENSPEC_WRITE:    0  
+    EFF(SEARCH+CUTS):  0.0750 +-  0.0186
+    NACCEPT:  [ 15, 0, 0 ]   # NSN(ACCEPT) for [ SpecID, noSpecID, zHOST]
+    NGEN_PER_SEASON:   8470       # NSN(GENLC) in GENRANGE(z,MJD,dOmega)
+    NACC_PER_SEASON:   635 +_ 164  # NSN(ACCEPT) per season  after trigger+cuts
+    NREJECT:  [0,   0, 0, 185]   # [GENRANGE,   NEP<5, SEARCHEFF, CUTWIN] 
+DOCUMENTATION_END:

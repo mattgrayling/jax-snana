@@ -1,0 +1,37 @@
+DOCUMENTATION:
+    PURPOSE: SDSS efficiency vs. redshift for host-galaxy spec-redshift
+    INTENT:  Test
+    USAGE_KEY:  SEARCHEFF_zHOST_FILE
+    USAGE_CODE: snlc_sim.exe
+    TEST_CODE:     verified efficiency with SIMGEN_DUMP file
+    TEST_SCIENCE:  pilot photometric analysis on SDSS data using NN(z,c,x1)
+    NOTE:
+    - In sim, used for SNe(Ia+CC) that fail spec-confirmation.
+    - For SNCC, recommend setting SEARCHEFF_SPEC_FILE: ZERO.
+    VERSIONS:
+    - DATE: 2014-05-08
+      AUTHORS: R. Kessler
+
+DOCUMENTATION_END:
+
+
+# Created May 8 2014
+# Efficiency vs. redshift map for getting a host galaxy redshift 
+# for SPEC-UNCONFIRMED  SN(Ia and CC). Based on NN(z,c,x1,B) 
+# analysis on SDSS Data release (not the NN anal in Sako 2014)
+# in which the SIM is normalized to data for z < 0.25 .
+# Note that this map is used only on the SN that fail the
+# spec-confirmation effiency; for CC sims, recommand using 
+# the zero-spec-effic map (SEARCHEFF_SPEC_ZERO.DAT).
+
+#          z      eff
+HOSTEFF:  0.0     1
+HOSTEFF:  0.285   1
+HOSTEFF:  0.285   1
+HOSTEFF:  0.315   0.59
+HOSTEFF:  0.345   0.63
+HOSTEFF:  0.375   0.85
+HOSTEFF:  0.405   0.716
+HOSTEFF:  0.435   0.26
+HOSTEFF:  0.455   0.01   # wild guess
+HOSTEFF:  0.7     0.01   # wild guess

@@ -1,0 +1,11 @@
+DOCUMENTATION:
+    PURPOSE: Toy flat SEARCHEFF_SPEC for testing SEARCHEFF_SPEC_SCALE
+    USAGE_KEY: SEARCHEFF_SPEC_FILE
+    USAGE_CODE: snlc_sim.exe
+    NOTES:
+        Constant 0.5 efficiency over the full redshift range.
+DOCUMENTATION_END:
+
+VARNAMES: REDSHIFT SPECEFF
+SPECEFF: 0.0  0.5
+SPECEFF: 2.0  0.5

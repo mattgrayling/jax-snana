@@ -1,0 +1,9 @@
+# Run from the repository root, after the quick-start setup.
+INPUT_FILE_INCLUDE: examples/quickstart/sim.input
+GENVERSION: QUICKSTART_SCATTER
+NGENTOT_LC: 300
+RANSEED: 38177
+
+GENMAG_SMEAR_MODELNAME: G10
+GENMAG_SMEAR_SCALE(SALT2c): 1.0,2.0
+GENMAG_SMEAR_ADDPHASECOR: 0.03 10.0

@@ -1,0 +1,111 @@
+SURVEY:   DES
+SNID:             116  # assigned by survey team (required)
+ZP_FLUXCAL:  31.40  # mag = ZP_FLUXCAL - 2.5*log10(FLUXCAL) 
+SNTYPE:   1    # integer type; e.g. spec or phot classification
+RA:       52.500000  # deg (avg among obs)
+DEC:      -24.500000  # deg (avg among obs)
+FILTERS:  griz
+PIXSIZE:  0.2700  # arcsec 
+FAKE:     2  # simulated with snlc_sim.exe 
+MWEBV:    0.0000 +- 0.0000  # MW E(B-V) 
+MWXT_MAG:  0.000 0.000 0.000 0.000  # MW mag-XT per band
+PEAKMJD:  56319.117     # estimate for LC fit codes
+
+REDSHIFT_HELIO:   0.297734 +- 0.001000  # Helio 
+REDSHIFT_FINAL:   0.297193 +- 0.001000  # CMB (no VPEC corr) 
+MASK_REDSHIFT_SOURCE:   2 # grep MASK_REDSHIFT_SOURCE sndata.h  
+VPEC:                 0.00 +- 0.00      # v_pec correction
+LENSDMU:             0.000 +- 0.000      # DMU from lensing
+
+HOSTGAL_NMATCH:      0  
+HOSTGAL_NMATCH2:     0  
+
+# SIM-truth values
+SIM_MODEL_NAME:      SALT3.K21  
+SIM_MODEL_INDEX:     6  # grep MODEL_ sntools.h | grep def
+SIM_GENTYPE:         1  # true GENTYPE 
+SIM_TYPE_NAME:       SALT3.K21 
+SIM_TEMPLATE_INDEX:  0   # template index for SIMSED,NONIa
+SIM_LIBID:           5    # LIBID index in SIMLIB file
+SIM_NGEN_LIBID:      1  
+SIMLIB_MSKOPT:       0  
+SIM_NOBS_UNDEFINED:  0  
+SIM_REDSHIFT_HELIO:  0.29803 
+SIM_REDSHIFT_CMB:    0.29749  
+SIM_REDSHIFT_HOST:       0.29803    # z of true host
+SIM_REDSHIFT_HOST_MATCH: 0.00000    # z of DDLR-matched host
+SIM_REDSHIFT_FLAG:   1  # SNSPEC
+SIM_VPEC:            0.0   # km/sec) 
+SIM_HOSTLIB_GALID:   -9 
+SIM_HOSTLIB_NPAR:    0 
+SIM_SNHOST_DDLR:      0.000  # DLR/SEP 
+SIM_SNHOST_SEP:      0.000   # arcsec 
+SIM_DLMU:            40.9283   # mag   [ -5*log10(10pc/dL) ]
+SIM_LENSDMU:         0.0000   # mag 
+SIM_MUSHIFT:         0.0000   # user-defined shift 
+SIM_RA:              52.500000     # deg  
+SIM_DEC:             -24.500000      # deg  
+SIM_MWRV:            3.100    # MilkyWay RV 
+SIM_MWEBV:           0.0000   # MilkyWay E(B-V) 
+SIMOPT_MWCOLORLAW:   99   # MW color-law option 
+SIMOPT_MWEBV:        0   # MWEBV option 
+SIM_WGT_POPULATION:  1.00000  # stretch x color * AV
+SIM_MAGSMEAR_COH:    0.000     # coh model scatter 
+SIM_PEAKMJD:         56317.969    #  true PEAKMJD, days 
+SIM_MJD_EXPLODE:     -9.000    #  true MJD for explosion 
+SIM_THETA:        0.000    # BayeSN lumi-par
+SIM_SALT2alpha:      0.140 
+SIM_SALT2beta:       3.100 
+SIM_SALT2gammaDM:    0.000 
+SIM_SALT2x0:         5.2955e-05 
+SIM_SALT2x1:         0.5996 
+SIM_SALT2c:          -0.0497 
+SIM_SALT2mB:         21.3252 
+SIM_SEARCHEFF_MASK:  11  # bits 0,1,2 => DETECT+LOGIC, SPEC-CONFIRM, zHOST 
+SIM_SEARCHEFF_SPEC:  1.0000  # spectro-search efficiency 
+SIM_TRESTMIN:        -19.99  # days 
+SIM_TRESTMAX:        25.48  # days 
+SIM_RISETIME_SHIFT:  0.0   # days 
+SIM_FALLTIME_SHIFT:  0.0   # days 
+
+# griz filter-dependent quantities vs. 
+SIM_GALFRAC:  -9.000 -9.000 -9.000 -9.000  # F_gal/F_SNpeak for PSF=1''
+SIM_PEAKMAG:  21.4483 21.2991 21.3740 21.9495  # 
+SIM_EXPOSURE:     1.0    1.0    1.0    1.0  # 
+
+
+# ============================================ 
+# TEXT LIGHT CURVE OUTPUT: 
+#
+NOBS: 27 
+NVAR: 11 
+VARLIST: MJD BAND FIELD FLUXCAL FLUXCALERR PHOTFLAG GAIN ZPT PSF SKY_SIG SIM_MAGOBS 
+OBS: 56292.0350 DES-r C1  1.66212e+02  2.1078e+02    0  1.000 30.930  1.31 2.760e+01  29.3428 
+OBS: 56292.0430 DES-i C1 -5.22834e+01  1.7929e+02    0  1.000 32.180  1.35 7.619e+01  29.1910 
+OBS: 56292.0510 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.020  1.22 2.142e+02  29.3678 
+OBS: 56298.0860 DES-g C1  1.15407e+03  1.0278e+02    0  1.000 32.270  1.67 3.638e+01  23.9638 
+OBS: 56304.1090 DES-r C1  4.53861e+03  2.2900e+02    0  1.000 30.990  1.41 2.760e+01  22.2565 
+OBS: 56304.1130 DES-i C1  4.30777e+03  1.9877e+02    0  1.000 32.100  1.35 7.619e+01  22.3743 
+OBS: 56305.0430 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.150  1.30 2.142e+02  22.4489 
+OBS: 56308.0940 DES-g C1  6.69495e+03  8.8279e+01    0  1.000 32.410  1.25 3.983e+01  21.7893 
+OBS: 56313.0550 DES-r C1  9.80342e+03  3.7443e+02    0  1.000 30.980  1.80 3.640e+01  21.3584 
+OBS: 56313.0660 DES-i C1  9.14671e+03  2.4699e+02    0  1.000 32.170  1.29 1.052e+02  21.4892 
+OBS: 56313.1130 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.180  1.76 2.303e+02  21.8925 
+OBS: 56319.0590 DES-g C1  9.38295e+03  1.6845e+02    0  1.000 32.290  1.04 9.534e+01  21.4744 
+OBS: 56321.0660 DES-r C1  1.09236e+04  3.6550e+02    0  1.000 30.470  1.19 3.151e+01  21.3196 
+OBS: 56321.0820 DES-i C1  1.04422e+04  4.1923e+02    0  1.000 31.420  1.33 8.732e+01  21.3687 
+OBS: 56321.0900 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 32.230  1.46 2.371e+02  21.9601 
+OBS: 56332.0700 DES-g C1  4.41662e+03  7.9378e+01    0  1.000 32.290  1.12 3.638e+01  22.3006 
+OBS: 56333.1020 DES-r C1  7.33866e+03  2.6401e+02    0  1.000 30.990  1.60 2.760e+01  21.7239 
+OBS: 56333.1090 DES-i C1  6.87269e+03  2.4596e+02    0  1.000 32.180  1.80 7.619e+01  21.8475 
+OBS: 56333.1130 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.130  1.74 2.142e+02  22.5025 
+OBS: 56341.0470 DES-g C1  2.22599e+03  2.0808e+02    0  1.000 32.280  2.30 5.585e+01  23.1897 
+OBS: 56345.0080 DES-r C1  4.04354e+03  3.1170e+02    0  1.000 31.020  1.69 3.413e+01  22.3876 
+OBS: 56345.0160 DES-i C1  5.18829e+03  3.1473e+02    0  1.000 32.200  1.89 9.639e+01  22.1458 
+OBS: 56345.0230 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.230  1.82 2.346e+02  22.5787 
+OBS: 56350.9960 DES-g C1  9.50594e+02  1.0195e+02    0  1.000 32.330  1.76 3.638e+01  24.0818 
+OBS: 56351.0230 DES-r C1  2.51822e+03  2.9929e+02    0  1.000 30.950  1.77 2.917e+01  22.7295 
+OBS: 56351.0270 DES-i C1  4.74819e+03  3.2625e+02    0  1.000 32.070  2.08 8.040e+01  22.2433 
+OBS: 56351.0350 DES-z C1  0.00000e+00  1.0000e+08 1024  1.000 33.100  2.32 2.294e+02  22.5467 
+END_PHOTOMETRY: 
+

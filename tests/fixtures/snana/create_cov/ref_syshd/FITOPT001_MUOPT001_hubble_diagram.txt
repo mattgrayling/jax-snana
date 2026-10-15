@@ -1,0 +1,19 @@
+# zHD       = redshift in CMB frame with VPEC correction
+# zHEL      = zHD 
+# MU        = distance modulus corrected for bias and contamination
+# MUERR     = stat-uncertainty on MU 
+# MUERR_SYS = sqrt(COVSYS_DIAG) for 'ALL' sys (diagnostic)
+# MUSIM     = mu computed with biasCor cosmology (diagnostic)
+# ISDATA_REAL: 0   # flag for cosmology fitter to choose blind option
+#
+VARNAMES: ROW zHD zHEL MU MUERR MUERR_SYS MUSIM
+ROW: 1       0.13307 0.13307 39.04317  0.07870   0.04019 38.9794
+ROW: 2       0.26102 0.26102 40.58644  0.02604   0.04123 40.6026
+ROW: 3       0.31882 0.31882 41.12838  0.01829   0.02459 41.1008
+ROW: 4       0.40978 0.40978 41.75551  0.02009   0.02058 41.7370
+ROW: 5       0.50160 0.50160 42.26126  0.02336   0.02378 42.2583
+ROW: 6       0.60372 0.60372 42.76227  0.02702   0.00641 42.7422
+ROW: 7       0.67820 0.67820 43.09752  0.02779   0.00172 43.0485
+ROW: 8       0.77328 0.77328 43.32176  0.07208   0.00886 43.3960
+ROW: 9       0.86959 0.86959 43.71878  0.04181   0.05649 43.7082
+ROW: 10      0.92032 0.92032 43.88312  0.14920   0.09114 43.8594

@@ -1,0 +1,27 @@
+# Dictionary arguments for COVOPTS:
+# index:  <sysLabel>  <name of covsys file>   <name of covtot_inv file>
+#  (file name = None -> not written)
+#
+COVOPTS:
+  0: ALL                  None   covtot_inv_000.npz
+  1: NOSYS                None   covtot_inv_001.npz
+  2: CAL                  None   covtot_inv_002.npz
+  3: NOCAL                None   covtot_inv_003.npz
+  4: SCAT                 None   covtot_inv_004.npz
+  5: SCALED               None   covtot_inv_005.npz
+  6: NOCALONLY            None   covtot_inv_006.npz
+  7: ANYSCAT              None   covtot_inv_007.npz
+HD: hubble_diagram.txt
+ISDATA_REAL: 0
+SIZE_HD: 35
+SNANA_VERSION: v12_02d-12-g74dfb2c5
+VERSION_PHOTOMETRY(BIASCOR): JAX_TEST_CREATE_COV
+VERSION_PHOTOMETRY(CCPRIOR): JAX_TEST_CREATE_COV
+VERSION_PHOTOMETRY(DATA): JAX_TEST_CREATE_COV
+
+BBC_DIR: tests/fixtures/snana/create_cov/bbc/OUTPUT_BBC
+BBC_INFO_FILE: tests/fixtures/snana/create_cov/bbc/SUBMIT.INFO
+SYS_SCALE_FILE: tests/fixtures/snana/create_cov/sys_scale.yml
+
+HD_BIN_METHOD: REBIN   # 10(z) x 2(c) x 2(x1) 
+COSPAR_BIASCOR: {}

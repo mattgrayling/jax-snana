@@ -1,0 +1,12 @@
+# Detection on two separate periods, followed by either redshift route.
+INPUT_FILE_INCLUDE: examples/quickstart/sim.input
+GENVERSION: QUICKSTART_SELECTION
+NGENTOT_LC: 1000
+RANSEED: 38177
+SEARCHEFF_PIPELINE_EFF_FILE: examples/quickstart/selection_detection.dat
+SEARCHEFF_PIPELINE_LOGIC_FILE: examples/quickstart/selection_logic.dat
+SEARCHEFF_SPEC_FILE: examples/quickstart/selection_spec.dat
+SEARCHEFF_zHOST_FILE: examples/quickstart/selection_host.dat
+NEWMJD_DIF: 0.5
+APPLY_SEARCHEFF_OPT: 9
+SIMGEN_DUMPALL: 5 CID GENZ SIM_SEARCHEFF_MASK CUTMASK MJD_TRIGGER

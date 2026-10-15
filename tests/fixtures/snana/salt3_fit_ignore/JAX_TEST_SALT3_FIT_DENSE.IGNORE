@@ -1,0 +1,8 @@
+# The two brightest epochs of the first three events of the dense sim,
+# read through the default EPOCH_IGNORE_FILE beside the data.
+IGNORE: 1 61358.462 r
+IGNORE: 1 61340.000 r
+IGNORE: 2 61044.615 r
+IGNORE: 2 61041.538 g
+IGNORE: 3 61081.538 r
+IGNORE: 3 61100.000 r

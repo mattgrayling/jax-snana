@@ -1,0 +1,7 @@
+DOCUMENTATION:
+  PURPOSE: Illustrative survey selection for the documentation example.
+DOCUMENTATION_END:
+
+VARNAMES: REDSHIFT HOSTEFF
+HOSTEFF: 0.0 0.8
+HOSTEFF: 1.2 0.8

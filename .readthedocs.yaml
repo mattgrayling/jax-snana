@@ -7,8 +7,16 @@ build:
 
 sphinx:
   configuration: docs/conf.py
+  # the documentation builds under -W locally, and the same bar applies here,
+  # since a configtable field which loses its description is reported as a
+  # warning rather than as an error
   fail_on_warning: true
 
 python:
   install:
-    - requirements: docs/requirements.txt
+    # the package itself, and not only the documentation dependencies, because
+    # autodoc imports every package in order to document it
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs

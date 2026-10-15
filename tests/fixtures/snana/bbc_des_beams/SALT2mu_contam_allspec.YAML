@@ -1,0 +1,27 @@
+NEVT_DATA:             1565 
+NEVT_BIASCOR:          16507 
+NEVT_CCPRIOR:          514 
+NEVT_REJECT_CUTWIN:    151
+NEVT_REJECT_BIASCOR:   179
+ABORT_IF_ZERO:         1565
+NWARN_CRAZYERR:        0
+NFIT_EXEC:             1
+ISDATA_REAL:           0
+
+SAMPLE_LIST:              ALL, DES
+IDSAMPLE_LIST:             -1, 0
+NEVT_DATA_bySAMPLE:        1565, 1565
+NEVT_BIASCOR_bySAMPLE:     16507, 16507
+NEVT_CCPRIOR_bySAMPLE:     514, 514
+
+NREJECT_CUTWIN_bySAMPLE:   151, 151
+NREJECT_BIASCOR_bySAMPLE:  179, 179
+
+BBCFIT_RESULTS:
+  - NSNFIT:             1565     40
+  - SIGINT:            0.00000    0
+  - CHI2RED_IA:        3.992    0
+  - alpha0:               0.29970  0.00533 
+  - beta0:                5.22651  0.10374 
+  - CONTAM_DATA:          nan  0.00000   # photo-classified subset 
+  - CONTAM_TRUE:          inf  inf    # photo-classified subset (sim data only) 

@@ -1,0 +1,17 @@
+DOCUMENTATION:
+  PURPOSE:    spec-basis to simulate host spectra with SNANA 
+  INTENT:     Nominal
+  USAGE_KEY:  HOSTLIB_SPECBASIS_FILE
+  USAGE_CODE: snlc_sim.exe
+  NOTES:
+    - Units are f_nu in rest-frame
+    - FLAM(erg/s/cm^2/A) = [ Sum (Coeff[i]*specbasis[i]) ] * FLAM_SCALE/(1+z)**2
+    VERSIONS:
+    - DATE:  2023-10
+      AUTHORS: R.Kessler
+DOCUMENTATION_END:
+
+FLAM_SCALE:            3.63078E-30  # scale all fluxes
+FLAM_SCALE_POWZ1:     -2            # (1+z)^-2
+
+EAZY_TEMPLATES_LIST_FILE: $SNDATA_ROOT/models/EAZY/templates/fsps_full/fsps_QSF_12_v3.param

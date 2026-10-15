@@ -1,0 +1,10 @@
+DOCUMENTATION:
+  PURPOSE: Illustrative survey selection for the documentation example.
+DOCUMENTATION_END:
+
+PHOTFLAG_DETECT: 4096
+PHOTFLAG_TRIGGER: 2048
+FILTER: griz
+SNR: 0 0
+SNR: 5 0.5
+SNR: 10 1

@@ -1,0 +1,226 @@
+# =================================================
+# Define survey name and "permanent" SNANA ID.
+# Here are some recommended ID-conventions, although 
+# they are not required:
+#
+#   ground-based z > .05:  1-49   
+#   nearby Hubble flow:   50-99
+#   space-based:         >= 100
+#
+# Do not forget to also assign a FIELD below.
+#
+# Apr 13, 2020 DJones - add CfAIR2 (69) 
+# Apr 13, 2020 RK - remove obsolete CSP3(68) and XIAN(14)
+# Dec 01, 2020 RK cleanup, comment out SNAP, EUCLID, GAIA, HDF
+# Dec 04, 2020 RK.MD  add CALAN_TOLOLO, OTHER, JLA_LOWZ_COMBINED
+# Dec 09, 2020 RK remove tabs
+# Jan 30, 2021 RK add NGRST (and keep WFIRST for back-compatibility)
+# May  6, 2021 Paleo add YSE_ZTF (combined YSE, ZTF) (19)
+# Aug  6, 2021 RK - add SIRAH
+# Oct 21, 2021 RK - add K21_LOWZ_COMBINED and PPLUS_LOWZ_COMBINED
+# Jan 18, 2022 RK - add DES5YR_LOWZ_COMBINED
+# Apr 29, 2022 JP - add UKIRT and RAISIN for SALT3-NIR work
+# Sep 29, 2022 RK, D.Brout 
+#               - add CNIa (aka ASASSN) and SOUSA (aka SWIFT)
+#               - remove KAITM and KAITW ... just use KAIT
+#
+# Jun 2023 RK - Add geo:[lat],[lon],[alt] information for DES and LSST ...
+#                needed for atmosphere effects
+#
+# Jul 29 2023 RK - replace NGRST (102) with ROMAN; keep WFIRST for back-compat.
+#
+# Oct 18 2023 P. Armstrong - Add DEBASS SURVEY
+# Mar  1, 2024 B Rose - add more Roman Field names
+# Apr  2, 2024 M. Vincenzi - restore Euclid from obsolete 
+# Apr  4. 2024 RK - remove obsolete TELESCOPE keys
+#
+# ==============================================================
+
+                 SNANA
+        name      ID
+-------------------------------
+SURVEY:  SDSS      1
+SURVEY:  ESSENCE   3
+SURVEY:  SNLS      4  # SN Legacy Survey at CFHT
+SURVEY:  CSP       5  # Carnegie SN Program with NIR
+SURVEY:  SUBARU    6  # Hyper Supreme Cam
+
+SURVEY:  DEBASS    9  # Oct 18 2023 P. Armstrong - Dark Energy Bedrock All Sky Survey (DECam)
+SURVEY:  DES       10  geo:-30.24,-70.75,2200          # Dark Energy Survey
+SURVEY:  VIDEO     11                                  # VIsta Deep Extragal Obs (YJHK)
+SURVEY:  LSST      12  geo:-30.244639,-70.749417,2647  # Large Synoptic Sky Survey
+SURVEY:  PS1MD     15  # Pan-STARRS 1 Medium Deep Survey
+SURVEY:  JPAS      16  # Javalambre Physics of Acceleration Survey
+SURVEY:  ZTF_MSIP  17  # ZTF mid-scale innovations program
+SURVEY:  ASASSN    18  # ASASSN Followup
+SURVEY:  CNIa      20  # renamed ASASSN to CNIa; D. Brout Sep 2022
+SURVEY:  YSE_ZTF   19  # Combined YSE and ZTF surveys
+
+SURVEY:  ATLAS     21  # ATLAS
+
+SURVEY:  JRK07     49   # JRK 2007
+SURVEY:  LOWZ      50   # generic LOWZ, or JRK 2007
+SURVEY:  KAIT      51
+SURVEY:  SNF       52   # SupernovaFactory
+SURVEY:  CFA3      53   # Hicken 2009
+SURVEY:  CFA4      54   #
+SURVEY:  SNUO2     55   # for sn2011fe (Nugent really nearby SN1a)
+SURVEY:  SWIFT     56   # Sep 28 - Scolnic
+SURVEY:  SOUSA     57   # new name for SWIFT, Sep 2022 - D. Brout
+#xxx SURVEY:  KAITM     57   # Mo Landolt
+#xxx SURVEY:  KAITW     58   # KAIT Fixed Weikhang
+SURVEY:  SWIFTNEW  59   # Sep 28 - Scolnic - WE NEED TO GET RID OF THIS
+
+SURVEY:  CALAN_TOLOLO 60   # Calan/Tololo/Hamuy 1996
+SURVEY:  CFA1         61   #
+SURVEY:  CFA2         62   #
+SURVEY:  CFA3S        63   #
+SURVEY:  CFA3K        64   #
+SURVEY:  CFA4p1       65   #
+SURVEY:  CFA4p2       66   #
+SURVEY:  CFA4p3       67   # Pete new CfA4 - on Landolt
+SURVEY:  CFA5         68   # Sasha+Dillon+Dan Jan 14 2021
+SURVEY:  CfAIR2       69   # D.Jones, Apr 13 2020
+
+SURVEY:  PS1_LOWZ_COMBINED     70  # RK - Feb 21 2017
+SURVEY:  PS1_HST_COMBINED      71  # DS - April 13 2017
+SURVEY:  DES3YR_LOWZ_COMBINED  72  # RK - Nov 2017
+SURVEY:  JLA_LOWZ_COMBINED     73  # RK, MD, Dec 4 2020
+SURVEY:  K21_LOWZ_COMBINED     74  # M.Dai, R.Kessler, Oct 2021
+SURVEY:  PPLUS_LOWZ_COMBINED   75  # RK anticipating need, Oct 2021
+SURVEY:  DES5YR_LOWZ_COMBINED  76  # Jan 18 2022, RK
+
+SURVEY:  UKIRT                 77  # JP Apr 29, 2022 for SALT3-NIR
+SURVEY:  PS1_RAISIN            78  # JP Apr 29, 2022 for SALT3-NIR
+SURVEY:  DES_RAISIN            79  # JP Apr 29, 2022 for SALT3-NIR
+SURVEY:  SWOPE                 80  # DJ Mar 14, 2024 for Swope DR1
+
+SURVEY:  HST       100
+SURVEY:  SNAP      101
+SURVEY:  HDF       111  # DS added for 97ff
+SURVEY:  ROMAN     102  # NGRST -> ROMAN, July 29 2023
+SURVEY:  WFIRST    103
+SURVEY:  JWST      104
+SURVEY:  EUCLID    105
+SURVEY:  CANDELS   106
+SURVEY:  CLASH     107
+SURVEY:  SIRAH     110  # RK, Aug 6 2021
+SURVEY:  FOUNDATION    150  # Foundation survey
+
+# ----- obsolete ------
+#SURVEY:  CSP3      68
+#SURVEY:  GAIA      110  # Jan 31 2014 (for Heather)
+# ------------------------
+
+# generic survey or model names
+SURVEY:  SIMSED    180
+SURVEY:  FLASH     181  # for FLASH+RT simulations with SIMSED option
+SURVEY:  TEST      190  # test simlib, such as ideal 2 day cadence
+SURVEY:  OTHER     191  # e.g., other lowz in JLA training
+
+
+# ==============================================================
+# ==============================================================
+
+# Define fields with 3 arguments: name, index and survey
+
+FIELD:  82N  89  SDSS  # (Nine => North)
+FIELD:  82S  86  SDSS  # (Six  => South)
+
+FIELD:  ESS1  1  ESSENCE
+FIELD:  ESS2  2  ESSENCE
+
+FIELD:  D1  1  SNLS
+FIELD:  D2  2  SNLS
+FIELD:  D3  3  SNLS
+FIELD:  D4  4  SNLS
+
+FIELD: INT  0  LSST    # => parse LSST field as integer
+FIELD: INT  0  JPAS    # => parse JPAS field as integer
+
+# DES Fields
+FIELD: E1   1   DES shallow (Elias)
+FIELD: E2   2   DES shallow
+FIELD: S1   3   DES shallow (SDSS stripe 82)
+FIELD: S2   4   DES shallow
+FIELD: C1   5   DES shallow (CDF_S)
+FIELD: C2   6   DES shallow
+FIELD: C3   7   DES deep
+FIELD: X1   8   DES shallow (XMM_LSS)
+FIELD: X2   9   DES shallow
+FIELD: X3  10   DES deep
+
+# PS1MD Fields, added by Steve Rodney on 2010-08-16
+FIELD: MD00   00  PS1MD
+FIELD: MD01   01  PS1MD
+FIELD: MD02   02  PS1MD
+FIELD: MD03   03  PS1MD
+FIELD: MD04   04  PS1MD
+FIELD: MD05   05  PS1MD
+FIELD: MD06   06  PS1MD
+FIELD: MD07   07  PS1MD
+FIELD: MD08   08  PS1MD
+FIELD: MD09   09  PS1MD
+FIELD: MD10   10  PS1MD
+
+
+# WFIRST field(s)
+FIELD: W1       00  WFIRST
+FIELD: DEEP     01  WFIRST
+FIELD: MEDIUM   02  WFIRST
+FIELD: SHALLOW  03  WFIRST
+
+# ROMAN fields
+FIELD: ULTRA-DEEP 00  ROMAN
+FIELD: DEEP       01  ROMAN
+FIELD: MEDIUM     02  ROMAN
+FIELD: SHALLOW    03  ROMAN
+FIELD: WIDE       04  ROMAN
+FIELD: WIDE+WIDE-PRISM   05  ROMAN
+FIELD: DEEP+WIDE-PRISM   06  ROMAN
+FIELD: DEEP+DEEP-PRISM   07  ROMAN
+
+
+# HST MCT Fields, added by Steve Rodney 2011.04.07
+# CANDELS : 
+FIELD: gsw   00  CANDELS     # GOODS-S wide
+FIELD: gsd   01  CANDELS     # GOODS-S deep
+FIELD: gnw   02  CANDELS     # GOODS-N wide
+FIELD: gnd   03  CANDELS     # GOODS-N deep
+FIELD: uds   04  CANDELS     # UDS 
+FIELD: ega   05  CANDELS     # EGS-a
+FIELD: egb   06  CANDELS     # EGS-b
+FIELD: cos   07  CANDELS     # COSMOS
+
+# CLASH : 
+FIELD: cla   10  CLASH   # Abell 383
+FIELD: clb   11  CLASH   # MACS 1149
+FIELD: clc   12  CLASH   # Abell 2261
+FIELD: cld   13  CLASH   # MACS 1206
+FIELD: cle   14  CLASH   # RXJ 1347
+FIELD: clf   15  CLASH   # MACS 2129
+FIELD: clg   16  CLASH   # MS 2137
+FIELD: clh   17  CLASH   # MACS 0717
+FIELD: cli   18  CLASH   # MACS 0744
+FIELD: clj   19  CLASH   # MACS 0647
+FIELD: clk   20  CLASH
+FIELD: cll   21  CLASH
+FIELD: clm   22  CLASH
+FIELD: cln   23  CLASH
+FIELD: clo   24  CLASH
+FIELD: clp   25  CLASH
+FIELD: clq   26  CLASH
+FIELD: clr   27  CLASH
+FIELD: cls   28  CLASH
+FIELD: clt   29  CLASH
+FIELD: clu   30  CLASH
+FIELD: clv   31  CLASH
+FIELD: clw   32  CLASH
+FIELD: clx   33  CLASH
+FIELD: cly   34  CLASH
+FIELD: clz   35  CLASH  # ALL CLASH FIELDS
+
+
+====== END OF FILE ======
+
+

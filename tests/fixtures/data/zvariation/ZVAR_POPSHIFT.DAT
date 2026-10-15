@@ -1,0 +1,40 @@
+# Population z-drift for the zvariation_popshift fixture: peak drifts on
+# SALT2c (0.2*z, exactly linear) and SALT2x1 (piecewise), width drift on
+# SALT2c (both sigmas +0.1*z), AV exponential tau drift (+1.6*z) and a
+# gray magnitude offset (0.3*z). All entries use z-bin rows; the in-file
+# polynomial form is dead in SNANA (FLAG never set, init aborts with
+# Invalid FLAG=-9). A leading bin below the generation range is required
+# (SNANA aborts when z falls at/below the second bin). This file is read
+# token-by-token with NO comment handling in SNANA, so comments must
+# avoid the literal key words.
+PARAMETER: GENPEAK_SALT2c
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.50  0.1
+
+PARAMETER: GENSIGMA[0]_SALT2c
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.50  0.05
+
+PARAMETER: GENSIGMA[1]_SALT2c
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.50  0.05
+
+PARAMETER: GENPEAK_SALT2x1
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.20  0.5
+ZBIN:  0.50  1.0
+
+PARAMETER: GENTAU_AV
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.50  0.8
+
+PARAMETER: GENMAG_OFF_GLOBAL
+ZBIN: -0.01  0.0
+ZBIN:  0.00  0.0
+ZBIN:  0.50  0.15
+END:

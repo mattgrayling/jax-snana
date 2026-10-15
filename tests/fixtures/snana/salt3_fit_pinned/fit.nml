@@ -1,0 +1,26 @@
+! The dense sim refitted with x1 and c pinned and a single iteration, so every
+! event's model error is SNANA's first-iteration one: the variance surface at
+! x1 = 0 and the SALT3 training flux at the pinned x1. The OUTLIER table
+! carries the per-epoch model flux and model error at the fitted PKMJD and x0.
+ &SNLCINP
+  VERSION_PHOTOMETRY = 'JAX_TEST_SALT3_FIT_DENSE'
+  PRIVATE_DATA_PATH  = '$JAX_TEST_FIT_SIM_DIR'
+  SNTABLE_LIST       = 'FITRES OUTLIER(nsig:0.0)'
+  TEXTFILE_PREFIX    = 'JAX_TEST_SALT3_FIT_PINNED'
+  KCOR_FILE          = '$JAX_TEST_FIXTURE_ROOT/kcor/JAX_TEST_LSST.fits'
+  OPT_MWEBV          = 0
+  NFIT_ITERATION     = 1
+  ABORT_ON_NOEPOCHS  = F
+ &END
+
+ &FITINP
+  FITMODEL_NAME       = '$JAX_TEST_FIXTURE_ROOT/models/SALT3.K21'
+  FILTLIST_FIT        = 'ugrizY'
+  RESTLAMBDA_FITRANGE = 2800, 8700
+  FITWIN_TREST        = -15.0, 45.0
+  PRIOR_MJDSIG        = 20.0
+  INISTP_SHAPE        = 0.0
+  INIVAL_SHAPE        = 1.5
+  INISTP_COLOR        = 0.0
+  INIVAL_COLOR        = -0.1
+ &END
