@@ -1,0 +1,21 @@
+# Two SALT populations using the quick-start survey and model.
+# Run from the repository root.
+INPUT_FILE_INCLUDE: examples/quickstart/sim.input
+GENVERSION: QUICKSTART_SUBPOP
+NGENTOT_LC: 1000
+RANSEED: 38177
+
+# Shared distribution widths and ranges; each class sets its own peaks.
+GENSIGMA_SALT2x1: 0.7 0.7
+GENRANGE_SALT2x1: -3.0 3.0
+GENSIGMA_SALT2c: 0.04 0.04
+GENRANGE_SALT2c: -0.2 0.3
+
+SUBPOP: A WGT 3
+SUBPOP: A GENPEAK_SALT2x1 0.5
+SUBPOP: A GENPEAK_SALT2c -0.03
+
+SUBPOP: B WGT 2
+SUBPOP: B GENPEAK_SALT2x1 -1.0
+SUBPOP: B GENPEAK_SALT2c 0.06
+SUBPOP: B GENMAG_OFF_GLOBAL 0.06

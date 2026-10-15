@@ -1,0 +1,22 @@
+# Mixed-primaries test kcor for jax-snana.
+# One filter calibrated against AB, one against BD17.
+# Used by tests/unit/test_photometry_resources_primary.py to verify the
+# resource builder uses each filter's assigned primary SED.
+
+SN_SED:    Hsiao07.dat
+BD17_SED:  bd_17d4708_stisnic_003.dat
+
+MAGSYSTEM: AB
+FILTSYSTEM: COUNT
+FILTPATH: JLA/JLA-SDSS
+SURVEY: SDSS
+FILTER: SDSS-g  g.dat_5A  0.0
+
+MAGSYSTEM: BD17
+FILTSYSTEM: COUNT
+FILTPATH: JLA/JLA-Keplercam
+SURVEY: LOWZ,CFA3K
+FILTER: Keplercam-B  B_Keplercam.txt_5A  9.8803
+
+LAMBDA_RANGE: 2100 11300
+OUTFILE: JAX_TEST_MIXED_PRIMARIES.fits

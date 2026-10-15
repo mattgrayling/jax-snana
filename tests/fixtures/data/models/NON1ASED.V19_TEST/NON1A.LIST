@@ -1,0 +1,12 @@
+# NON1ASED.V19_CC_noHostXT subset for jax-snana parity tests
+# Cropped phase × wavelength grid.
+#
+# 835, 836 and 501 reuse 834's SED file under different catalogue indices.
+# Template assignment and the NON1A/PEC1A split are index-driven, so exercising
+# them needs entries in both classes, not distinct SEDs. Runs naming only 834
+# are unaffected.
+
+NON1A:  834  IIn    pycoco_SN2008fq_noHostCorr.SED
+NON1A:  835  IIn    pycoco_SN2008fq_noHostCorr.SED
+NON1A:  836  IIn    pycoco_SN2008fq_noHostCorr.SED
+PEC1A:  501  IaT    pycoco_SN2008fq_noHostCorr.SED

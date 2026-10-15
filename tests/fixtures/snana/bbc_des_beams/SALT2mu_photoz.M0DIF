@@ -1,0 +1,30 @@
+# VERSION_PHOTOMETRY(DATA):      
+# VERSION_PHOTOMETRY(BIASCOR):   
+# ISDATA_REAL:   0 
+# SNANA_VERSION: v12_02d-12-g74dfb2c5 
+# PROGRAM:       SALT2mu.exe 
+# BBC_VERSION:   4 
+
+# Reference cosmology params for MUDIF: 
+#   REF Omega_L     :  0.700 
+#   REF w0          :  -1.000 
+#   FIT alpha0      :  0.1811 +- 0.0033 
+#   FIT beta0       :  3.8080 +- 0.0509 
+# 
+# WARNING(SEVERE): 2 fitted M0ERR have crazy values after final fit. 
+# BCOR_LOSS: 113 of 1229 events (9.2 %) have no biasCor for DES-zSPEC   ***** WARNING *****
+# BCOR_LOSS: 39 of 395 events (9.9 %) have no biasCor for DES-zPHOT   ***** WARNING *****
+
+# For cosmology fit: zHD, MU=MUREF+MUDIF, MUERR=MUDIFERR
+
+VARNAMES: ROW  zHDMIN zHDMAX   zHD        MUDIF  MUDIFERR   MUREF  NFIT 
+ROW:      1  0.10000 0.19000 0.14195   -0.05281   0.01453  39.13516   18
+ROW:      2  0.19000 0.28000 0.23703   -0.01605   0.00861  40.37093   64
+ROW:      3  0.28000 0.37000 0.32733   -0.00621   0.00696  41.17458  114
+ROW:      4  0.37000 0.46000 0.41248   -0.01369   0.00735  41.76325  164
+ROW:      5  0.46000 0.55000 0.50476   -0.01154   0.00842  42.28593  203
+ROW:      6  0.55000 0.64000 0.59426    0.01173   0.00954  42.71374  248
+ROW:      7  0.64000 0.73000 0.68241    0.00779   0.01054  43.07942  281
+ROW:      8  0.73000 0.82000 0.76827   -0.00390   0.01530  43.39464  203
+ROW:      9  0.82000 0.91000 0.86597    0.01621   0.01664  43.71448  174
+ROW:     10  0.91000 1.00000 0.91272    0.04940   0.11017  43.85530    3

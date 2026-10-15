@@ -1,0 +1,25 @@
+# Equivalent explicit leakage curves, for the SNANA reference calculation.
+# Mixed standards, detector response conventions and magnitude conversions.
+AB_SED: ab.dat
+BD17_SED: bd17.dat
+MAGSYSTEM: AB
+FILTSYSTEM: COUNT
+SURVEY: DES
+FILTPATH: .
+FILTER: Test-g g_oob.dat 0.0+.003-.001
+MAGSYSTEM: BD17
+FILTSYSTEM: ENERGY
+SURVEY: DES
+FILTPATH: .
+FILTER: Test-r r_oob.dat 9.8+.002
+MAGSYSTEM: BD17->AB
+FILTSYSTEM: COUNT
+SURVEY: DES
+FILTPATH: .
+FILTER: Test-i i_oob.dat 9.8
+MAGSYSTEM: AB->BD17
+SURVEY: DES
+FILTPATH: .
+FILTER: Test-z z_oob.dat 0.0
+LAMBDA_RANGE: 3000 9000
+OUTFILE: calibration_oob.fits

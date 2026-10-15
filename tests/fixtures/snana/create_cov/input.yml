@@ -1,0 +1,17 @@
+INPUT_DIR: tests/fixtures/snana/create_cov/bbc
+VERSION: OUTPUT_BBC
+SYS_SCALE_FILE: tests/fixtures/snana/create_cov/sys_scale.yml
+OUTDIR: tests/fixtures/snana/create_cov/ref
+COVOPTS:
+- '[NOSYS] [=DEFAULT,=DEFAULT]'
+- '[CAL] [+CAL,=DEFAULT]'
+- '[NOCAL] [-CAL,=DEFAULT]'
+- '[SCAT] [=DEFAULT,+SCAT]'
+- '[SCALED] [=DEFAULT,+SCAT,1.3]'
+- '[NOCALONLY] [-CAL,]'
+- '[ANYSCAT] [,+SCAT]'
+COSMOLOGY:
+  OMEGA_MATTER: 0.315
+  OMEGA_LAMBDA: 0.685
+  w0_LAMBDA: -1.0
+  wa_LAMBDA: 0.0

@@ -1,0 +1,140 @@
+SURVEY:   LSST
+SNID:             2  # assigned by survey team (required)
+ZP_FLUXCAL:  31.40  # mag = ZP_FLUXCAL - 2.5*log10(FLUXCAL) 
+SNTYPE:   1    # integer type; e.g. spec or phot classification
+RA:       180.000000  # deg (avg among obs)
+DEC:      -45.000000  # deg (avg among obs)
+FILTERS:  ugrizY
+PIXSIZE:  0.2000  # arcsec 
+FAKE:     2  # simulated with snlc_sim.exe 
+MWEBV:    0.0000 +- 0.0000  # MW E(B-V) 
+MWXT_MAG:  0.000 0.000 0.000 0.000 0.000 0.000  # MW mag-XT per band
+PEAKMJD:  61047.305     # estimate for LC fit codes
+MJD_TRIGGER:       61028.164  
+MJD_DETECT_FIRST:  61028.164  
+MJD_DETECT_LAST:   61065.715  
+
+REDSHIFT_HELIO:   0.271623 +- 0.001000  # Helio 
+REDSHIFT_FINAL:   0.272836 +- 0.001000  # CMB (no VPEC corr) 
+MASK_REDSHIFT_SOURCE:   14 # grep MASK_REDSHIFT_SOURCE sndata.h  
+VPEC:                 0.00 +- 0.00      # v_pec correction
+LENSDMU:             0.000 +- 0.000      # DMU from lensing
+
+HOSTGAL_NMATCH:      2  
+HOSTGAL_NMATCH2:     2  
+HOSTGAL_OBJID:       200340     
+HOSTGAL_FLAG:        0  
+HOSTGAL_PHOTOZ:      0.26460  +- 0.03000 
+HOSTGAL_SPECZ:       0.27162  +- 0.00100 
+HOSTGAL_RA:          179.999971    # deg 
+HOSTGAL_DEC:         -45.000004    # deg 
+HOSTGAL_SNSEP:       0.076       # arcsec 
+HOSTGAL_DDLR:        0.055       # SNSEP/DLR  
+HOSTGAL_CONFUSION:  -99.000  
+HOSTGAL_LOGMASS:     8.751 +- 0.100   # log10(Mgal/Msolar)
+HOSTGAL_LOGsSFR:     -1.050e+01 +- -9.999e+03  # specific SFR
+HOSTGAL_ELLIPTICITY:     999.000
+HOSTGAL_SQRADIUS:     999.000   # Ixx + Iyy
+HOSTGAL_MAG:     23.357  21.887  20.620  19.620  18.167  17.228 # ugrizY
+HOSTGAL_MAGERR:  -9.000  -9.000  -9.000  -9.000  -9.000  -9.000 # ugrizY
+
+HOSTGALz_NBIN_QUANTILE_ZPHOT:  11 
+HOSTGALz_QUANTILE_ZPHOT: 0.1706 0.2242 0.2380 0.2480 0.2564 0.2643 0.2722 0.2807 0.2906 0.3043 0.3581 
+HOSTGALz_QUANTILE_PERCENT: 0.00 10.00 20.00 30.00 40.00 50.00 60.00 70.00 80.00 90.00 100.00 
+
+HOSTGALz_NBIN_LOGMASS_ZGRID:  0 
+
+HOSTGAL2_OBJID:       200341     
+HOSTGAL2_FLAG:        0  
+HOSTGAL2_PHOTOZ:      0.30570  +- 0.03000 
+HOSTGAL2_SPECZ:       0.26020  +- 0.00050 
+HOSTGAL2_RA:          180.000953    # deg 
+HOSTGAL2_DEC:         -44.999588    # deg 
+HOSTGAL2_SNSEP:       2.843       # arcsec 
+HOSTGAL2_DDLR:        2.441       # SNSEP/DLR  
+HOSTGAL2_LOGMASS:     9.110 +- 0.100   # log10(Mgal/Msolar)
+HOSTGAL2_LOGsSFR:     -1.050e+01 +- -9.999e+03  # specific SFR
+HOSTGAL2_ELLIPTICITY:     999.000
+HOSTGAL2_SQRADIUS:     999.000   # Ixx + Iyy
+HOSTGAL2_MAG:     23.318  21.947  20.654  19.666  18.548  16.896 # ugrizY
+HOSTGAL2_MAGERR:  -9.000  -9.000  -9.000  -9.000  -9.000  -9.000 # ugrizY
+
+HOSTGAL2z_NBIN_QUANTILE_ZPHOT:  11 
+HOSTGAL2z_QUANTILE_ZPHOT: 0.2134 0.2671 0.2809 0.2908 0.2992 0.3071 0.3151 0.3235 0.3335 0.3473 0.4009 
+HOSTGAL2z_QUANTILE_PERCENT: 0.00 10.00 20.00 30.00 40.00 50.00 60.00 70.00 80.00 90.00 100.00 
+
+HOSTGAL2z_NBIN_LOGMASS_ZGRID:  0 
+
+HOSTGAL_SB_FLUXCAL:   400.03 1549.13 4976.09 12499.36 47652.74 113158.67  # ugrizY/asec^2
+
+# SIM-truth values
+SIM_MODEL_NAME:      SALT3.K21  
+SIM_MODEL_INDEX:     6  # grep MODEL_ sntools.h | grep def
+SIM_GENTYPE:         1  # true GENTYPE 
+SIM_TYPE_NAME:       SALT3.K21 
+SIM_TEMPLATE_INDEX:  0   # template index for SIMSED,NONIa
+SIM_LIBID:           1    # LIBID index in SIMLIB file
+SIM_NGEN_LIBID:      1  
+SIMLIB_MSKOPT:       0  
+SIM_NOBS_UNDEFINED:  0  
+SIM_REDSHIFT_HELIO:  0.27110 
+SIM_REDSHIFT_CMB:    0.27231  
+SIM_REDSHIFT_HOST:       0.26020    # z of true host
+SIM_REDSHIFT_HOST_MATCH: 0.26020    # z of DDLR-matched host
+SIM_REDSHIFT_FLAG:   1  # SNSPEC
+SIM_VPEC:            -0.0   # km/sec) 
+SIM_HOSTLIB_GALID:   200340 
+SIM_HOSTLIB_NPAR:    3 
+SIM_HOSTLIB(LOGMASS_TRUE):                8.751  9.110    # true host & nearest nbr
+SIM_HOSTLIB(LOG_SFR):                     -1.749  -1.390    # true host & nearest nbr
+SIM_HOSTLIB(LOGsSFR_TRUE):                -10.500  -10.500    # true host & nearest nbr
+SIM_SNHOST_DDLR:      0.055  # DLR/SEP 
+SIM_SNHOST_SEP:      0.076   # arcsec 
+SIM_DLMU:            40.7053   # mag   [ -5*log10(10pc/dL) ]
+SIM_LENSDMU:         0.0000   # mag 
+SIM_MUSHIFT:         0.0000   # user-defined shift 
+SIM_RA:              180.000000     # deg  
+SIM_DEC:             -45.000000      # deg  
+SIM_MWRV:            3.100    # MilkyWay RV 
+SIM_MWEBV:           0.0000   # MilkyWay E(B-V) 
+SIMOPT_MWCOLORLAW:   99   # MW color-law option 
+SIMOPT_MWEBV:        0   # MWEBV option 
+SIM_WGT_POPULATION:  1.00000  # stretch x color * AV
+SIM_MAGSMEAR_COH:    0.000     # coh model scatter 
+SIM_PEAKMJD:         61046.828    #  true PEAKMJD, days 
+SIM_MJD_EXPLODE:     -9.000    #  true MJD for explosion 
+SIM_THETA:        0.000    # BayeSN lumi-par
+SIM_SALT2alpha:      0.140 
+SIM_SALT2beta:       3.100 
+SIM_SALT2gammaDM:    0.000 
+SIM_SALT2x0:         5.8554e-05 
+SIM_SALT2x1:         1.2675 
+SIM_SALT2c:          0.0172 
+SIM_SALT2mB:         21.2161 
+SIM_SEARCHEFF_MASK:  11  # bits 0,1,2 => DETECT+LOGIC, SPEC-CONFIRM, zHOST 
+SIM_SEARCHEFF_SPEC:  1.0000  # spectro-search efficiency 
+SIM_TRESTMIN:        -14.68  # days 
+SIM_TRESTMAX:        44.40  # days 
+SIM_RISETIME_SHIFT:  0.0   # days 
+SIM_FALLTIME_SHIFT:  0.0   # days 
+
+# ugrizY filter-dependent quantities vs. 
+SIM_GALFRAC:   0.682  0.000  1.587  4.005 22.343 77.180  # F_gal/F_SNpeak for PSF=1''
+SIM_PEAKMAG:  23.0062 -9.0000 21.1864 21.1913 21.6046 22.0115  # 
+SIM_EXPOSURE:     1.0    1.0    1.0    1.0    1.0    1.0  # 
+
+
+# ============================================ 
+# TEXT LIGHT CURVE OUTPUT: 
+#
+NOBS: 5 
+NVAR: 11 
+VARLIST: MJD BAND FIELD FLUXCAL FLUXCALERR PHOTFLAG GAIN ZPT PSF SKY_SIG SIM_MAGOBS 
+OBS: 61028.1630 LSST-r TOY_B  2.01057e+03  1.8047e+02 6144  1.000 30.524  1.00 8.060e+00  23.1248 
+TRIGGER:  trigger logic satisfied at MJD_TRIGGER=61028.1641
+OBS: 61046.9390 LSST-i TOY_B  1.23484e+04  3.9479e+02 4096  1.000 30.020  1.00 1.004e+01  21.1899 
+OBS: 61065.7140 LSST-z TOY_B  4.77706e+03  8.4655e+02 4096  1.000 29.505  1.05 1.342e+01  22.2585 
+OBS: 61084.4900 LSST-Y TOY_B  4.68230e+03  2.1243e+03    0  1.000 28.485  1.10 1.380e+01  22.2706 
+OBS: 61103.2650 LSST-u TOY_B  3.51663e+02  3.2245e+02    0  1.000 28.496  1.10 5.160e+00  26.5049 
+END_PHOTOMETRY: 
+

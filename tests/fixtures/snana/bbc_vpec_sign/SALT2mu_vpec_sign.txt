@@ -1,0 +1,3 @@
+# name exit_code rms_nominal rms_flip -- SALT2mu.exe check_vpec_sign
+vpec_ok 0 0.0473 0.1900
+vpec_bad 12 0.1900 0.0473

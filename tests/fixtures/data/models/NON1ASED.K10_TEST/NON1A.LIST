@@ -1,0 +1,17 @@
+# Representative CC subset of $SNDATA_ROOT/models/NON1ASED/NON1ASED.K10_CC
+# (Kessler & Jha 2010 classification-challenge templates), copied verbatim.
+#
+NON1A:  002  IIL    Nugent+Scolnic_IIL.SED
+NON1A:  021  Ibc    SNLS-04D1la.SED
+NON1A:  022  Ic     SNLS-04D4jv.SED
+NON1A:  101  Ic     CSP-2004fe.SED
+NON1A:  102  Ic     CSP-2004gq.SED
+NON1A:  103  Ib     CSP-2004gv.SED
+NON1A:  104  Ib     CSP-2006ep.SED
+NON1A:  105  Ib     CSP-2007Y.SED
+NON1A:  201  IIP    SDSS-000018.SED
+NON1A:  204  IIP    SDSS-003818.SED
+NON1A:  206  IIN    SDSS-012842.SED
+NON1A:  208  IIP    SDSS-013376.SED
+NON1A:  209  IIN    SDSS-013449.SED
+NON1A:  210  IIP    SDSS-014450.SED

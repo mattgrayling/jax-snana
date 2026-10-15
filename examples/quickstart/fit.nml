@@ -1,0 +1,37 @@
+! The quick start's light-curve fit: SALT3.DOVEKIE fitted to the griz photometry
+! of the simulated data version, with the cuts the distance fit assumes.
+!
+! Paths are relative to the working directory, so run from the root of the
+! repository.
+!
+! VERSION_PHOTOMETRY names the data version this fit reads, which is the
+! GENVERSION the simulation beside this file writes. The pipeline replaces it,
+! together with PRIVATE_DATA_PATH, with the version the Sim stage it consumes
+! actually wrote, so the name below matters only when snlc_fit is run on its
+! own.
+
+ &SNLCINP
+  PRIVATE_DATA_PATH = '.'
+  VERSION_PHOTOMETRY = 'QUICKSTART'
+  SNTABLE_LIST       = 'SNANA FITRES'
+  TEXTFILE_PREFIX    = 'QUICKSTART'
+  KCOR_FILE          = 'tests/fixtures/data/kcor/JAX_TEST_DES.fits'
+  OPT_MWEBV          = 0
+  NFIT_ITERATION     = 3
+  BATCH_SIZE        = 32
+  ABORT_ON_NOEPOCHS  = F
+  PHOTFLAG_MSKREJ    = 1024
+  CUTWIN_REDSHIFT    = 0.05, 1.2
+  CUTWIN_SNRMAX      = 5.0, 1.0E8
+  SNFIELD_LIST       = 'C3', 'E1', 'S1', 'S2', 'C1', 'C2', 'X1'
+  SNTYPE_LIST        = 0, 1
+ &END
+
+ &FITINP
+  FITMODEL_NAME       = 'jax_snlc_core/data/models/SALT3.DOVEKIE'
+  FILTLIST_FIT        = 'griz'
+  RESTLAMBDA_FITRANGE = 2800, 8000
+  FITWIN_TREST        = -15.0, 45.0
+  OPT_COVAR_FLUX      = 1
+  PRIOR_MJDSIG        = 20.0
+ &END

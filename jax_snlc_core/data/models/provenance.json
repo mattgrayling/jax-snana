@@ -1,0 +1,66 @@
+{
+  "repository": "https://github.com/mattgrayling/jax_SNANA",
+  "commit": "faffefd45a159dfd4dd36cff73c3630f79e15949",
+  "source_directory": "tests/fixtures/data/models",
+  "original_sources": {
+    "BAYESN.W22": "SNDATA_ROOT/models/bayesn/BAYESN.W22",
+    "SALT3.K21": "SNDATA_ROOT/models/SALT3/SALT3.K21"
+  },
+  "sha256": {
+    "BAYESN.W22/BAYESN.INFO": "a9adee4f5cd129aea328410bc7777fc82daca29369c9cddf3a93b7d07b46229f",
+    "BAYESN.W22/BAYESN.YAML": "2ffeb8b0bd62db8c43b86cc8863d890f30d371677de72cc700ca732c2dfe936c",
+    "BAYESN.W22/L_Sigma_epsilon.txt": "ccf833907773e2c21cfaac510fedda93238e5eb748169db8a59006ce0aede4f8",
+    "BAYESN.W22/M0_sigma0_RV_tauA.txt": "61779bd08b3f25a1c35a786224b1176cc84ed4fb4a4f04fbd04a8019c9a06ec8",
+    "BAYESN.W22/W0.txt": "999ba72e9c31158f704231f7581c82c7d07b22fe63cf61f351f099346b8d5fd2",
+    "BAYESN.W22/W1.txt": "9fe966f73cb34ef19c24ee9e821f8eba9ded49a2e89497c6b652fd07cbb35dc7",
+    "BAYESN.W22/bayesn.params": "0b8aea810e1f00585741b97d8113409e420a284f403fb405e9d3c25ec3d7cbaa",
+    "BAYESN.W22/l_knots.txt": "f256dbaaff3af59a6579540f47f251849443d1e7fa5a9813f0f54471171a1ff3",
+    "BAYESN.W22/tau_knots.txt": "175970dde4b3379698b2b035de6a4af3d51ed24b6208238dedc902eeb909af95",
+    "SALT3.K21/SALT3.INFO": "f412f2c768f5fb77f1943110d425a8c0db9e38ad3f71bc73c39cd5157b477866",
+    "SALT3.K21/salt3_color_correction.dat": "fe0d4c90ca74f8aab9e3d9120792a2ca3144a7582d3edc222581972459807098",
+    "SALT3.K21/salt3_color_dispersion.dat": "44944bbf6fc12470b64c121f15ce9511c3875b3d1d0e2b7c1f8e19f9ccaf7b3a",
+    "SALT3.K21/salt3_lc_covariance_01.dat": "3beaf09a21c7ab682936fa866990a3bc7268c7cebcf9b02c768f63a219500af2",
+    "SALT3.K21/salt3_lc_variance_0.dat": "70e1469ecb8914a0da83d363dc483773f1cd974f56553e0933ebbbd6ac96db5e",
+    "SALT3.K21/salt3_lc_variance_1.dat": "8f7e3572b9314fc7b8c748ecf7256774f60e9da4b5a0934579cb2b0c467079c8",
+    "SALT3.K21/salt3_template_0.dat": "c7a1d94b1396dc5314ad238e5dc67a25a85e346fd60318d87c50cba8102f321e",
+    "SALT3.K21/salt3_template_1.dat": "388cb1d04030ea2482837f0ebc114acf575d6fd16b9362e423c250ff9b0da91f",
+    "BAYESN.G26/BAYESN.INFO": "a48df493bcc95c847728f1400d539aaa16532d86439ffff7d80b9f6614a941cc",
+    "BAYESN.G26/BAYESN.YAML": "866d0ed0737ec04457d775ab42a83232ca2c650bb38d3b7e50da5e94f9be5fa1",
+    "SALT3.DOVEKIE/salt3_color_correction.dat": "1c0ad7881b81aaf9fb2ac156112762916beef16ba7859f34a307152dc9709164",
+    "SALT3.DOVEKIE/salt3_color_dispersion.dat": "0b3d44eb5a787b077ebeebbcd8aee507f4b480257b45be336efadd98d83285bf",
+    "SALT3.DOVEKIE/SALT3.INFO": "2d6f66f3a58b67387aa658d34925c70740baa11a421880dba8a2a73e120f7767",
+    "SALT3.DOVEKIE/salt3_lc_variance_0.dat": "ea06a48326a34f41d6d4f58ba7a650480fe1df65efae93c8699d9742d28893d7",
+    "SALT3.DOVEKIE/salt3_lc_variance_1.dat": "c201b54d31ae246ee8bf7043038552f99029c8935d0011238c1bacb94ad2524c",
+    "SALT3.DOVEKIE/salt3_template_0.dat": "a66f5215fd012c86127dbb3b8e90336a0cc670236259c63f3c568f26ebb3dfff",
+    "SALT3.DOVEKIE/salt3_template_1.dat": "dd3036adcb02ee5350ef8e08a04398d7fabd6ff297d82aa2a0d8b33c7b78b67f",
+    "SALT3.DOVEKIE/salt3_lc_covariance_01.dat": "97ad455e4e45e8c6b9c95e4661fa7c2b3614d79dad8e79adc35fbe690b3663ee"
+  },
+  "additional_sources": {
+    "BAYESN.G26": {
+      "source_directory": "bayesn/model_files/G26_model",
+      "files": [
+        "BAYESN.INFO",
+        "BAYESN.YAML"
+      ],
+      "repository": "https://github.com/bayesn/bayesn",
+      "commit": "330757f403cf44ef4a1d4cea9031d6b6fc49f554",
+      "format_additions": {
+        "L_FILTER_CEN_MIN": 2800,
+        "L_FILTER_CEN_MAX": 10800
+      }
+    },
+    "SALT3.DOVEKIE": {
+      "source_directory": "SNDATA_ROOT/models/SALT3/SALT3.DOVEKIE",
+      "files": [
+        "salt3_color_correction.dat",
+        "salt3_color_dispersion.dat",
+        "SALT3.INFO",
+        "salt3_lc_variance_0.dat",
+        "salt3_lc_variance_1.dat",
+        "salt3_template_0.dat",
+        "salt3_template_1.dat",
+        "salt3_lc_covariance_01.dat"
+      ]
+    }
+  }
+}

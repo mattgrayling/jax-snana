@@ -1,0 +1,134 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# JAX
+.jax_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Test outputs and generated data
+TEST_*/
+DEBUG_*/
+MG_*/
+DUMP_*/
+
+# SNANA-style sim output directories and sidecar files (regenerable).
+# Anchored to repo root so equivalent names under tests/fixtures/ (e.g.
+# des_salt3_replay) aren't swept up — case-insensitive filesystems
+# match DES_*/ against des_*/ otherwise.
+/JAXVAL_*/
+/DES_*/
+/replay_*/
+/JAXVAL_*.DUMP
+/JAXVAL_*.LIST
+/JAXVAL_*.README
+/*.FITRES.TEXT
+
+# Validation plots (regenerable from validation scripts)
+validation_plots/
+simulator_figure*.pdf
+simulator_figure*.png
+
+# Comparison/results pickle dumps (ephemeral tuning artefacts)
+/comparison_results*.pkl
+/results_*.pkl
+/fit_results_*.pkl
+/optimizer_comparison_results.pkl
+/seleff_compare_jax.pkl
+
+# SIMLIB cache files
+simlib_cache/*.h5
+_*.h5
+
+# Profiling and timing results
+*.prof
+*.lprof
+profile_*.txt
+timing_*.txt
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.old
+*.new
+
+# Output directories from test runs
+output_*/
+results_*/
+# The quick start's outputs (examples/quickstart/analysis.py, outdir="run")
+/run/
+# ... but a bundled fixture's BBC grid is input, not a test artifact
+!tests/fixtures/**/OUTPUT_*/
+
+# Archived simulation artifacts
+artifacts/
+
+# Sim output directories that shouldn't live in the repo
+simulations/
+
+# OS / tool caches (should never be tracked)
+cache/
+hostlib_cache/
+
+# Scratch temp directories
+tmp*/
+
+# Somewhere deliberate for scratch notes; markdown is otherwise tracked.
+notes/
+/photometry_redshift_issue.txt
+
+# DES BBC sims: only FITRES.TEXT is read (bbc_des_beams/build.py); the photometry
+# is ~200 MB and rebuilds via tests/fixtures/regenerate.py
+tests/fixtures/snana/bbc_des_data/*.FITS
+tests/fixtures/snana/bbc_des_biascor/*.FITS
+tests/fixtures/snana/bbc_ccprior_sim/*.FITS
+tests/fixtures/snana/bbc_des_bayesn_data/*.FITS
+tests/fixtures/snana/bbc_des_bayesn_biascor/*.FITS
+
+# SNANA-generated SED grid caches (SIMSED_USE_BINARY). Derived from the ASCII
+# .SED files beside them, and no bundled fixture reads them.
+tests/fixtures/data/models/**/SED.BINARY
+
+# Simulator VERIFY_SED_TRUE dumps, written beside the run output
+*_VERFIY_SED_TRUE.DAT
+
+# Sphinx build output
+docs/_build/

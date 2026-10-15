@@ -1,0 +1,43 @@
+DOCUMENTATION:
+    REF: 
+    - AUTHOR:  R. Kessler et al., 2019 (PLASTICC models)
+      ADS:     https://ui.adsabs.harvard.edu/abs/2019PASP..131i4501K
+      SUBREF:  Table 1, and Sec 4.2
+    - Author:  M. Vincenzi et al. 2020 (in prep)
+    INTENT:  Nominal
+    USAGE_KEY:  GENMODEL
+    USAGE_CODE: snlc_sim.exe
+    VALIDATE_SCIENCE: used in PLASTICC and Vincenzi 2020
+    NOTES_ORIG:
+    - Single spectrophotometric template based on Nugent 91bg
+    - extended to UV with spectra (Hachinger+09) and LC from Swift (Brown 09)
+    - 91bg params from fitting with SiFTO (Conley 2008)
+    NOTES_UPDATE:
+    - 2020-11, fix bug described in Sec 4.2.2 of K19
+DOCUMENTATION_END:
+
+
+# Spectrophotometric template for 91bg-like SNe Ia
+# It is a single spectrophotometric template based on Nugent's 91bg but 
+# extending a bit to the UV with synthetic spectra from Hachinger+08 
+# and light-curves observed with Swift (Brown+09). 
+# The ranges and relations of colors and stretch to generate the different 
+# SNANA templates were obtained by fitting with SiFTO (Conley+08) this 
+$ template to all 91bg at low-z as from Gonzalez-Gaitan+14.
+# Author: S. Gonzalez-Gaitan
+
+
+MODEL: 91bg
+FLUX_SCALE:        1
+RESTLAMBDA_RANGE:        1000.0000       12000.000
+NPAR: 2
+PARNAMES:              stretch    color
+SED: 91BG_ST0_C0.SED   0.650000    0.00000
+SED: 91BG_ST0_C2.SED   0.650000    0.500000
+SED: 91BG_ST0_C4.SED   0.650000    1.00000
+SED: 91BG_ST3_C0.SED   0.950000    0.00000
+SED: 91BG_ST3_C2.SED   0.950000    0.500000
+SED: 91BG_ST3_C4.SED   0.950000    1.00000
+SED: 91BG_ST6_C0.SED   1.25000    0.00000
+SED: 91BG_ST6_C2.SED   1.25000    0.500000
+SED: 91BG_ST6_C4.SED   1.25000    1.00000

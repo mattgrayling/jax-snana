@@ -1,0 +1,20 @@
+# VERSION_PHOTOMETRY(DATA):      
+# ISDATA_REAL:   0 
+# SNANA_VERSION: v12_02d-12-g74dfb2c5 
+# PROGRAM:       SALT2mu.exe 
+# BBC_VERSION:   4 
+
+# Reference cosmology params for MUDIF: 
+#   REF Omega_L     :  0.700 
+#   REF w0          :  -1.000 
+#   FIT alpha0      :  0.1595 +- 0.0027 
+#   FIT beta0       :  3.5121 +- 0.0400 
+# 
+# WARNING(SEVERE): 1 fitted M0ERR have crazy values after final fit. 
+
+# For cosmology fit: zHD, MU=MUREF+MUDIF, MUERR=MUDIFERR
+
+VARNAMES: ROW  zHDMIN zHDMAX   zHD        MUDIF  MUDIFERR   MUREF  NFIT 
+ROW:      1  0.10000 0.30000 0.20000    0.00828   0.00583  39.95628  104
+ROW:      2  0.30000 0.60000 0.45000    0.00356   0.00399  41.98770  602
+ROW:      3  0.60000 1.00000 0.80000   -0.00327   0.00683  43.50257  918

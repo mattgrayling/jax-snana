@@ -1,0 +1,17 @@
+NEVT_DATA:             1568 
+NEVT_BIASCOR:          0 
+NEVT_CCPRIOR:          0 
+NEVT_REJECT_CUTWIN:    0
+NEVT_REJECT_BIASCOR:   0
+ABORT_IF_ZERO:         1568
+NWARN_CRAZYERR:        1
+NFIT_EXEC:             1
+CPU_MINUTES:           0.02
+ISDATA_REAL:           0
+
+BBCFIT_RESULTS:
+  - NSNFIT:             1568     40
+  - SIGINT:            0.00000    0
+  - CHI2RED_IA:        1.458    0
+  - alpha0:               0.16130  0.00280 
+  - beta0:                3.41866  0.04337 

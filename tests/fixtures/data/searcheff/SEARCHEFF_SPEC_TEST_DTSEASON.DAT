@@ -1,0 +1,33 @@
+DOCUMENTATION:
+    PURPOSE: JAX_TEST SEARCHEFF_SPEC fixture for DTSEASON_PEAK
+    USAGE_KEY: SEARCHEFF_SPEC_FILE
+    USAGE_CODE: snlc_sim.exe
+DOCUMENTATION_END:
+
+# Synthetic SEARCHEFF_SPEC file for testing DTSEASON_PEAK variable
+# Efficiency depends on distance from season edge:
+#   |DTSEASON_PEAK| < 10 days: eff=0 (too close to season edge)
+#   |DTSEASON_PEAK| > 30 days: eff=1 (well within season)
+
+VARNAMES: DTSEASON_PEAK SPECEFF
+SPECEFF: -100  1.0
+SPECEFF:  -90  1.0
+SPECEFF:  -80  1.0
+SPECEFF:  -70  1.0
+SPECEFF:  -60  1.0
+SPECEFF:  -50  1.0
+SPECEFF:  -40  1.0
+SPECEFF:  -30  1.0
+SPECEFF:  -20  0.5
+SPECEFF:  -10  0.0
+SPECEFF:    0  0.0
+SPECEFF:   10  0.0
+SPECEFF:   20  0.5
+SPECEFF:   30  1.0
+SPECEFF:   40  1.0
+SPECEFF:   50  1.0
+SPECEFF:   60  1.0
+SPECEFF:   70  1.0
+SPECEFF:   80  1.0
+SPECEFF:   90  1.0
+SPECEFF:  100  1.0

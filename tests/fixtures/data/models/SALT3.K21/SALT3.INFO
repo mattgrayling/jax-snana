@@ -1,0 +1,41 @@
+DOCUMENTATION:
+    PURPOSE:  SALT3 model for simulations and light-curve fitting
+    REF:
+    - AUTHOR: Kenworthy et al., 2021, ApJ, submitted (SALTshaker)
+      ADS:    TBD
+    - AUTHOR: Supernova Standardization Team
+      ADS:    github.com/djones1040/SALTShaker; saltshaker.readthedocs.io
+    INTENT:    Nominal
+    USAGE_KEY: GENMODEL, FITMODEL_NAME
+    USAGE_CODE: snlc_sim.exe snlc_fit.exe
+    VALIDATE_SCIENCE: Kenworthy+2021, Dai+2021 (in prep.)
+    NOTES:
+    - training data public in $SNDATA_ROOT/lcmerge/SALT3TRAIN_K21
+    - combines the SALT2.4 training photometry with Foundation, PS1MD, DES samples
+    - adds spectra from Foundation and from Kaepora database (Siebert+2019; full spectral citations in Kenworthy+2021)
+    - Milky Way extinction rescaled by a factor of 0.86 (based on SF11)
+    - Zero point offsets from Supercal
+    - set COLOR_DISP_MAX=2 to protect crazy-sigma abort (RK, Apr 2023)
+    VERSION:
+    - DATE: 2021-04
+      AUTHOR: D. Jones, D. Kenworthy, R. Kessler
+DOCUMENTATION_END:
+
+RESTLAMBDA_RANGE: 2800 8700
+COLORLAW_VERSION: 1
+COLORCOR_PARAMS: 2800 8000	5  -5.6774105513e-01 6.8597705612e-01 -4.3325071358e-01 1.1666954200e-01 -1.1344238031e-02
+
+COLOR_OFFSET:   0.0
+COLOR_DISP_MAX: 2.0
+
+MAG_OFFSET:	 0.27  # to get B-band mag from cosmology fit (Nov 23, 2011)
+
+SEDFLUX_INTERP_OPT: 2  # 1=>linear,	   2=>spline
+ERRMAP_INTERP_OPT:	1  # 1	# 0=snake off;	1=>linear  2=>spline
+ERRMAP_KCOR_OPT:	1  # 1/0 => on/off
+
+MAGERR_FLOOR:	0.005			 # don;t allow smaller error than this
+MAGERR_LAMOBS:	0.0	 2000  4000	 # magerr minlam maxlam
+MAGERR_LAMREST: 0.1	  100	200	 # magerr minlam maxlam
+
+SIGMA_INT: 0.106  # used in simulation

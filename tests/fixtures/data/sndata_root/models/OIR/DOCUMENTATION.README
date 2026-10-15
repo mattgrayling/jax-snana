@@ -1,0 +1,8 @@
+DOCUMENTATION:
+    PURPOSE: Optical-NIR covariance matrix for SNooPy dispersion model
+    NOTES:
+    - See OIR.J19 subdirectory
+    VERSIONS:
+    - DATE: 2019/2020
+      AUTHORS: D. Jones
+DOCUMENTATION_END:

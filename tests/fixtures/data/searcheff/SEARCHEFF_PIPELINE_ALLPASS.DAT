@@ -1,0 +1,37 @@
+DOCUMENTATION:
+    PURPOSE: JAX_TEST all-pass pipeline efficiency
+    INTENT:  Test only — every epoch detects, so the trigger draws no randoms
+    NOTES:
+        Lets a fixture isolate a selection gate from the stochastic
+        efficiency test, which otherwise flips marginal-SNR epochs
+        independently in each code.
+    USAGE_KEY: SEARCHEFF_PIPELINE_EFF_FILE
+    USAGE_CODE: snlc_sim.exe
+DOCUMENTATION_END:
+
+PHOTFLAG_DETECT:   4096
+PHOTFLAG_TRIGGER:  2048
+
+FILTER: u
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0
+
+FILTER: g
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0
+
+FILTER: r
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0
+
+FILTER: i
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0
+
+FILTER: z
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0
+
+FILTER: Y
+ABS(SNR):     0.00  1.0
+ABS(SNR):  1000.00  1.0

@@ -1,0 +1,95 @@
+[tool.setuptools.dynamic]
+version = {attr = "jax_snlc_core.__version__"}
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jax-snana"
+dynamic = ["version"]
+description = "A JAX implementation of SNANA: supernova simulation, light-curve fitting and cosmology"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [
+    {name = "Matthew Grayling", email = "mg2102@cam.ac.uk"},
+]
+keywords = ["supernova", "snana", "jax", "cosmology", "astronomy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "jax>=0.10.1",
+    "jaxlib>=0.10.1",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "astropy>=6.0",
+    "h5py>=3.10",
+    "pandas>=2.1",
+    "platformdirs>=4.0",
+    "isal>=1.2",  # threaded gzip for the simulator's FITS output
+    "pyarrow>=14.0",  # parquet engine for HostLibCacheManager (pd.{to,read}_parquet)
+    "pyyaml>=6.0",  # YAML fitter configs (snlc_fit.py load_fit_config)
+    "numpyro>=0.22.0",
+]
+
+[project.urls]
+Repository = "https://github.com/mattgrayling/jax-snana"
+Documentation = "https://jax-snana.readthedocs.io"
+Issues = "https://github.com/mattgrayling/jax-snana/issues"
+
+[project.optional-dependencies]
+docs = ["sphinx>=7.0", "myst-parser>=2.0", "sphinx-rtd-theme>=2.0"]
+# docs is included in test so test_docs_build.py runs rather than skips
+test = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis",
+        "sphinx>=7.0", "myst-parser>=2.0", "sphinx-rtd-theme>=2.0"]
+redback = ["redback-jax>=0.4.1"]
+
+[project.scripts]
+snlc_sim = "snlc_sim:main"
+snlc_fit = "snlc_fit:main"
+wfit = "wfit:main"
+salt2mu = "salt2mu:main"
+create_covariance = "create_covariance:main"
+lcplot_from_fitres = "lcplot_from_fitres:main"
+jax_pipeline = "jax_pipeline.pippin:main"
+
+[tool.setuptools]
+py-modules = ["snlc_sim", "snlc_fit", "wfit", "salt2mu", "create_covariance",
+              "replay_snana_dump", "lcplot_from_fitres"]
+
+[tool.setuptools.packages.find]
+include = ["jax_snlc_core*", "jax_snlc_sim*", "jax_snlc_fit*", "jax_wfit*",
+           "jax_salt2mu*", "jax_create_cov*", "jax_pipeline*"]
+
+[tool.setuptools.package-data]
+jax_snlc_core = ["data/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+markers = [
+    "live_snana: requires real SNANA executable + $SNDATA_ROOT",
+]
+addopts = "-q --strict-markers"
+
+[tool.coverage.run]
+source = ["jax_snlc_sim", "jax_snlc_fit", "jax_snlc_core", "jax_wfit",
+          "jax_salt2mu", "jax_create_cov", "jax_pipeline"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
