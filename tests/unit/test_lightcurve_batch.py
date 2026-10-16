@@ -165,15 +165,18 @@ def test_duplicate_mjd_is_reported_not_rejected():
     assert warn_duplicate_mjd(b) == 0
 
 
-def test_snccid_list_matches_the_transient_and_iauc_names():
-    """An SNCCID_LIST entry selects an event by its SNID or by either of its
-    names (LCIDSELECT, snana.F90:11902), so a Rubin object id or an IAUC
-    name picks the event out of a file whose SNIDs are numbers."""
+def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
+    """An SNCCID_LIST or SNCID_LIST_FILE entry selects an event by its SNID or
+    by either of its names (LCIDSELECT, snana.F90:11902), so a Rubin object
+    id or an IAUC name picks the event out of a file whose SNIDs are numbers;
+    SNIDs which are not numbers are matched as strings, and a numeric SNID
+    as its number."""
     from jax_snlc_fit.batch import apply_snana_selection
     from jax_snlc_fit.run import _cid_list
 
     cids, names, table = _cid_list(None, ['3', '2026abc', 'ZTF26aaa', ''], None)
-    assert (cids, names, table) == ([3], ['3', '2026abc', 'ZTF26aaa'], None)
+    assert (cids, names, table) == (['3', '2026abc', 'ZTF26aaa'],
+                                    ['3', '2026abc', 'ZTF26aaa'], None)
 
     b = _make_batch(n=4)
     b.head_extras = {'NAME_TRANSIENT': np.array(['ZTF26aaa', '', '', 'ZTF26zzz']),
@@ -184,6 +187,19 @@ def test_snccid_list_matches_the_transient_and_iauc_names():
     keep, _ = apply_snana_selection(b, sncid_list=[], snccid_names=['2026abc'],
                                     ladder=[])
     assert list(keep) == [False, True, False, False]
+
+    b = _make_batch(n=4)
+    b.snids = np.array(['ecf56b03-f72e', '878b0afa-a1b2', '0042', '7'])
+    b.head_extras = {}
+    cid_file = tmp_path / "cids.list"
+    cid_file.write_text("ecf56b03-f72e  # first\n42\n")
+    cids, names, _ = _cid_list([7], ['878b0afa-a1b2'], str(cid_file))
+    keep, _ = apply_snana_selection(b, sncid_list=cids, snccid_names=names,
+                                    ladder=[])
+    assert keep.all()
+    keep, _ = apply_snana_selection(b, sncid_ignore=['878b0afa-a1b2', '42'],
+                                    ladder=[])
+    assert list(keep) == [True, False, False, True]
 
 
 def test_private_cutwin_veto_rejects_on_equality():

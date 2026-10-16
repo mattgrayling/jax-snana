@@ -797,6 +797,15 @@ def warn_duplicate_mjd(batch) -> int:
     return n
 
 
+def cid_keys(cids) -> np.ndarray:
+    """CIDs as the strings a CID list is matched on: stripped, and a numeric
+    CID without leading zeros, as SNANA reads it into its integer CID."""
+    stripped = np.char.strip(np.asarray(cids).astype(str))
+    numeric = np.char.isdigit(stripped)
+    as_int = np.where(numeric, stripped, '0').astype(np.int64)
+    return np.where(numeric, as_int.astype(str), stripped)
+
+
 def duplicate_cid_mask(batch, abort) -> np.ndarray:
     """PARSE_CID's duplicate check (snana.F90:14190). ABORT_ON_DUPLCID defaults
     true; false keeps the first occurrence and rejects the rest."""
@@ -839,10 +848,10 @@ def _header_selection(batch, head_sntypes, *, sntype_list, sncid_list,
         if sntype_ignore:
             keep &= ~np.isin(sntypes, [int(t) for t in sntype_ignore])
     if sncid_list or snccid_names:
-        listed = np.isin(np.asarray(batch.snids).astype(int),
-                         [int(c) for c in sncid_list])
-        # a name in SNCCID_LIST selects on the event's transient or IAUC
-        # name as well as its SNID (LCIDSELECT, snana.F90:11902)
+        listed = np.isin(cid_keys(batch.snids), cid_keys(sncid_list))
+        # a name in SNCCID_LIST or the list file selects on the event's
+        # transient or IAUC name as well as its SNID (LCIDSELECT,
+        # snana.F90:11902)
         extras = batch.head_extras
         for col in ('NAME_TRANSIENT', 'NAME_IAUC'):
             if col in extras:
@@ -850,8 +859,7 @@ def _header_selection(batch, head_sntypes, *, sntype_list, sncid_list,
                                   list(snccid_names or []))
         keep &= listed
     if sncid_ignore:
-        keep &= ~np.isin(np.asarray(batch.snids).astype(int),
-                         [int(c) for c in sncid_ignore])
+        keep &= ~np.isin(cid_keys(batch.snids), cid_keys(sncid_ignore))
 
     if not (usesim_snia and usesim_nonia):
         if sim_model_index is None:
