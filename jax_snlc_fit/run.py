@@ -38,8 +38,8 @@ from .batch import (ERRFLAG_FITPREP_NEPOCH, ERRFLAG_FITPREP_NOEPOCHS,
                     ERRFLAG_FITPREP_QUANTILES, ERRFLAG_FIT_CUTS,
                     ERRFLAG_MNFIT_NAN, ERRFLAG_NO_FIT, ERRFLAG_ZFIT_RANGE,
                     ITER1_ERRFLAG, LightCurveBatch, band_snr_maxima,
-                    choose_epoch_lengths, padded_batches, plan_fit_batches,
-                    select_events)
+                    choose_epoch_lengths, cid_keys, padded_batches,
+                    plan_fit_batches, select_events)
 from .config import FitConfig
 from .config_parser import (check_photoz_trest_cuts, parse_sntable_list,
                             relax_photoz_trest_cuts, resolve_fitwin_windows,
@@ -261,37 +261,33 @@ def _read_cid_file(path):
     with open(path) as fh:
         text = fh.read()
     if 'VARNAMES:' not in text:
-        return [int(tok) for line in text.splitlines()
+        return [tok for line in text.splitlines()
                 for tok in line.split("#")[0].split()], None
     table = read_fitres(path)
-    return [int(c) for c in table.df['CID']], table
+    return [str(c) for c in table.df['CID']], table
 
 
 def _cid_list(numeric, strings, path):
     """One CID list from its numeric, string and file spellings, the names
-    among the strings, and the list-file table.
+    among the strings and the file, and the list-file table.
 
     SNANA keeps SNCID_ and SNCCID_ apart because Fortran cannot hold both in one
-    array; jax's CIDs are integers, so they merge here. The numeric list ends at
-    its first entry below 1 (DO WHILE SNCID_LIST(i) >= 1, snana.F90:11888); the
-    string list ends at its first blank instead (:11897). Every string is also
-    a transient or IAUC name to match, a numeric one included, since a Rubin
+    array; here every CID is a string, matched by :func:`cid_keys`, so they
+    merge. The numeric list ends at its first entry below 1 (DO WHILE
+    SNCID_LIST(i) >= 1, snana.F90:11888); the string list ends at its first
+    blank instead (:11897). Every string and every file entry is also a
+    transient or IAUC name to match, a numeric one included, since a Rubin
     object id is a number (LCIDSELECT, snana.F90:11902).
     """
-    cids = until_sentinel([int(c) for c in (numeric or [])], 1)
+    cids = [str(c) for c in until_sentinel([int(c) for c in (numeric or [])], 1)]
     blank = next((i for i, c in enumerate(strings or [])
                   if not str(c).strip()), None)
-    names = []
-    for entry in (strings or [])[:blank]:
-        entry = str(entry).strip()
-        names.append(entry)
-        if entry.lstrip('-').isdigit():
-            cids.append(int(entry))
+    names = [str(c).strip() for c in (strings or [])[:blank]]
     table = None
     if path:
         from_file, table = _read_cid_file(path)
-        cids += from_file
-    return cids, names, table
+        names += from_file
+    return cids + names, names, table
 
 
 def _merge_versions(sources, load_one):
@@ -622,8 +618,8 @@ def _sncid_inival(table, snids, param_names):
             "OPT_SNCID_LIST bit 1 seeds the fit from SNCID_LIST_FILE, which "
             "must be a FITRES table; this file is a plain CID list.",
             function_name="OPT_SNCID_LIST")
-    by_cid = {int(c): i for i, c in enumerate(table.df['CID'])}
-    rows = np.array([by_cid.get(int(c), -1) for c in snids])
+    by_cid = {c: i for i, c in enumerate(cid_keys(table.df['CID']))}
+    rows = np.array([by_cid.get(c, -1) for c in cid_keys(snids)])
     seeds = {}
     for name in param_names:
         col = 'zHD' if name == 'zPHOT' else name
@@ -1864,14 +1860,14 @@ def lcplot_from_fitres(config: FitConfig, fitres_path, prefix):
     """
     table = read_fitres(fitres_path)
     by_cid = table.df.set_index(table.df['CID'].astype(str))
-    wanted, names, _ = sncid_list(config)
-    if not (wanted or names):
+    wanted, _, _ = sncid_list(config)
+    if not wanted:
         wanted = list(by_cid.index)
     # the list as strings, which match a CID or a name, so the loader reads
     # no file again
     selection = dataclasses.replace(
         config.selection, sncid_list=None, sncid_list_file=None,
-        snccid_list=[str(c) for c in wanted] + names)
+        snccid_list=wanted)
     style = (config.output.tables.get('lcplot')
              or parse_sntable_list('LCPLOT')['tables']['lcplot'])
     plotting = dataclasses.replace(
@@ -1884,7 +1880,14 @@ def lcplot_from_fitres(config: FitConfig, fitres_path, prefix):
     batch = as_fitted(fitter, plotting, batch)
 
     snids = np.char.strip(np.asarray(batch.snids).astype(str))
-    unloaded = sorted(set(map(str, wanted)) - set(snids))
+    # an entry has loaded when it is an event's SNID or one of its names
+    wanted = np.asarray(wanted, dtype=str)
+    found = np.isin(cid_keys(wanted), cid_keys(snids))
+    for col in ('NAME_TRANSIENT', 'NAME_IAUC'):
+        if col in batch.head_extras:
+            found |= np.isin(wanted, np.char.strip(
+                np.asarray(batch.head_extras[col]).astype(str)))
+    unloaded = sorted(set(wanted[~found]))
     if unloaded:
         raise SNANAError(f"{len(unloaded)} events do not load with this "
                          f"namelist: {unloaded[:10]}",

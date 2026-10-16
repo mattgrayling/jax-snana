@@ -115,8 +115,9 @@ table in the run log shows which cut removed which events; see
 {doc}`fitting_light_curves`.
 
 The keep-lists and ignore-lists name events by CID, by type or by field. Use
-them to investigate a single event or exclude a known bad one. A name in
-`SNCCID_LIST` also matches an event's `NAME_TRANSIENT` or `NAME_IAUC`.
+them to investigate a single event or exclude a known bad one. `SNCID_LIST`
+takes numeric CIDs; `SNCCID_LIST` and `SNCID_LIST_FILE` take any CID, and
+also match an event's `NAME_TRANSIENT` or `NAME_IAUC`.
 `OPT_SNCID_LIST` can also turn off every other per-event cut, so the named
 events are fitted regardless of their photometry. A positive
 `FLAG_USE_SAME_EVENTS` sets `OPT_SNCID_LIST` to its own value. `SIM_PRESCALE`
