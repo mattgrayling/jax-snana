@@ -137,9 +137,12 @@ def photoz_host_mask(config, batch, n_sne):
 def redshift_priors(config, batch) -> RedshiftPriors:
     """The batch's redshift priors, by OPT_PHOTOZ: bit 2 (value 4) the host
     quantile PDF, bit 1 (value 2) REDSHIFT_FINAL as a Gaussian, bit 0
-    (value 1) the host photo-z, an event without one starting at the middle
-    of PHOTOZ_BOUND with an uninformative width (snlc_fit.F90:8517-8523).
-    Only the host branch has a per-SN host check."""
+    (value 1) the host photo-z. An event without the redshift its prior needs
+    starts at the middle of PHOTOZ_BOUND with an uninformative width, as a
+    host-less event does in SNANA (snlc_fit.F90:8517-8523): it is fitted from
+    its light curve alone, and zPRIORERR reports that width. Under
+    REDSHIFT_FINAL, SNANA instead starts the fit at the missing value. Only
+    the host branch has a per-SN host check."""
     n_sne = batch.n_sne
     use_quantiles = quantile_prior_mask(config, batch)
     quantiles = use_quantiles.any()
@@ -185,20 +188,21 @@ def redshift_priors(config, batch) -> RedshiftPriors:
         pdf_grid = pdf_vals = pdf_slopes = pdf_max = None
 
     host_ok = jnp.ones(n_sne, dtype=bool)
+    lo_b, hi_b = config.photoz.photoz_bound
     if quantiles:
         z_init = jnp.array(zpdf_mean)
         z_prior = jnp.array(zpdf_mean)
         z_prior_err = jnp.array(zpdf_std)
         z_prior_width = z_prior_err
     elif config.photoz.has_photoz_bestz_gaussian():
-        z_init = jnp.array(batch.redshifts)
-        z_prior = jnp.array(batch.redshifts)
-        z_prior_err = jnp.array(batch.redshift_errs)
+        has_z = jnp.asarray(batch.redshifts) >= 0
+        z_init = jnp.where(has_z, batch.redshifts, 0.5 * (lo_b + hi_b))
+        z_prior = z_init
+        z_prior_err = jnp.where(has_z, batch.redshift_errs, PHOTOZ_STD_NOHOST)
         z_prior_width = z_prior_err
     else:
         # no host photo-z column is no host for any event (SNHOST_ZPHOT = -9)
         host_ok = photoz_host_mask(config, batch, n_sne)
-        lo_b, hi_b = config.photoz.photoz_bound
         z_host = (jnp.array(batch.photoz) if batch.photoz is not None
                   else jnp.full(n_sne, SNANA_NULLFLOAT))
         z_host_err = (jnp.array(batch.photoz_err)

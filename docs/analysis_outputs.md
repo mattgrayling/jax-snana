@@ -141,13 +141,14 @@ Off-diagonal covariances are named `COV_<a>_<b>`. At fixed redshift, SALT
 reports `COV_x1_c`, `COV_x1_x0` and `COV_c_x0`; photometric-redshift fits
 also report `COV_x1_zPHOT`, `COV_c_zPHOT` and `COV_x0_zPHOT`.
 
-Photometric-redshift fits also report `zPRIOR` and `zPRIORERR`. With
-`OPT_PHOTOZ` 4 or 12, these are the mean and standard deviation of the host's
-quantile distribution; with option 2, they are the measured data redshift and
-its uncertainty. For a host Gaussian, they give the host redshift and its
-quoted error. The reported uncertainty is multiplied by `PRIOR_ZERRSCALE`,
-with a minimum of 0.001. Without a usable host constraint, `zPRIOR` is the
-midpoint of `PHOTOZ_BOUND` and the uncertainty before scaling is 9999.
+Photometric-redshift fits also report the redshift prior each event was
+fitted with, as `zPRIOR` and `zPRIORERR`. The prior is chosen by
+`OPT_PHOTOZ`, whose options {doc}`fitting_keys` describes. Under option 1
+these are the host's photometric redshift and its quoted error; under option
+2, REDSHIFT_FINAL and its uncertainty; and under option 4 or 12, the mean and
+standard deviation of the host's quantile distribution. Events without a
+REDSHIFT_FINAL under `OPT_PHOTOZ` 2 are fitted with no redshift prior and
+report a `zPRIORERR` of 9999.
 
 `NDOF`, `FITCHI2` and `FITPROB` give the degrees of freedom
 (the number of epochs fitted less the number of free parameters), the
