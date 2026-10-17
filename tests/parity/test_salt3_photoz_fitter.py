@@ -163,6 +163,23 @@ def test_zero_redshift_error(snana_fixture):
                                atol=0.005)
 
 
+def test_missing_redshift_is_fitted_without_a_prior(snana_fixture):
+    """An event without a REDSHIFT_FINAL is fitted from its light curve
+    alone, with zPRIORERR = 9999, rather than pulled to the missing value."""
+    fx = snana_fixture('salt3_fit_photoz')
+    config = fit_config(fx.root / 'fit.nml', batch_size=2)
+    batch = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=2)
+    true_z = np.array(batch.redshifts)
+    batch.redshifts = np.array([true_z[0], -999.0])
+    batch.redshift_errs = np.array([batch.redshift_errs[0], -999.0])
+    fitter = build_fitter(config, build_fit_model(config), batch)
+    batch = for_fit(fitter, batch)
+    results, _ = fitter.fit_sample(batch, peak_start(fitter, batch))
+    np.testing.assert_array_equal(np.asarray(results.z_prior[1]) == 9999.0,
+                                  [False, True])
+    np.testing.assert_allclose(results.params['zPHOT'], true_z, atol=0.01)
+
+
 def test_photoz_external_start(snana_fixture):
     """External fit values seed every parameter, bypassing the coarse grid."""
     from jax_snlc_fit.run import _sncid_inival, start_values

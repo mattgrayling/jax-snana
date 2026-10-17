@@ -303,7 +303,8 @@ parameters. `OPT_PHOTOZ` chooses the redshift prior:
 - `1`: a Gaussian centred on the host galaxy's photometric redshift, disabled
   by default. Set `OPT_PHOTOZ = 1` together with
   `PRIOR_ZERRSCALE = 1` to enable the host Gaussian prior.
-- `2`: a Gaussian on the redshift the data file marks as its best.
+- `2`: a Gaussian on the redshift the data file marks as its best. An event
+  without one is fitted with no redshift prior.
 - `4`: the host redshift's quantiles, read per event as its full probability
   distribution, which is more accurate when that distribution is not
   Gaussian.
