@@ -846,6 +846,13 @@ class PhotoZ:
     #: redshift axis. A positive lower edge overrides the default window,
     #: two prior widths either side of each event's prior centre.
     rangez_course: Tuple[float, float] = (-99.0, -99.0)
+    #: SNANA NBINT_COURSE_PHOTOZ; bins on a coarse-grid PEAKMJD axis around
+    #: each event's PEAKMJD estimate. The default 1 holds PEAKMJD at the
+    #: estimate.
+    nbint_course: int = 1
+    #: SNANA RANGET_COURSE_PHOTOZ; the PEAKMJD axis's range, in days relative to
+    #: the estimate, used when NBINT_COURSE_PHOTOZ is above 1.
+    ranget_course: Tuple[float, float] = (-15.0, 15.0)
     #: SNANA SCALE_NBIN_COURSE_PHOTOZ; multiply the bin count of every
     #: coarse-grid axis. It must be positive.
     scale_nbin_course: int = 1

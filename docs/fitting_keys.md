@@ -325,6 +325,8 @@ at 42 points per unit of z/(1+z). The keys in the second group change it:
 `NBINZ_COURSE_PHOTOZ` and `RANGEZ_COURSE_PHOTOZ` set the redshift axis, and
 `SCALE_NBIN_COURSE_PHOTOZ` multiplies the bin count of every axis. The colour
 and shape axes are set by the coarse-grid keys of the model section.
+`NBINT_COURSE_PHOTOZ` adds a PEAKMJD axis, offset from each event's estimate
+across `RANGET_COURSE_PHOTOZ`.
 
 The last group handles bands whose rest-frame wavelength could fall outside
 the model's coverage over the allowed redshift range. `PHOTOZ_ITER1_LAMRANGE`

@@ -1078,22 +1078,6 @@ def test_photoz_trest_cuts_are_widened_for_the_fit():
         assert trest_zcut(1, z, lo) <= lo and trest_zcut(2, z, hi) >= hi
 
 
-def test_nbint_course_photoz_refuses_a_peakmjd_axis(tmp_path):
-    """SNANA defaults NBINt to one bin (snlc_fit.F90:9296); jax builds no
-    PEAKMJD axis, so anything above that must abort rather than be ignored."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    def cfg(n):
-        nml = tmp_path / f"n{n}.nml"
-        nml.write_text(
-            "&SNLCINP\n  VERSION_PHOTOMETRY = 'V'\n  KCOR_FILE = 'k.fits'\n&END\n"
-            "&FITINP\n  FITMODEL_NAME = 'M'\n  FILTLIST_FIT = 'griz'\n"
-            f"  NBINT_COURSE_PHOTOZ = {n}\n&END\n")
-        return build(read_keys(nml))
-    cfg(1)                       # SNANA's default: accepted
-    with pytest.raises(SNANAError):
-        cfg(4)
-
-
 def test_opt_chi2_sigma_accepts_only_the_bit_that_does_something():
     """Bit 1 is the only value that changes a SNANA fit; 2, 128 and 1|128 give a
     FITRES byte-identical to 0, and 4 aborts snlc_fit.exe. Accepting any of them
@@ -1266,6 +1250,8 @@ def test_every_recognised_key_reaches_its_field():
         'PHOTOZ_ITER1_LAMRANGE': '3000 9000',
         'NBINZ_COURSE_PHOTOZ': '7',
         'RANGEZ_COURSE_PHOTOZ': '0.05 1.2',
+        'NBINT_COURSE_PHOTOZ': '4',
+        'RANGET_COURSE_PHOTOZ': '-10 10',
         'OPT_VMAX': '2',
         'FLUXCAL_BASELINE_CORRECT': 'T',
     })
@@ -1289,6 +1275,8 @@ def test_every_recognised_key_reaches_its_field():
     assert cfg.photoz.skip_photoz_init
     assert cfg.photoz.nbinz_course == 7
     assert cfg.photoz.rangez_course == (0.05, 1.2)
+    assert cfg.photoz.nbint_course == 4
+    assert cfg.photoz.ranget_course == (-10.0, 10.0)
     assert cfg.photoz.photoz_iter1_lamrange == (3000.0, 9000.0)
     assert cfg.output.opt_vmax == 2
 

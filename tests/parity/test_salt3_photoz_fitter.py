@@ -225,6 +225,25 @@ def test_the_coarse_grid_spans_the_window_the_fit_uses(snana_fixture):
         z_hi / (1 + z_hi) - z_lo / (1 + z_lo))
 
 
+def test_the_coarse_grid_starts_at_its_best_peakmjd(snana_fixture):
+    """NBINT_COURSE_PHOTOZ adds a PEAKMJD axis of offsets from each event's
+    estimate, and the fit starts from the best grid point's PEAKMJD as well as
+    its other parameters; SNANA keeps the last bin's instead. Offered a bin a
+    week before the estimate and a last bin three weeks after it, the grid
+    starts every event from the nearer one."""
+    fx = snana_fixture("salt3_fit_photoz")
+    config = fit_config(fx.root / "fit.nml", batch_size=8, nbint_course=2,
+                        ranget_course=(-7.5, 22.5))
+    batch = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=8)
+    fitter = build_fitter(config, build_fit_model(config), batch)
+    batch = for_fit(fitter, batch)
+    start = {**peak_start(fitter, batch), 'zPHOT': batch.z_priors.z_init}
+    scales = fitter._scales(batch, batch.z_priors)
+    physical = fitter.stack(start, batch.reference_mjds)
+    grid = fitter._grid_start(batch, physical / scales, scales, batch.z_priors) * scales
+    np.testing.assert_allclose(np.asarray(grid[:, 0] - physical[:, 0]), -7.5)
+
+
 def test_salt3_photoz_fitter_recovers_z(salt3_photoz_fit_results):
     """Photo-z fit recovers z within 3σ of HOSTGAL_PHOTOZ for ≥80% of SNe."""
     fx, results, _, _ = salt3_photoz_fit_results

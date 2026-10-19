@@ -1843,23 +1843,35 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
     def evaluate_redshift_grid(self, axes, base_params, mu_grid, z_grid, band_weights,
                       band_weights_err, mjds, filter_indices, mask,
                       static_data, error_overrides=None):
-        """The whole (z, colour, shape) grid in one pass.
+        """The (z, colour, shape, PEAKMJD) grid with each band integral
+        computed once.
 
-        The band integral carries no shape index, so writing it at the rank of
-        its own answer computes each (z, colour) once: there is no repeated
-        work to hoist out of a loop, because no loop exists. Shape enters only
-        where the flux is linear in it.
+        The band integral depends on redshift and colour only, and PEAKMJD
+        only moves the phases it is read at, so each (z, colour) is integrated
+        once and read once per PEAKMJD; shape enters only where the flux is
+        linear in it. Every grid point then combines its own entries, in the
+        order ``axes`` gives. Any other axis falls back to visiting every
+        point.
         """
-        c_vals = jnp.asarray(axes['c'])
-        s_vals = jnp.asarray(axes['x1'])
-        n_z, n_c, n_s = z_grid.shape[0], c_vals.shape[0], s_vals.shape[0]
-        t0 = base_params[0]
-        x0 = compute_expected_x0_scale(
-            jnp.asarray(mu_grid)[:, None, None], self.salt2alpha,
-            self.salt2beta, s_vals[None, None, :], c_vals[None, :, None])
-        fi = filter_indices
+        if not set(axes) <= {'c', 'x1', 'PKMJD'}:
+            return super().evaluate_redshift_grid(
+                axes, base_params, mu_grid, z_grid, band_weights, band_weights_err,
+                mjds, filter_indices, mask, static_data, error_overrides)
+        names = list(self.get_fit_parameters())
 
-        phases = jnp.where(mask, (mjds - t0) / (1.0 + z_grid[:, None]), 0.0)
+        def values(name):
+            """The axis's values, or the event's own where the grid has no
+            such axis."""
+            if name in axes:
+                return jnp.asarray(axes[name])
+            return base_params[names.index(name)][None]
+
+        c_vals, s_vals, t_vals = values('c'), values('x1'), values('PKMJD')
+        n_z, n_c, n_t = z_grid.shape[0], c_vals.shape[0], t_vals.shape[0]
+        fi = filter_indices
+        # [n_z, n_t, n_obs]
+        phases = jnp.where(mask, (mjds - t_vals[None, :, None])
+                           / (1.0 + z_grid[:, None, None]), 0.0)
 
         cc = jnp.exp((c_vals[:, None] - self.color_offset)
                      * self.colorlaw_basis[None, :])
@@ -1872,39 +1884,52 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         M0e = jnp.einsum('pw,zcfw->zcpf', self.m0, CLW_err)
         M1e = jnp.einsum('pw,zcfw->zcpf', self.m1, CLW_err)
 
-        def per_zc(iz, ic):
-            def interp(surface, at):
-                return hermite_interp_1d_select(
-                    at, self.phases, surface,
-                    compute_catmullrom_slopes(self.phases, surface), fi)
+        def interp(surface, at):
+            return hermite_interp_1d_select(
+                at, self.phases, surface,
+                compute_catmullrom_slopes(self.phases, surface), fi)
 
-            m0v, m1v = interp(M0[iz, ic], phases[iz]), interp(M1[iz, ic], phases[iz])
-            train = self._training_phases(phases[iz])
-            m0e, m1e = interp(M0e[iz, ic], train), interp(M1e[iz, ic], train)
-            side = jnp.where(phases[iz] < self.phases[0], 0, 1)
-            b = bnd[iz, ic][side, :, fi]
+        def read(iz, ic, it):
+            """The integrated surfaces at the phases of one (z, colour, PEAKMJD)."""
+            at = phases[iz, it]
+            train = self._training_phases(at)
+            side = jnp.where(at < self.phases[0], 0, 1)
+            return (interp(M0[iz, ic], at), interp(M1[iz, ic], at),
+                    interp(M0e[iz, ic], train), interp(M1e[iz, ic], train),
+                    bnd[iz, ic][side, :, fi])
+
+        zct = [g.ravel() for g in jnp.meshgrid(
+            jnp.arange(n_z), jnp.arange(n_c), jnp.arange(n_t), indexing='ij')]
+        surfaces = [a.reshape(n_z, n_c, n_t, *a.shape[1:]) for a in vmap(read)(*zct)]
+
+        def point(iz, ic, i_s, it):
+            m0v, m1v, m0e, m1e, b = (a[iz, ic, it] for a in surfaces)
+            at, s = phases[iz, it], s_vals[i_s]
+            x0 = compute_expected_x0_scale(mu_grid[iz], self.salt2alpha,
+                                           self.salt2beta, s, c_vals[ic])
             rest = jnp.where(
                 mask,
                 static_data['filter_mean_wavelengths'][fi] / (1.0 + z_grid[iz]),
                 0.0)
+            flux = self._combine_flux(x0, s, m0v, m1v, b, at, mask, fi,
+                                      static_data, z_grid[iz])
+            frac = jnp.where(mask, self._compute_model_fractional_error(
+                at, rest, (error_overrides or {}).get('x1', s), s,
+                jnp.where(mask, m0e, 1.0), jnp.where(mask, m1e, 0.0),
+                static_data['filter_mean_wavelengths'][fi]), 0.0)
+            return flux, jnp.where(mask, flux_error_from_fracerr(flux, frac), 0.0)
 
-            def per_s(x0_s, s):
-                flux = self._combine_flux(x0_s, s, m0v, m1v, b, phases[iz],
-                                          mask, fi, static_data, z_grid[iz])
-                frac = jnp.where(mask, self._compute_model_fractional_error(
-                    phases[iz], rest, (error_overrides or {}).get('x1', s), s,
-                    jnp.where(mask, m0e, 1.0), jnp.where(mask, m1e, 0.0),
-                    static_data['filter_mean_wavelengths'][fi]), 0.0)
-                return flux, jnp.where(mask, flux_error_from_fracerr(flux, frac), 0.0)
-
-            return vmap(per_s)(x0[iz, ic], s_vals)
-
-        iz, ic = [g.ravel() for g in
-                  jnp.meshgrid(jnp.arange(n_z), jnp.arange(n_c), indexing='ij')]
-        stacked = vmap(per_zc)(iz, ic)
-        perm = (0, *(1 + ('c', 'x1').index(name) for name in axes), 3)
-        return tuple(jnp.transpose(s.reshape(n_z, n_c, n_s, -1), perm)
-                     for s in stacked)
+        # every point, in the order of the caller's axes
+        lengths = [len(axis) for axis in axes.values()]
+        grid = [g.ravel() for g in jnp.meshgrid(
+            jnp.arange(n_z), *map(jnp.arange, lengths), indexing='ij')]
+        index = dict(zip(axes, grid[1:]))
+        # an axis the grid leaves out has only its one value
+        only = jnp.zeros_like(grid[0])
+        flux, flux_err = vmap(point)(grid[0], index.get('c', only),
+                                     index.get('x1', only), index.get('PKMJD', only))
+        shape = (n_z, *lengths, -1)
+        return flux.reshape(shape), flux_err.reshape(shape)
 
     def _amplitude_shifted(self, value, dmu):
         """x0 scales by 10^(-0.4dmu) (snlc_fit.F90:15210), whichever of x0 and

@@ -685,8 +685,15 @@ def _coarse_grid(settings, model, photometry, params, scales, mjd, filter_indice
             sn_fluxcals, sn_fluxcalerrs, sn_z_prior, sn_z_grid, sn_valid_z,
             sn_bw, sn_bw_err, sn_mu, sn_limits):
         sn_phys = sn_params * sn_scales
-        sn_axes = {name: (sn_phys[i][None] if held else axes[name])
-                   for name, i, held in zip(axis_names, axis_idx, held_axes)}
+        sn_axes = {}
+        for name, i, held in zip(axis_names, axis_idx, held_axes):
+            if held:
+                sn_axes[name] = sn_phys[i][None]
+            elif i == T0:
+                # offsets from the event's own PEAKMJD estimate
+                sn_axes[name] = sn_phys[i] + axes[name]
+            else:
+                sn_axes[name] = axes[name]
         if sn_limits is not None:
             sn_axes = {name: jnp.clip(value, sn_limits[0][settings['param_names'].index(name)],
                                      sn_limits[1][settings['param_names'].index(name)])
@@ -718,7 +725,8 @@ def _coarse_grid(settings, model, photometry, params, scales, mjd, filter_indice
                                 error_overrides=error_overrides))
                 flux, fraction = vmap(evaluate)(trial)
                 if model.distance_param is not None and model.distance_param not in settings['held_params']:
-                    keep = sn_mask & restlambda_mask(settings, photometry, sn_filter_indices, z)
+                    keep = sn_mask & restlambda_mask(settings, photometry, sn_filter_indices,
+                                                     z[None])[0]
                     signal = keep & (sn_fluxcals > 3. * sn_fluxcalerrs)
                     variance = sn_fluxcalerrs**2 + flux_error_from_fracerr(flux, fraction)**2
                     cross = jnp.sum(jnp.where(signal, sn_fluxcals*flux/variance, 0.), axis=-1)
