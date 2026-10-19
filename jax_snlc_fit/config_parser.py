@@ -202,8 +202,6 @@ _INERT_KEYS = frozenset({
     'JOBSPLIT_EXTERNAL',
     # declared, never read in the fitter
     'STRETCH_TEMPLATE_FILE',
-    # PEAKMJD axis bounds; jax builds no such axis
-    'RANGET_COURSE_PHOTOZ',
 })
 
 
@@ -1052,11 +1050,6 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     _flt(raw, "PHOTODZ_REJECT", kw)
     _flt(raw, "PHOTODZ1Z_REJECT", kw)
     _pair(raw, "PHOTOZ_ITER1_LAMRANGE", kw)
-    if int(float(raw.get("NBINT_COURSE_PHOTOZ", 1))) > 1:
-        raise SNANAError(
-            "NBINT_COURSE_PHOTOZ > 1 adds a PEAKMJD axis to the photo-z coarse "
-            "grid; jax searches colour, shape and redshift only.",
-            function_name="NBINT_COURSE_PHOTOZ")
     # coarse-grid colour and shape axes (snlc_fit.F90:606-617)
     coarse_grid = {}
     for slot, range_key, nbin_key in (
@@ -1070,6 +1063,8 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     kw["coarse_grid"] = coarse_grid
     _int(raw, "NBINZ_COURSE_PHOTOZ", kw, "nbinz_course")
     _pair(raw, "RANGEZ_COURSE_PHOTOZ", kw, "rangez_course")
+    _int(raw, "NBINT_COURSE_PHOTOZ", kw, "nbint_course")
+    _pair(raw, "RANGET_COURSE_PHOTOZ", kw, "ranget_course")
     _int(raw, "SCALE_NBIN_COURSE_PHOTOZ", kw, "scale_nbin_course")
 
     _int(raw, 'OPT_CHI2_SIGMA', kw)

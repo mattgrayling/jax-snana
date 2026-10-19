@@ -244,9 +244,14 @@ def scan_size(config, z_priors):
 def coarse_grid_axes(config, fit_parameters):
     """The axes the coarse grid searches, one per parameter declaring a
     coarse grid, the input's range and bin count taking precedence and
-    SCALE_NBIN_COURSE_PHOTOZ multiplying every axis (snlc_fit.F90:9455)."""
+    SCALE_NBIN_COURSE_PHOTOZ multiplying every axis (snlc_fit.F90:9455).
+    With NBINT_COURSE_PHOTOZ above 1, a PEAKMJD axis of offsets from each
+    event's estimate joins them (snlc_fit.F90:9352-9364)."""
     scale = config.photoz.scale_nbin_course
     axes = {}
+    if config.photoz.nbint_course > 1:
+        lo, hi = config.photoz.ranget_course
+        axes['PKMJD'] = jnp.linspace(lo, hi, config.photoz.nbint_course * scale)
     for name, spec in fit_parameters.items():
         if 'coarse_grid' not in spec:
             continue
