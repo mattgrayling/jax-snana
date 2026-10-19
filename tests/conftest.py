@@ -21,13 +21,17 @@ from jax_snlc_core.io.fits_path import resolve_fits_path
 from jax_snlc_core.utils.precision import configure_precision
 
 # Persist XLA compilation across runs. The 1.0s default threshold would store
-# almost nothing from this suite.
+# almost nothing from this suite; 0.1s keeps the fit and simulation kernels,
+# which take seconds, and skips the single operations, which compile in
+# milliseconds and would otherwise be nine entries in ten. The cap evicts the
+# least recently used entries so the cache cannot grow without bound.
 if not jax.config.jax_compilation_cache_dir:
     from platformdirs import user_cache_dir
     jax.config.update("jax_compilation_cache_dir",
                       str(Path(user_cache_dir("jax_snana")) / "compilation"))
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+jax.config.update("jax_compilation_cache_max_size", 2 * 1024 ** 3)
 
 REPO_ROOT = Path(__file__).parent.parent
 FIXTURE_ROOT = Path(__file__).parent / "fixtures"

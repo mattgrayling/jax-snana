@@ -7,46 +7,101 @@ on:
   workflow_dispatch:
 
 jobs:
-  unit-and-parity:
-    name: pytest (Python ${{ matrix.python-version }})
+  group:
+    name: pytest (group ${{ matrix.group }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
-        jax-version: ["latest"]
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Cache pip wheels
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          key: pip-${{ runner.os }}-py3.12-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
-            pip-${{ runner.os }}-py${{ matrix.python-version }}-
+            pip-${{ runner.os }}-py3.12-
 
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test,redback]"
-          if [ "${{ matrix.jax-version }}" != "latest" ]; then
-            pip install "jax==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
-          fi
 
-      - name: Check test collection
+      # compiled programs are specific to the CPU they were compiled on
+      - name: Identify the runner's CPU
+        id: cpu
         run: |
-          pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
-            --collect-only --strict-markers
+          echo "id=$(grep -m1 'model name' /proc/cpuinfo | md5sum | cut -c1-8)" >> "$GITHUB_OUTPUT"
+          grep -m1 'model name' /proc/cpuinfo
+
+      - name: Restore the compilation cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/jax_snana/compilation
+          key: jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-${{ github.run_id }}
+          restore-keys: |
+            jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-
 
       - name: Run pytest
-        # one worker keeps peak memory within a hosted runner's limits
         run: |
+          du -sh ~/.cache/jax_snana/compilation || true
+          ( while true; do free -m | awk '/Mem:/{print $3}'; sleep 5; done ) > memory.log &
           pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
-            -n 1 --maxfail=5 \
-            --cov --cov-report=term --cov-fail-under=65
+            -n 2 --splits 4 --group ${{ matrix.group }} \
+            --store-durations --durations-path durations-${{ matrix.group }}.json \
+            --durations=30 --cov --cov-report=
+          echo "peak memory used: $(sort -n memory.log | tail -1) MB"
+          echo "cache: $(du -sh ~/.cache/jax_snana/compilation | cut -f1), $(ls ~/.cache/jax_snana/compilation | wc -l) files"
+          mv .coverage coverage-${{ matrix.group }}
+
+      - name: Save the compilation cache
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-experiment'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/jax_snana/compilation
+          key: jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: group-${{ matrix.group }}
+          path: |
+            coverage-${{ matrix.group }}
+            durations-${{ matrix.group }}.json
+          include-hidden-files: true
+
+  # the single required check: every group passed and coverage holds
+  combine:
+    name: pytest (Python 3.12)
+    needs: group
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every group passed
+        run: test "${{ needs.group.result }}" = "success"
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: group-*
+          merge-multiple: true
+
+      - name: Combine coverage
+        run: |
+          pip install coverage
+          for f in coverage-*; do mv "$f" ".coverage.${f#coverage-}"; done
+          coverage combine
+          coverage report --fail-under=65
