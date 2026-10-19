@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
@@ -53,14 +53,25 @@ jobs:
       - name: Run pytest
         run: |
           du -sh ~/.cache/jax_snana/compilation || true
-          ( while true; do free -m | awk '/Mem:/{print $3}'; sleep 5; done ) > memory.log &
+          # every 10 s: total memory used and the five largest processes
+          ( while true; do
+              echo "== $(date -u +%H:%M:%S) used $(free -m | awk '/Mem:/{print $3}') MB"
+              ps -eo rss=,args= --sort=-rss | head -5 | awk '{rss=$1; $1=""; printf "%7d MB %s\n", rss/1024, $0}' | cut -c1-300
+              sleep 10
+            done ) > memory.log &
+          cp .test_durations durations-${{ matrix.group }}.json
+          status=0
           pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
-            -n 2 --splits 4 --group ${{ matrix.group }} \
+            -n 2 --splits 6 --group ${{ matrix.group }} -v \
             --store-durations --durations-path durations-${{ matrix.group }}.json \
-            --durations=30 --cov --cov-report=
-          echo "peak memory used: $(sort -n memory.log | tail -1) MB"
+            --durations=30 --cov --cov-report= || status=$?
+          echo "busiest moment:"
+          awk '/^== /{if (used > best) {best = used; peak = block}; block = ""; used = $4}
+               {block = block $0 "\n"}
+               END {if (used > best) peak = block; printf "%s", peak}' memory.log
           echo "cache: $(du -sh ~/.cache/jax_snana/compilation | cut -f1), $(ls ~/.cache/jax_snana/compilation | wc -l) files"
-          mv .coverage coverage-${{ matrix.group }}
+          mv .coverage coverage-${{ matrix.group }} || true
+          exit $status
 
       - name: Save the compilation cache
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-experiment'
@@ -70,11 +81,13 @@ jobs:
           key: jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: group-${{ matrix.group }}
           path: |
             coverage-${{ matrix.group }}
             durations-${{ matrix.group }}.json
+            memory.log
           include-hidden-files: true
 
   # the single required check: every group passed and coverage holds
