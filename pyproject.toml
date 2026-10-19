@@ -50,7 +50,7 @@ Issues = "https://github.com/mattgrayling/jax-snana/issues"
 [project.optional-dependencies]
 docs = ["sphinx>=7.0", "myst-parser>=2.0", "sphinx-rtd-theme>=2.0"]
 # docs is included in test so test_docs_build.py runs rather than skips
-test = ["pytest", "pytest-xdist", "pytest-cov", "hypothesis",
+test = ["pytest", "pytest-xdist", "pytest-cov", "pytest-split", "filelock", "hypothesis",
         "sphinx>=7.0", "myst-parser>=2.0", "sphinx-rtd-theme>=2.0"]
 redback = ["redback-jax>=0.4.1"]
 

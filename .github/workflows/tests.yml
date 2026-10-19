@@ -7,46 +7,83 @@ on:
   workflow_dispatch:
 
 jobs:
-  unit-and-parity:
-    name: pytest (Python ${{ matrix.python-version }})
+  group:
+    name: pytest (group ${{ matrix.group }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
-        jax-version: ["latest"]
+        group: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip wheels
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            pip-${{ runner.os }}-py${{ matrix.python-version }}-
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install package + test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test,redback]"
-          if [ "${{ matrix.jax-version }}" != "latest" ]; then
-            pip install "jax==${{ matrix.jax-version }}" "jaxlib==${{ matrix.jax-version }}"
-          fi
+        run: pip install -e ".[test,redback]"
 
-      - name: Check test collection
+      # compiled programs are specific to the CPU they were compiled on
+      - name: Identify the runner's CPU
+        id: cpu
         run: |
-          pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
-            --collect-only --strict-markers
+          echo "id=$(grep -m1 'model name' /proc/cpuinfo | md5sum | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the compilation cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/jax_snana/compilation
+          key: jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-${{ github.run_id }}
+          restore-keys: |
+            jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-
 
       - name: Run pytest
-        # one worker keeps peak memory within a hosted runner's limits
+        env:
+          COVERAGE_FILE: coverage-${{ matrix.group }}
         run: |
           pytest tests/unit tests/integration tests/parity tests/smoke tests/perf \
-            -n 1 --maxfail=5 \
-            --cov --cov-report=term --cov-fail-under=65
+            -n 2 --maxfail=5 --splits 6 --group ${{ matrix.group }} \
+            --cov --cov-report=
+
+      - name: Save the compilation cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/jax_snana/compilation
+          key: jax-${{ steps.cpu.outputs.id }}-g${{ matrix.group }}-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: group-${{ matrix.group }}
+          path: coverage-${{ matrix.group }}
+
+  combine:
+    name: pytest (Python 3.12)
+    needs: group
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every group passed
+        run: test "${{ needs.group.result }}" = "success"
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: group-*
+          merge-multiple: true
+
+      - name: Combine coverage
+        run: |
+          pip install coverage
+          coverage combine coverage-*
+          coverage report --fail-under=65
