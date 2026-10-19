@@ -247,9 +247,10 @@ The error fudge keys inflate the measurement errors, everywhere with
 the `FUDGE_FITERR_` family.
 
 The reference cosmology sets the reference distance modulus written with each
-fit. The fit does not constrain it, and the cosmology is measured later, in
-the {doc}`cosmology stage <cosmology>`. Use the same values in a simulation
-and in the fit of that simulation.
+fit. The fit does not constrain it, other than through the photometric
+redshift distance priors below, and the cosmology is measured later, in the
+{doc}`cosmology stage <cosmology>`. Use the same values in a simulation and in
+the fit of that simulation.
 
 `BATCH_SIZE`, `NUM_NOBS_BINS` and `MIN_BIN_GAIN` set how the sample is split
 into the compiled calls that fit many events at once, and do not change the
@@ -316,6 +317,15 @@ in that interval are excluded. Missing or non-increasing quantiles stop the
 run by default; `ABORT_ON_MISSING_QZPHOT = F` and
 `ABORT_ON_BADQZPHOT = F`, respectively, exclude those events instead.
 {doc}`light_curve_data` describes the quantile columns.
+
+A distance prior ties the fitted distance to the fitted redshift through the
+reference cosmology, which helps most when an event has no other redshift
+information. `PRIOR_MUERRSCALE` adds a Gaussian prior on the fitted distance
+less the reference cosmology's, whose width is how far that distance moves
+under the `OMAT_REF`, `W0_REF` and `WA_REF` uncertainties, multiplied by the
+scale. `PRIOR_DMU_RANGE` instead keeps that difference within a range, rolling
+off outside it with width `PRIOR_DMU_SIGMA`. Only one of the two can be set,
+and as in SNANA a `PRIOR_MUERRSCALE` of 9 or more applies no prior.
 
 The chi-squared can have multiple minima in redshift, so the fit first
 evaluates a coarse grid over redshift and the model's declared axes (colour

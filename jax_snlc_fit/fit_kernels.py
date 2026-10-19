@@ -17,7 +17,8 @@ from jax import vmap
 from jax_snlc_core.models.base import ratio_to_dmu
 from jax_snlc_core.models.fitted import flux_error_from_fracerr
 from jax_snlc_core.photometry.filter_system import mw_attenuation_rest
-from jax_snlc_core.utils.interp import compute_catmullrom_slopes, hermite_interp_1d_batch
+from jax_snlc_core.utils.interp import (compute_catmullrom_slopes, hermite_interp_1d,
+                                        hermite_interp_1d_batch)
 from jax_snlc_core.utils.newton_lm import newton_lm, _grad_and_hess
 from jax_snlc_core.utils.precision import float_dtype
 
@@ -150,7 +151,7 @@ def _redshifts(settings, params, scales, z_data):
 def _z_prior_chi2(settings, z, z_prior):
     """One event's redshift-prior chi2 at ``z``: SNANA's
     CHI2PRIOR(IPAR_zPHOT) (snlc_fit.F90:4903-4921), zero where OPT_PRIOR
-    leaves it out (:4891)."""
+    leaves it out (:4868)."""
     if settings['config'].model.opt_prior <= 0:
         return jnp.zeros(())
     def gaussian():
@@ -166,6 +167,34 @@ def _z_prior_chi2(settings, z, z_prior):
                 z_prior.pdf_slopes, z_prior.pdf_max),
             gaussian)
     return gaussian()
+
+
+# SNANA tabulates the PRIOR_MUERRSCALE prior over pulls of -10 to 10 and
+# CHI2_PRIOR clamps into the table, so a larger pull costs no more
+# (FITINI_MUPRIOR, snlc_fit.F90:11706; CHI2_PRIOR, :12413)
+MUPULL_MAX = 10.0
+
+
+def _distance_prior_chi2(settings, mu, z):
+    """The distance-prior chi2 of a source at distance modulus ``mu`` and
+    redshift ``z``, which broadcast: CHI2PRIOR(IPAR_DLMAG) under photo-z
+    (snlc_fit.F90:4910-4917), zero where OPT_PRIOR leaves priors out
+    (:4868). PRIOR_MUERRSCALE is a Gaussian on the offset from the reference
+    distance, PRIOR_DMU_RANGE a flat window on it."""
+    cfg = settings['config']
+    if cfg.model.opt_prior <= 0:
+        return jnp.zeros(())
+    tables = settings['distance_prior']
+    ln_z = jnp.log(z)
+    dmu = mu - hermite_interp_1d(ln_z, tables['ln_z'], tables['mu'], tables['mu_slopes'])
+    if cfg.photoz.prior_muerrscale is not None:
+        sigma = hermite_interp_1d(ln_z, tables['ln_z'], tables['sigma'],
+                                  tables['sigma_slopes'])
+        return jnp.clip(dmu / (cfg.photoz.prior_muerrscale * sigma),
+                        -MUPULL_MAX, MUPULL_MAX) ** 2
+    lo, hi = cfg.photoz.prior_dmu_range
+    return priors.FORMS['flat_rolloff'](
+        dmu, {'lo': lo, 'hi': hi, 'sigma': cfg.photoz.prior_dmu_sigma})
 
 
 def _bands(settings, photometry, z_weights, z_data, bw, mw_attenuation):
@@ -255,6 +284,9 @@ def _sn_chi2(settings, model, strategy, photometry, p_scaled, start, scales, mjd
     chi2 = chi2 + priors.prior_chi2(model_params, settings['priors'], prior_data)
     if photo:
         chi2 = chi2 + _z_prior_chi2(settings, z, z_prior)
+        if settings['distance_prior'] is not None:
+            chi2 = chi2 + _distance_prior_chi2(
+                settings, model.distance_of(p, settings['param_names']), z)
     return chi2
 
 
@@ -758,7 +790,13 @@ def _coarse_grid(settings, model, photometry, params, scales, mjd, filter_indice
             keep, (sn_fluxcals - flux * ratio[..., None]) ** 2 / sigma2, 0.0),
             axis=-1)
         prior = vmap(lambda z: _z_prior_chi2(settings, z, sn_z_prior))(sn_z_grid)
-        chi2 = jnp.where(sn_valid_z[:, None], chi2 + prior[:, None], jnp.inf)
+        chi2 = chi2 + prior[:, None]
+        if settings['distance_prior'] is not None:
+            # each point's distance after the amplitude rescaling
+            mu = (sn_mu[:, None] + ratio_to_dmu(ratio) if candidates is None
+                  else model.distance_of(candidates, settings['param_names']))
+            chi2 = chi2 + _distance_prior_chi2(settings, mu, sn_z_grid[:, None])
+        chi2 = jnp.where(sn_valid_z[:, None], chi2, jnp.inf)
 
         iz, ip = jnp.unravel_index(jnp.argmin(chi2), chi2.shape)
         if candidates is not None:

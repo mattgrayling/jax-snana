@@ -1121,6 +1121,12 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         return self._x0_to_amplitude(compute_expected_x0_scale(
             mu, self.salt2alpha, self.salt2beta, params['x1'], params['c']))
 
+    def _distance_at_amplitude(self, value, params):
+        """The distance modulus FCNSNLC forms from SALT's parameters,
+        30 - 2.5 log10(x0) + alpha x1 - beta c (snlc_fit.F90:4832)."""
+        return (-2.5 * jnp.log10(X0SCALE_SALT2 * self._amplitude_to_x0(value))
+                + self.salt2alpha * params['x1'] - self.salt2beta * params['c'])
+
     @classmethod
     def load(cls, model_path: str, config, n_wave_points=500,
              wavelength_range=None):

@@ -515,6 +515,19 @@ class SNModel(ABC):
         distance modulus."""
         return mu
 
+    def _distance_at_amplitude(self, value, params):
+        """The distance modulus of a source with amplitude ``value``, in
+        physical units: the inverse of :meth:`_amplitude_at_distance`, with
+        ``params`` as there. Default: the amplitude is the distance modulus."""
+        return value
+
+    def distance_of(self, physical, names):
+        """The distance modulus the fit vector ``physical``, in physical units
+        and laid out as ``names``, places the source at: the inverse of
+        :meth:`params_at_distance`."""
+        params = {n: physical[..., k] for k, n in enumerate(names)}
+        return self._distance_at_amplitude(params[self.distance_param], params)
+
     def shift_amplitude(self, params, dmu, scales=1.0, names=None):
         """``params`` with the amplitude moved ``dmu`` magnitudes fainter.
 

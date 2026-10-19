@@ -160,6 +160,14 @@ def resolve_settings(config):
         photoz.opt_photoz |= 4
     if photoz.opt_photoz & 2 and photoz.prior_zerrscale == PRIOR_ZERRSCALE_UNSET:
         photoz.prior_zerrscale = 1.0
+    gaussian_mu_prior = photoz.prior_muerrscale is not None
+    flat_mu_prior = photoz.prior_dmu_range is not None
+    if gaussian_mu_prior and flat_mu_prior:
+        raise SNANAError('PRIOR_MUERRSCALE and PRIOR_DMU_RANGE are both distance '
+                         'priors; set one of them')
+    if (gaussian_mu_prior or flat_mu_prior) and not photoz.dofit_photoz:
+        raise SNANAError('the distance priors PRIOR_MUERRSCALE and PRIOR_DMU_RANGE '
+                         'apply only to photometric-redshift fits')
     if fit.opt_chi2_sigma not in (0, 1):
         raise SNANAError('opt_chi2_sigma must be 0 or 1')
     if photoz.dofit_photoz:

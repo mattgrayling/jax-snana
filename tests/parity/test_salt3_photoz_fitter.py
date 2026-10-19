@@ -85,6 +85,28 @@ def test_photoz_bound_bounds_the_fit(snana_fixture):
     assert len(differ) <= 2, f"events at the bound differ: {sorted(differ)}"
 
 
+@pytest.mark.parametrize("name", ["salt3_fit_photoz_muprior",
+                                  "salt3_fit_photoz_dmuprior"])
+def test_distance_prior_matches_snana(snana_fixture, name):
+    """PRIOR_MUERRSCALE and PRIOR_DMU_RANGE tie the fitted distance to the
+    reference cosmology's at the fitted redshift (CHI2PRIOR(IPAR_DLMAG),
+    snlc_fit.F90:4910). With no other redshift information either prior
+    moves many fitted redshifts by more than the tolerance here, so the match
+    shows the prior applied as SNANA applies it. Fits on the light curve alone
+    can settle in different local minima, so two events may differ."""
+    fx = snana_fixture(name)
+    results, _, _ = _photoz_fit(fx, snana_fixture("salt3_fit_photoz"))
+    snana_rows = parse_fitres(fx.root / "FITRES.TEXT")
+    both = [(cid, z) for cid, z in zip(np.asarray(results.snids).astype(int),
+                                       np.asarray(results.params["zPHOT"]))
+            if cid in snana_rows and snana_rows[cid].get("ERRFLAG_FIT", 0) == 0]
+    assert len(both) >= 35, f"too few cross-matched fits ({len(both)})"
+    # SNANA writes the fitted redshift as zHEL (SKIPTABLE_FITPAR drops zPHOT)
+    differ = {cid: (round(float(z), 4), snana_rows[cid]["zHEL"]) for cid, z in both
+              if abs(z - snana_rows[cid]["zHEL"]) > 0.002}
+    assert len(differ) <= 2, f"fitted z differs from SNANA's (jax, SNANA): {differ}"
+
+
 def test_photoz_batch_independence(snana_fixture):
     """A band-set repeat for one event must not affect its batch companion."""
     from jax_snlc_fit import photoz

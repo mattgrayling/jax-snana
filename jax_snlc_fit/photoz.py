@@ -27,6 +27,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from jax_snlc_core.physics.cosmology import reference_distance_modulus
 from jax_snlc_core.utils import SNANA_NULLFLOAT, ZSPEC_SOURCE_MASK
 from jax_snlc_core.utils.interp import compute_catmullrom_slopes, hermite_interp_1d
 from .loss_functions import precompute_zpdf_spline
@@ -76,6 +77,44 @@ def photoz_nz_per_sn(cfg, zot_lo, zot_hi, xp):
         n_z = (xp.floor(PHOTOZ_GRID_DENSITY
                         * (zot_hi - zot_lo)).astype(int) + 1)
     return xp.maximum(n_z * cfg.photoz.scale_nbin_course, 1)
+
+
+# points on the distance priors' ln z grid; the interpolated reference
+# distance stays within 1e-6 mag of the exact one across PHOTOZ_BOUND
+DISTANCE_PRIOR_NZ = 4000
+# SNANA's correlation between the W0_REF and WA_REF uncertainties in the
+# PRIOR_MUERRSCALE width (PRIOR_MUPULL, snlc_fit.F90:12610)
+RHO_W0WA = -0.8
+
+
+def distance_prior_tables(config):
+    """The distance priors' reference distance modulus and the
+    PRIOR_MUERRSCALE width on a grid uniform in ln z across PHOTOZ_BOUND,
+    with their Hermite slopes, so the fit interpolates rather than integrating
+    the cosmology at every step; None without a distance prior.
+
+    The width is how far the reference distance moves when OMAT_REF, W0_REF
+    and WA_REF each shift by their uncertainty, added in quadrature with the
+    W0_REF-WA_REF correlation; OLAM_REF stays put and H0_REF's uncertainty is
+    not used (PRIOR_MUPULL, snlc_fit.F90:12544-12621).
+    """
+    photoz, fit = config.photoz, config.fit
+    if photoz.prior_muerrscale is None and photoz.prior_dmu_range is None:
+        return None
+    ln_z = jnp.linspace(*np.log(photoz.photoz_bound), DISTANCE_PRIOR_NZ)
+
+    def distance(omat=fit.omat_ref[0], w0=fit.w0_ref[0], wa=fit.wa_ref[0]):
+        return reference_distance_modulus(
+            jnp.exp(ln_z), fit.h0_ref[0], omat, fit.olam_ref[0], w0, wa)
+
+    mu = distance()
+    d_omat = distance(omat=fit.omat_ref[0] + fit.omat_ref[1]) - mu
+    d_w0 = distance(w0=fit.w0_ref[0] + fit.w0_ref[1]) - mu
+    d_wa = distance(wa=fit.wa_ref[0] + fit.wa_ref[1]) - mu
+    sigma = jnp.sqrt(d_omat ** 2 + d_w0 ** 2 + d_wa ** 2 + 2.0 * RHO_W0WA * d_w0 * d_wa)
+    return {'ln_z': ln_z,
+            'mu': mu, 'mu_slopes': compute_catmullrom_slopes(ln_z, mu),
+            'sigma': sigma, 'sigma_slopes': compute_catmullrom_slopes(ln_z, sigma)}
 
 
 # no-host STD and the DOFIT_PHOTOZ_HOST gate (snlc_fit.F90:8522, :13961)
