@@ -107,6 +107,10 @@ FIXTURES: list[Fixture] = [
             fit_nml="fit.nml", sim_from="salt3_fit_dense"),
     Fixture(name="salt3_fit_photoz_bound",
             genversion="JAX_TEST_SALT3_FIT_PHOTOZ", fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
+    Fixture(name="salt3_fit_photoz_muprior",
+            genversion="JAX_TEST_SALT3_FIT_PHOTOZ", fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
+    Fixture(name="salt3_fit_photoz_dmuprior",
+            genversion="JAX_TEST_SALT3_FIT_PHOTOZ", fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
     Fixture(name="salt3_fit_magcor", genversion="JAX_TEST_SALT3_FIT_DENSE",
             fit_nml="fit.nml", sim_from="salt3_fit_dense"),
     Fixture(name="salt3_fit_fudge", genversion="JAX_TEST_SALT3_FIT_DENSE",
@@ -517,7 +521,10 @@ def regenerate_fixture(fx: Fixture, snana_version: str, *, out_dir: Path | None 
                 fit_provenance = f"JAX fitter revision: `{revision}`\n"
             else:
                 fit_cmd = ["snlc_fit.exe", str(fx.fit_nml_file)]
-            fit_provenance += f"Fit command: `{shlex.join(fit_cmd)}`\n"
+            # recorded as run from the repository, so no machine path is kept
+            shown = ["python", "snlc_fit.py"] if fx.fit_with_jax else ["snlc_fit.exe"]
+            shown.append(str(fx.fit_nml_file.relative_to(HERE.parents[1])))
+            fit_provenance += f"Fit command: `{shlex.join(shown)}`\n"
             fit_provenance += ("Fit environment: `JAX_TEST_FIXTURE_ROOT=fixtures`, "
                                "`JAX_TEST_FIT_SIM_DIR` points to the private simulation directory.\n")
             with fit_log.open("w") as log_fp:

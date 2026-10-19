@@ -153,9 +153,8 @@ _REJECTED_OPTIONS = {
         'FRACERRDIF_REPEATFIT'),
     **_refused('priors on a second light-curve shape parameter are not supported',
         'PRIOR_SHAPE2_RANGE', 'PRIOR_SHAPE2_SIGMA'),
-    **_refused('a distance prior constrained by a reference cosmology is not supported',
-        'PRIOR_DMU_RANGE', 'PRIOR_DMU_SIGMA', 'DOPRIOR_DLMAG',
-        PRIOR_MUERRSCALE=lambda v: v >= 999.0),
+    **_refused('DOPRIOR_DLMAG follows from PRIOR_MUERRSCALE; set that instead',
+        'DOPRIOR_DLMAG'),
     **_refused('MLCS2k2 fitting is not supported',
         'PRIOR_DELTA_PROFILE'),
     **_refused('correcting input photometry for Milky Way extinction is not supported; extinction is applied to the model',
@@ -1046,6 +1045,11 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     _bool(raw, "DOFIT_PHOTOZ", kw)
     _int(raw, "OPT_PHOTOZ", kw)
     _flt(raw, "PRIOR_ZERRSCALE", kw)
+    # SNANA applies no prior for a scale of 9 or more (snlc_fit.F90:4910);
+    # namelists write 100 or 1000 to switch it off
+    if "PRIOR_MUERRSCALE" in raw:
+        scale = float(raw["PRIOR_MUERRSCALE"])
+        kw["prior_muerrscale"] = scale if scale < 9.0 else None
     _pair(raw, "PHOTOZ_BOUND", kw)
     _flt(raw, "PHOTODZ_REJECT", kw)
     _flt(raw, "PHOTODZ1Z_REJECT", kw)

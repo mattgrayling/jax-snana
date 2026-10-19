@@ -731,11 +731,12 @@ class Fit:
 
     # Reference cosmology
     #: SNANA H0_REF; the Hubble constant in km/s/Mpc, and optionally its
-    #: uncertainty, that the reference distance modulus is computed at. The
-    #: uncertainties do not affect the fit.
+    #: uncertainty, that the reference distance modulus is computed at. Its
+    #: uncertainty does not affect the fit.
     h0_ref: Tuple[float, float] = (70.0, 7.0)
     #: SNANA OMAT_REF; the matter density today, and optionally its
-    #: uncertainty.
+    #: uncertainty, which with those of W0_REF and WA_REF sets the width of
+    #: the PRIOR_MUERRSCALE distance prior.
     omat_ref: Tuple[float, float] = (0.315, 0.03)
     #: SNANA OLAM_REF; the dark-energy density today, and optionally its
     #: uncertainty.
@@ -818,6 +819,20 @@ class PhotoZ:
     prior_zerrscale: float = PRIOR_ZERRSCALE_UNSET
     #: SNANA PHOTOZ_BOUND; lower and upper bounds on the fitted redshift.
     photoz_bound: Tuple[float, float] = (1e-6, 1.4)
+
+    # Distance priors
+    #: SNANA PRIOR_MUERRSCALE; a Gaussian prior tying the fitted distance to
+    #: the reference cosmology's at the fitted redshift. Its width is how far
+    #: the reference distance moves under the OMAT_REF, W0_REF and WA_REF
+    #: uncertainties, multiplied by this scale. None applies no such prior.
+    prior_muerrscale: Optional[float] = None
+    #: SNANA PRIOR_DMU_RANGE; a flat prior on the fitted distance less the
+    #: reference cosmology's at the fitted redshift, within this range. None
+    #: applies no such prior.
+    prior_dmu_range: Optional[Tuple[float, float]] = None
+    #: SNANA PRIOR_DMU_SIGMA; the width of the Gaussian roll-off outside
+    #: PRIOR_DMU_RANGE.
+    prior_dmu_sigma: float = 0.1
     #: SNANA SKIP_PHOTOZ_INIT; skip the coarse redshift grid for the events
     #: with no usable host redshift, starting those at the middle of
     #: PHOTOZ_BOUND instead.

@@ -166,6 +166,13 @@ def resolved_config(config, model):
             "DOFIT_PHOTOZ with INISTP_DLMAG=0 requests a cosmology-constrained "
             "amplitude, which is not implemented. Use a free amplitude.",
             function_name="resolved_config")
+    if model.distance_param is None and (
+            config.photoz.prior_muerrscale is not None
+            or config.photoz.prior_dmu_range is not None):
+        raise SNANAError(
+            "PRIOR_MUERRSCALE and PRIOR_DMU_RANGE constrain a fitted distance, "
+            f"which {type(model).__name__} does not have.",
+            function_name="resolved_config")
     result = dataclasses.replace(config, model=dataclasses.replace(
         config.model, **resolve_parameter_keys(
             config.model, list(fit_parameters(config, model)),
@@ -490,6 +497,7 @@ class LightCurveFitter:
             'n_filters': self.n_filters,
             'n_z': self.n_z,
             'restlambda_usefit': self.restlambda_usefit,
+            'distance_prior': photoz.distance_prior_tables(config),
             'colour_dispersion': self.colour_dispersion,
             'full_covariance': self.full_covariance,
             'fudge_mag_coverr_r': self.fudge_mag_coverr_r,
@@ -1178,11 +1186,16 @@ class LightCurveFitter:
     def _prior_chi2(self, physical, prior_data, z_priors):
         """Every event's prior chi2 at the physical parameters: the model
         parameters' priors, and under photo-z the redshift's
-        (CHI2PRIOR(IPAR_zPHOT), snlc_fit.F90:4903)."""
+        (CHI2PRIOR(IPAR_zPHOT), snlc_fit.F90:4903) and any distance prior's
+        (CHI2PRIOR(IPAR_DLMAG), :4910)."""
         chi2 = vmap(lambda p, d: priors.prior_chi2(p, self.priors, d))(
             physical[:, :self.n_model_params], prior_data)
         if self.config.photoz.dofit_photoz:
             chi2 = chi2 + vmap(self._z_prior_chi2)(physical[:, -1], z_priors)
+            if self._kernel_settings['distance_prior'] is not None:
+                chi2 = chi2 + fit_kernels._distance_prior_chi2(
+                    self._kernel_settings,
+                    self.model.distance_of(physical, self.param_names), physical[:, -1])
         return chi2
 
     def _ndof(self, mask):
