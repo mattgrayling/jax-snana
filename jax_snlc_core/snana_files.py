@@ -17,12 +17,10 @@ A model's own formats live with the model in :mod:`jax_snlc_core.models`,
 and a format only one program reads lives in that program's package.
 """
 
-import csv
 import functools
 import gzip
 import io
 import logging
-import mmap
 import os
 from dataclasses import dataclass, field as dc_field
 from pathlib import Path
@@ -87,49 +85,47 @@ def resolve_fits_path(path, required=False):
 
 
 def read_fits_table(path):
-    """Read a SNANA primary header and decoded Astropy table in native byte order.
+    """The primary header and the binary table of a SNANA FITS file, plain
+    or ``.gz``, as an Astropy table in the machine's byte order.
 
-    Read the table once into a buffer, in bounded chunks even for gzip files.
-    Astropy decodes that buffer, including logical flags, scaling and shapes;
-    ordinary numeric columns remain views rather than whole-table copies.
+    astropy parses the two headers; the rows stream from the file into one
+    buffer that is byte-swapped in place, so the table is held once and
+    never copied. SNANA writes an empty primary HDU and one unscaled table;
+    a ``TSCALn``/``TZEROn`` column is refused rather than read raw.
     """
     path = Path(path)
-    opener = gzip.open if path.suffix == '.gz' else open
-    try:
-        with opener(path, 'rb') as stream:
-            primary = fits.Header.fromfile(stream)
-            if primary['NAXIS'] and all(primary[f'NAXIS{i}'] > 0
-                                        for i in range(1, primary['NAXIS'] + 1)):
-                raise ValueError("SNANA requires an empty primary HDU")
-            header = fits.Header.fromfile(stream)
-            if header['XTENSION'] != 'BINTABLE':
-                raise ValueError("SNANA requires a binary table after the primary HDU")
-            encoded = header.tostring().encode('ascii')
-            size = header['NAXIS1'] * header['NAXIS2'] + header['PCOUNT']
-            buffer = mmap.mmap(-1, len(encoded) + size)
-            buffer[:len(encoded)] = encoded
-            view = memoryview(buffer)
-            offset = len(encoded)
-            while offset < len(buffer):
-                count = stream.readinto(view[offset:offset + (1 << 20)])
-                if not count:
-                    raise ValueError("file ends before its table is complete")
-                offset += count
-        hdu = fits.BinTableHDU.fromstring(buffer, character_as_bytes=True, uint=True)
-        table = Table(hdu.data, copy=False)
-        # Unconverted columns view these records; Astropy's converted columns
-        # already have native byte order. Swap row blocks to stay in cache.
-        records = hdu.data.view(np.ndarray)
-        columns = [column for column in table.itercols() if not column.dtype.isnative]
-        block_rows = max(1, (1 << 20) // max(1, header['NAXIS1']))
-        for start in range(0, len(table), block_rows):
-            records[start:start + block_rows].byteswap(inplace=True)
-        for column in columns:
-            column.dtype = column.dtype.newbyteorder('=')
-        return primary, table
-    except (OSError, ValueError, TypeError) as exc:
-        raise SNANAError(f"Cannot read {path}: {exc}",
-                         function_name="read_fits_table") from exc
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rb") as stream:
+        primary = fits.Header.fromfile(stream)
+        header = fits.Header.fromfile(stream)
+        fields = range(1, header["TFIELDS"] + 1)
+        scaled = [header[f"TTYPE{i}"] for i in fields
+                  if f"TSCAL{i}" in header or f"TZERO{i}" in header]
+        if scaled:
+            raise SNANAError(f"{path}: scaled columns {scaled} are not "
+                             "SNANA's format", function_name="read_fits_table")
+        columns = fits.ColDefs([fits.Column(name=header[f"TTYPE{i}"],
+                                            format=header[f"TFORM{i}"])
+                                for i in fields])
+        stored = columns.dtype.newbyteorder(">")
+        rows = bytearray(header["NAXIS2"] * stored.itemsize)
+        view = memoryview(rows)
+        done = 0
+        # A gzip stream inflates each read through a temporary of the size
+        # asked for, so read a piece at a time.
+        while done < len(rows):
+            got = stream.readinto(view[done:done + (1 << 20)])
+            if not got:
+                raise SNANAError(f"{path}: file ends {len(rows) - done} "
+                                 "bytes short of its table",
+                                 function_name="read_fits_table")
+            done += got
+    table = np.frombuffer(rows, stored)
+    # Keep a block in cache while NumPy visits its individual columns.
+    block_rows = max(1, (1 << 20) // stored.itemsize)
+    for start in range(0, len(table), block_rows):
+        table[start:start + block_rows].byteswap(inplace=True)
+    return primary, Table(table.view(stored.newbyteorder("=")), copy=False)
 
 
 def open_text(path):
@@ -461,11 +457,6 @@ def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS) ->
         if varnames is None:
             raise SNANAError(f"No VARNAMES line found in {path}",
                              function_name="read_fitres")
-        if not varnames:
-            raise SNANAError(
-                f"No column names found in VARNAMES for {path}",
-                function_name="read_fitres",
-            )
 
         rows = io.StringIO()
         for line_number, line in enumerate(f, start=1):
@@ -481,9 +472,8 @@ def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS) ->
     rows.seek(0)
     df = pd.read_csv(
         rows, sep=r"\s+", comment="#", header=None, names=[_ROWKEY] + varnames,
-        usecols=range(len(varnames) + 1),
-        quoting=csv.QUOTE_NONE, dtype=str if as_text else None,
-        # IDs remain literal tokens, including leading zeros and "NA".
+        usecols=range(len(varnames) + 1), dtype=str if as_text else None,
+        # IDs remain literal tokens, including leading zeros.
         converters=None if as_text else {
             name: str for name in ('CID', 'SNID') if name in varnames},
         keep_default_na=not as_text,

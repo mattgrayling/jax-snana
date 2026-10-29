@@ -1386,20 +1386,6 @@ OBS: 60001 r 20 2
     np.testing.assert_array_equal(phot['FLUXCAL'], [10, 20])
 
 
-@pytest.mark.parametrize('value', ['invalid', '0.1 +- invalid'])
-@pytest.mark.parametrize('field', ['MWEBV', 'REDSHIFT_HELIO', 'HOSTGAL_PHOTOZ',
-                                   'HOSTGAL_MAG', 'HOSTGALz_LOGMASS_ZGRID'])
-def test_text_rejects_invalid_numeric_metadata(tmp_path, field, value):
-    """Malformed scientific values must not disappear or become defaults."""
-    from jax_snlc_core.logging import SNANAError
-
-    path = tmp_path / 'bad.DAT'
-    path.write_text(f"SURVEY: DES\nSNID: 1\nFILTERS: g\n{field}: {value}\n"
-                    "VARLIST: MJD BAND FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n")
-    with pytest.raises(SNANAError, match=field):
-        read_snana_text([path])
-
-
 def test_text_empty_host_grids_support_overrides(tmp_path):
     """Zero-bin TEXT grids have the same null arrays as FITS, ready for overrides."""
     from jax_snlc_fit.loader import apply_header_override

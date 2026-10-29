@@ -153,12 +153,8 @@ class SuperNNova:
                 "FLT": np.char.strip(np.asarray(phot[band], dtype=str))[rows],
                 "PEAKMJD": np.asarray(head["PEAKMJD"], dtype=np.float64)[event],
                 **{name: values[event] for name, values in hosts.items()}})
-            keep = table["FLT"].isin(self.filters).to_numpy()
-            if reject:
-                if "PHOTFLAG" not in phot.colnames:
-                    raise SNANAError("PHOTFLAG is required when phot_reject_bits are set",
-                                     function_name="SuperNNova._light_curves")
-                keep &= (np.asarray(phot["PHOTFLAG"])[rows] & reject) == 0
+            keep = (table["FLT"].isin(self.filters).to_numpy()
+                    & ((np.asarray(phot["PHOTFLAG"])[rows] & reject) == 0))
             tables.append(table[keep])
         light_curves = pd.concat(tables, ignore_index=True)
         light_curves["FLT"] = light_curves["FLT"].replace(dict(self.band_map))

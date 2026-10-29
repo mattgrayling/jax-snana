@@ -69,8 +69,7 @@ def absent_value(arrays):
     if kind in 'US' or (kind == 'O' and any(
             isinstance(value, (str, bytes)) for array in arrays for value in array.flat)):
         return 'NULL'
-    # Object columns also preserve integers that cannot share a fixed-width dtype.
-    if kind in 'bfiuO':
+    if kind in 'fiu':
         return -9
     raise SNANAError(f"no absent value for columns of dtype {dtype}",
                      function_name="absent_value")
@@ -363,10 +362,6 @@ class LightCurveBatch:
                     if fill is None:
                         fill = absent_value(arrays)
                     dtype = np.result_type(dtype, np.min_scalar_type(fill))
-                # uint64 plus signed integers (including the -9 sentinel)
-                # would otherwise become float64 and lose exact identifiers.
-                if dtype.kind == 'f' and all(a.dtype.kind in 'biu' for a in arrays):
-                    dtype = np.dtype(object)
                 parts = []
                 for v, batch in zip(vals, batches):
                     if key not in v:

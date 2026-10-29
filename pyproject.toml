@@ -76,7 +76,7 @@ jax_snlc_core = ["data/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = ["tests", "docs/_ext"]
 markers = [
     "live_snana: requires real SNANA executable + $SNDATA_ROOT",
 ]

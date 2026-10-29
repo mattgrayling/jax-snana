@@ -1648,46 +1648,39 @@ def _text_head_columns(header):
              for suffix in suffixes}
     row = {}
     for name, value in header.items():
-        try:
-            if name in ('SNID', 'FIELD', 'NAME_TRANSIENT', 'NAME_IAUC', 'IAUC', 'SUBSURVEY'):
-                row[name] = value
-            elif name == 'SURVEY':
-                if '(' in value:
-                    row['SUBSURVEY'] = value.split('(', 1)[1].rstrip(')')
-            elif name in ('FILTERS', 'SNANA_VERSION', 'SIM_MODEL_NAME', 'SIM_TYPE_NAME', 'TRIGGER',
-                          'VARNAMES_SPEC', 'SPEC', 'SIM_SYNMAG'):
-                continue
-            elif name in per_band:
-                values = value.split()
-                if len(values) != len(bands):
-                    raise SNANAError(f"{name} has {len(values)} values for FILTERS={bands}",
-                                     function_name='read_snana_text')
-                row.update((f'{name}_{band}', float(v)) for band, v in zip(bands, values))
-            elif name in grids:
-                values = np.asarray(value.split(), dtype=float)
-                _, size = grids[name]
-                if len(values) > size:
-                    raise SNANAError(f"{name} exceeds its {size}-bin limit",
-                                     function_name='read_snana_text')
-                row[name] = np.full(size, SNANA_NULLFLOAT)
-                row[name][:len(values)] = values
-            elif '+-' in value:
-                number, error = value.split('+-')
-                row[name] = float(number)
-                row[f'{name}_ERR'] = float(error)
-            elif name.startswith('SIM_HOSTLIB('):
-                # TEXT lists the true host and neighbours; FITS stores the true host.
-                row[name] = float(value.split()[0])
-            else:
-                # Preserve scalar numeric metadata, including user-defined columns.
-                # IDs must not pass through float, which loses large integer bits.
-                try:
-                    row[name] = int(value)
-                except ValueError:
-                    row[name] = float(value)
-        except ValueError as exc:
-            raise SNANAError(f"Invalid numeric value for {name}: {value!r}",
-                             function_name='read_snana_text') from exc
+        if name in ('SNID', 'FIELD', 'NAME_TRANSIENT', 'NAME_IAUC', 'IAUC', 'SUBSURVEY'):
+            row[name] = value
+        elif name == 'SURVEY':
+            if '(' in value:
+                row['SUBSURVEY'] = value.split('(', 1)[1].rstrip(')')
+        elif name in ('FILTERS', 'SNANA_VERSION', 'SIM_MODEL_NAME', 'SIM_TYPE_NAME', 'TRIGGER',
+                      'VARNAMES_SPEC', 'SPEC', 'SIM_SYNMAG'):
+            continue
+        elif name in per_band:
+            values = value.split()
+            if len(values) != len(bands):
+                raise SNANAError(f"{name} has {len(values)} values for FILTERS={bands}",
+                                 function_name='read_snana_text')
+            row.update((f'{name}_{band}', float(v)) for band, v in zip(bands, values))
+        elif name in grids:
+            values = np.asarray(value.split(), dtype=float)
+            count, size = grids[name]
+            row[name] = np.full(size, SNANA_NULLFLOAT)
+            row[name][:len(values)] = values
+        elif '+-' in value:
+            number, error = value.split('+-')
+            row[name] = float(number)
+            row[f'{name}_ERR'] = float(error)
+        elif name.startswith('SIM_HOSTLIB('):
+            # TEXT lists the true host and neighbours; FITS stores the true host.
+            row[name] = float(value.split()[0])
+        else:
+            # Preserve scalar numeric metadata, including user-defined columns.
+            # IDs must not pass through float, which loses large integer bits.
+            try:
+                row[name] = int(value)
+            except ValueError:
+                row[name] = float(value)
     for name, (count, size) in grids.items():
         if row.get(count) == 0:
             row[name] = np.full(size, SNANA_NULLFLOAT)

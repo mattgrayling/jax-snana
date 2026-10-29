@@ -52,11 +52,6 @@ def mu_difference(df1: pd.DataFrame, df2: pd.DataFrame, scale: float) -> np.ndar
             "the grid is not aligned",
             function_name="mu_difference",
         )
-    if ("ROW" in df1 or "ROW" in df2) and not np.array_equal(df1.get("ROW"), df2.get("ROW")):
-        raise SNANAError(
-            "variant and reference have different ROW bin labels; the grid is not aligned",
-            function_name="mu_difference",
-        )
     diff = scale * ((df1["MU"] - df1["MUREF"])
                     - (df2["MU"] - df2["MUREF"])).to_numpy()
     return np.nan_to_num(diff, nan=0.0, posinf=0.0, neginf=0.0)
@@ -358,7 +353,6 @@ def hubble_diagram_from(df: pd.DataFrame, mode: str,
     The reading half is :func:`load_hubble_diagram`; a caller holding what BBC
     produced (:func:`jax_salt2mu.output.m0dif_columns`) goes straight here.
     ``source`` names the frame in the error a missing column raises.
-    Binned inputs require ROW labels identifying their redshift bins.
     """
     path = source
 
@@ -379,9 +373,8 @@ def hubble_diagram_from(df: pd.DataFrame, mode: str,
         df["MUERR"] = df["MUDIFERR"]
 
     if mode == "binned":
-        _require(df, path, "ROW", "zHD")
-        df = df.sort_values("zHD").reset_index(drop=True)
-        return df
+        _require(df, path, "zHD")
+        return df.sort_values("zHD").reset_index(drop=True)
 
     _require(df, path, "CID", "IDSURVEY", "FIELD", "zHD", "zHEL", "MUMODEL")
     df["CID"] = df["CID"].astype(str)

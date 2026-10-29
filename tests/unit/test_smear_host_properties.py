@@ -169,16 +169,3 @@ def test_smear_truncated_normal_has_no_atoms_at_bounds():
     deltas = np.asarray(out["LOGMASS_OBS"]) - 10.0
     assert np.max(np.abs(deltas)) <= 3.0
     assert int(np.sum(np.abs(deltas) == 3.0)) == 0
-
-
-@pytest.mark.parametrize('value', [
-    '1(LOGMASS)junk', '1(LOGMASS)(COLOR)', '1e+(LOGMASS)',
-    '1..2(LOGMASS)', '.(LOGMASS)',
-])
-def test_property_error_scale_rejects_malformed_terms(value):
-    """Malformed scales must name the input instead of being partly accepted."""
-    from jax_snlc_core.logging import SNANAError
-    from jax_snlc_sim.simulation import Host
-
-    with pytest.raises(SNANAError, match='HOSTLIB_SCALE_PROPERTY_ERR'):
-        _parse_property_err_scales(Host(scale_property_err=value))

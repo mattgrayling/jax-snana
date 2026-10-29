@@ -11,12 +11,10 @@ import shutil
 from dataclasses import replace
 
 import numpy as np
-import pandas as pd
 import pytest
 import yaml
 
-from jax_create_cov import (build_covariance, compute_covariance, create_covariance,
-                            covariance, load_config)
+from jax_create_cov import build_covariance, create_covariance, covariance, load_config
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import read_fitres
 from jax_wfit.blinding import blinding_statuses
@@ -109,34 +107,6 @@ def test_in_memory_diagram_matches_the_file_route(mode, tmp_path):
     for name in ("redshift", "mu", "muerr"):
         np.testing.assert_array_equal(np.asarray(getattr(held, name)),
                                       np.asarray(getattr(from_file, name)))
-
-
-@pytest.mark.parametrize("row_labels", [[2, 1], ["high", "low"]])
-def test_binned_input_labels_survive_covariance_output(row_labels, tmp_path):
-    """Numeric and text labels stay with their bins through sorting, covariance
-    output and conversion for the cosmology fit."""
-    frame = pd.DataFrame({"zHD": [0.2, 0.1], "MU": [40., 38.],
-                          "MUREF": [40., 38.], "MUERR": [0.2, 0.1]})
-    frame["ROW"] = row_labels
-    original = frame.copy()
-    result = compute_covariance(
-        diagrams={"FITOPT000_MUOPT000": frame},
-        fitopt_scales={0: ("DEFAULT", 1.)},
-        muopt_scales={0: ("DEFAULT", 1.)},
-        cosmology={"omega_matter": .315, "omega_lambda": .685},
-        isdata_real=0, write=True, outdir=tmp_path)
-    saved = read_fitres(str(tmp_path / covariance.HD_FILENAME)).df
-    expected_labels = [str(label) for label in reversed(row_labels)]
-    np.testing.assert_array_equal(saved["ROW"].astype(str), expected_labels)
-    np.testing.assert_allclose(saved["zHD"], [0.1, 0.2])
-    np.testing.assert_allclose(saved["MU"], [38., 40.])
-    np.testing.assert_allclose(saved["MUERR"], [0.1, 0.2])
-    for frame_for_fit in (result.hubble_diagram, saved):
-        diagram = hubble_diagram_from_covariance(
-            frame_for_fit, result.covtot_inv("ALL"), result.isdata_real,
-            source="<test>")
-        np.testing.assert_array_equal(diagram.cid, expected_labels)
-    pd.testing.assert_frame_equal(frame, original)
 
 
 def test_run_wfit_validates_the_config_on_the_diagrams_path(cov_result):

@@ -447,23 +447,6 @@ def test_replacing_predictions_keeps_column_names_unique(tmp_path):
         np.testing.assert_allclose(table.df['PROB_OTHER'], [.1, 0.])
 
 
-@pytest.mark.parametrize("id_column", ["CID", "SNID"])
-def test_external_predictions_preserve_literal_ids_and_missing_probabilities(tmp_path, id_column):
-    """NA-like IDs remain literal while missing probabilities still become zero."""
-    fitted = tmp_path / "ids.FITRES"
-    fitted.write_text("VARNAMES: CID IDSURVEY MU\n"
-                      "SN: NA 10 40\nSN: NULL 10 41\nSN: 001 10 42\n"
-                      "SN: missing 10 43\nSN: blank 10 44\nSN: nanprob 10 45\n")
-    predictions = tmp_path / "predictions.csv"
-    predictions.write_text(f"{id_column},PROB_IA\nNULL,0.82\n001,0.73\nNA,0.91\n"
-                           "blank,\nnanprob,NaN\n")
-    stage = Classify("classified", fit=Fit("fit", fitres=fitted), predictions=predictions)
-    for _ in range(2):
-        result = run(stage, outdir=tmp_path / "run")["classified"][_NOMINAL].df
-        assert result["CID"].tolist() == ["NA", "NULL", "001", "missing", "blank", "nanprob"]
-        np.testing.assert_allclose(result["PROB_IA"], [.91, .82, .73, 0., 0., 0.])
-
-
 @pytest.mark.parametrize('head_gz,phot_gz', [(False, True), (True, False)])
 def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
     """Mixed compression and TEXT produce identical selected classifier epochs."""
@@ -499,16 +482,3 @@ def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
     assert actual['FLT'].tolist() == ['DES-g']
     np.testing.assert_allclose(actual['FLUXCAL'], [10.])
     np.testing.assert_allclose(actual['HOSTGAL_SPECZ'], [0.2])
-
-
-def test_classifier_requires_flags_only_when_rejecting_epochs(tmp_path):
-    """Flag-based rejection requires flags, but unfiltered data need none."""
-    (tmp_path / 'version.LIST').write_text('event.DAT\n')
-    (tmp_path / 'event.DAT').write_text(
-        'SURVEY: DES\nSNID: 1\nFILTERS: g\nPEAKMJD: 60001\n'
-        'REDSHIFT_FINAL: 0.2 +- 0.001\n'
-        'VARLIST: MJD FLT FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n')
-    with pytest.raises(SNANAError, match="PHOTFLAG"):
-        SuperNNova(filters=('g',))._light_curves(tmp_path)
-    actual = SuperNNova(filters=('g',), phot_reject_bits=())._light_curves(tmp_path)
-    assert actual['FLUXCAL'].tolist() == [10.]

@@ -137,7 +137,7 @@ class Classify(Stage):
 def _joined_onto(tables: Mapping[str, Any], path: Path) -> Mapping[str, Any]:
     """Every cell's table with the predictions in ``path`` joined on, the
     file's first column the event's ID."""
-    predictions = pd.read_csv(path, converters={0: str}, float_precision="round_trip")
+    predictions = pd.read_csv(path, dtype=str)
     predictions = predictions.set_index(predictions.columns[0]).astype(float)
     return {cell: _joined(table, predictions) for cell, table in tables.items()}
 
