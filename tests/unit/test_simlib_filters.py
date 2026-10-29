@@ -3,14 +3,13 @@
 import numpy as np
 import pytest
 
-from jax_snlc_core.photometry.filter_system import filter_band
-from jax_snlc_sim.simulation import Survey
-from jax_snlc_sim.builder import (InputGenranges, _apply_simlib_filters,
-                                  _spell_entry_headers)
+from jax_snlc_core.filters import filter_band
+from jax_snlc_sim.simlib import (
+    InputGenranges, SimlibData, SimlibField, _compute_seasons, apply_simlib_filters,
+    simlib_field_index, spell_entry_headers)
 from jax_snlc_sim.population import population_spellings
-from jax_snlc_sim.random_streams import root_key
-from jax_snlc_sim.sampler import simlib_field_index
-from jax_snlc_sim.survey.simlib_reader import SimlibField, _compute_seasons
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.simulation import Survey
 
 
 def _make_field(libid=0, ra=0.0, dec=0.0, mwebv=0.0, mjds=None, nrest=10):
@@ -33,13 +32,6 @@ def _make_field(libid=0, ra=0.0, dec=0.0, mwebv=0.0, mjds=None, nrest=10):
     )
 
 
-class _MockSimlib:
-    def __init__(self, fields):
-        self.fields = list(fields)
-    def _rebuild_flat_structures(self):
-        pass
-
-
 def _ranges(sim, redshift=(0.01, 1.0), peakmjd=(59000.0, 62000.0), population=None,
             distance_z=None):
     """Input ranges wide enough to keep every entry the test builds."""
@@ -52,7 +44,7 @@ def _ranges(sim, redshift=(0.01, 1.0), peakmjd=(59000.0, 62000.0), population=No
 @pytest.mark.parametrize('native', [False, True])
 def test_named_population_ranges_constrain_simlib_entries(native):
     from jax_snlc_sim.inputs import build_config
-    from jax_snlc_sim.config_parser import build
+    from jax_snlc_sim.inputs import build
     from jax_snlc_sim.distributions import GenGaussAsym
 
     population = (GenGaussAsym(peak=0., sigma=(1., 1.), range=(-1., 1.)) if native else
@@ -66,12 +58,12 @@ def test_named_population_ranges_constrain_simlib_entries(native):
         GENRANGE_REDSHIFT=[.02, .4], GENRANGE_TREST=[-20, 50], GENRANGE_PEAKMJD=[60000, 60100],
         USE_SIMLIB_SALT2=1, GENPEAK_SALT2x1=0., GENSIGMA_SALT2x1=[1., 1.], GENRANGE_SALT2x1=[-1., 1.]))
     for cfg in (named, snana):
-        simlib = _MockSimlib([_make_field(libid=i) for i in range(3)])
+        simlib = SimlibData(simlib_file='', fields=[_make_field(libid=i) for i in range(3)])
         for entry, value in zip(simlib.fields, [-2., 0., 2.]):
             entry.header_values['SALT2x1'] = str(value)
-        _spell_entry_headers(simlib, population_spellings(
+        spell_entry_headers(simlib, population_spellings(
             *cfg.model.population_declaration()[:2]))
-        _apply_simlib_filters(simlib, cfg.survey,
+        apply_simlib_filters(simlib, cfg.survey,
                              _ranges(simlib, population=cfg.model._input_genranges))
         assert [entry.libid for entry in simlib.fields] == [1]
 
@@ -84,8 +76,8 @@ def test_minseason_drops_the_season_not_its_epochs():
         np.linspace(60000.0, 60200.0, 20),
         np.linspace(60500.0, 60510.0, 5),
     ]).astype(np.float32)
-    sim = _MockSimlib([_make_field(mjds=mjds)])
-    _apply_simlib_filters(sim, Survey(simlib_minseason=30.0), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=[_make_field(mjds=mjds)])
+    apply_simlib_filters(sim, Survey(simlib_minseason=30.0), _ranges(sim))
     f = sim.fields[0]
     assert f.nobs == 25 and f.mjds.max() == pytest.approx(60510.0)
     assert int(np.sum(np.isfinite(f.season_starts))) == 1
@@ -99,8 +91,8 @@ def test_minseason_keeps_a_libid_with_no_surviving_season():
         np.linspace(60000.0, 60010.0, 5),
         np.linspace(60500.0, 60510.0, 5),
     ]).astype(np.float32)
-    sim = _MockSimlib([_make_field(mjds=mjds)])
-    _apply_simlib_filters(sim, Survey(simlib_minseason=30.0), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=[_make_field(mjds=mjds)])
+    apply_simlib_filters(sim, Survey(simlib_minseason=30.0), _ranges(sim))
     assert len(sim.fields) == 1
     f = sim.fields[0]
     assert f.nobs == 10
@@ -111,22 +103,22 @@ def test_minseason_keeps_a_libid_with_no_surviving_season():
 
 def test_minobs_drops_small_libids():
     fields = [_make_field(libid=1, nrest=3), _make_field(libid=2, nrest=20)]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(simlib_minobs=10), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(simlib_minobs=10), _ranges(sim))
     assert [f.libid for f in sim.fields] == [2]
 
 
 def test_idlock_keeps_only_locked():
     fields = [_make_field(libid=i) for i in (1, 2, 3)]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(simlib_idlock=2), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(simlib_idlock=2), _ranges(sim))
     assert [f.libid for f in sim.fields] == [2]
 
 
 def test_idskip_drops_listed():
     fields = [_make_field(libid=i) for i in (1, 2, 3, 4)]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(simlib_idskip=(2, 4)), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(simlib_idskip=(2, 4)), _ranges(sim))
     assert [f.libid for f in sim.fields] == [1, 3]
 
 
@@ -136,9 +128,9 @@ def test_idskip_drops_listed():
 ])
 def test_genrange_narrow_filter(attr, values, bounds, kept):
     fields = [_make_field(libid=i, **{attr: v}) for i, v in enumerate(values)]
-    sim = _MockSimlib(fields)
+    sim = SimlibData(simlib_file='', fields=fields)
     cfg = Survey(**{f"genrange_{'decl' if attr == 'dec' else attr}": bounds})
-    _apply_simlib_filters(sim, cfg, _ranges(sim))
+    apply_simlib_filters(sim, cfg, _ranges(sim))
     assert [getattr(f, attr) for f in sim.fields] == kept
 
 
@@ -148,11 +140,11 @@ def test_genrange_ra_is_a_plain_window():
     (RA 9999, snlc_sim.c:20133-20134)."""
     fields = [_make_field(libid=0, ra=355.0), _make_field(libid=1, ra=9999.0),
               _make_field(libid=2, ra=-5.0)]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(), _ranges(sim))
     assert [f.libid for f in sim.fields] == [0, 2]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(genrange_ra=(-10.0, 10.0)), _ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(genrange_ra=(-10.0, 10.0)), _ranges(sim))
     assert [f.libid for f in sim.fields] == [2]
 
 
@@ -194,12 +186,12 @@ def test_entry_peakmjd_outside_the_input_range_is_skipped():
         fields = [_make_field(libid=i) for i in range(len(values))]
         for f, v in zip(fields, values):
             f.header_values = {'PEAKMJD': str(v)}
-        return _MockSimlib(fields)
+        return SimlibData(simlib_file='', fields=fields)
     sim = entries()
-    _apply_simlib_filters(sim, Survey(use_simlib_peakmjd=1), _ranges(sim))
+    apply_simlib_filters(sim, Survey(use_simlib_peakmjd=1), _ranges(sim))
     assert [f.libid for f in sim.fields] == [2]
     sim = entries()
-    _apply_simlib_filters(sim, Survey(), _ranges(sim))
+    apply_simlib_filters(sim, Survey(), _ranges(sim))
     assert len(sim.fields) == len(values)
 
 
@@ -216,8 +208,8 @@ def test_entry_genranges_are_clipped_or_the_entry_skipped():
     fields[2].redshift_keys = fields[3].redshift_keys = ('GENRANGE_REDSHIFT',)
     fields[4].header_values = {'REDSHIFT': '0.3'}
     fields[4].redshift_keys = ('REDSHIFT', 'DISTANCE')
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(use_simlib_redshift=1),
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(use_simlib_redshift=1),
                           _ranges(sim, distance_z=[np.nan, np.nan, np.nan, np.nan, 1.5]))
     assert [f.libid for f in sim.fields] == [0, 2]
     assert sim.fields[0].gengauss['PEAKMJD'] == (59000.0, 59500.0, 5.0)
@@ -233,13 +225,13 @@ def test_entry_salt2_values_are_checked_under_use_simlib_salt2():
         fields[0].header_values = {'SALT2c': '0.1'}
         fields[1].header_values = {'SALT2c': '0.8'}
         fields[2].gengauss = {'SALT2c': (0.2, 0.9, 0.1)}
-        return _MockSimlib(fields)
+        return SimlibData(simlib_file='', fields=fields)
     population = {'SALT2c': (-0.3, 0.5), 'SALT2x1': (-3.0, 3.0)}
     sim = entries()
-    _apply_simlib_filters(sim, Survey(use_simlib_salt2=1),
+    apply_simlib_filters(sim, Survey(use_simlib_salt2=1),
                           _ranges(sim, population=population))
     assert [f.libid for f in sim.fields] == [0, 2]
     assert sim.fields[1].gengauss['SALT2c'] == (0.2, 0.5, 0.1)
     sim = entries()
-    _apply_simlib_filters(sim, Survey(), _ranges(sim, population=population))
+    apply_simlib_filters(sim, Survey(), _ranges(sim, population=population))
     assert len(sim.fields) == 3

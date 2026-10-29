@@ -1,4 +1,4 @@
-"""Unit tests for the ``searcheff_map`` module — SNANA's SPECID +
+"""Unit tests for the ``spectroscopic_efficiency`` module — SNANA's SPECID +
 zHOST + Type-Assignment selection-efficiency layer.
 
 Pure-JAX tests covering: NONE/ZERO/ONE sentinels, OPT_EXTRAP,
@@ -17,24 +17,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.builder import _read_searcheff_logic_file
-from jax_snlc_sim.survey.searcheff_map import (
-    FLAG_ALL_FAIL,
-    FLAG_ALL_PASS,
-    FLAG_NORMAL,
-    MXMAP_SEARCHEFF_MAP,
-    SearchEffMap,
-    check_applymask_searcheff,
-    eff_outside_window,
-    evaluate_searcheff,
-    interp_nd_regular,
-    prepare_searcheff,
-    read_searcheff_maps,
-    resolve_fieldlist_indices,
-    resolve_searcheff_file,
-)
+from jax_snlc_core.interpolation import interp_nd_regular
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.detection import read_pipeline_logic
 from jax_snlc_sim.simulation import Instrument
+from jax_snlc_sim.spectroscopic_efficiency import (
+    FLAG_ALL_FAIL, FLAG_ALL_PASS, FLAG_NORMAL, MXMAP_SEARCHEFF_MAP, SearchEffMap,
+    check_applymask_searcheff, eff_outside_window, evaluate_searcheff,
+    prepare_searcheff, read_searcheff_maps, resolve_fieldlist_indices,
+    resolve_searcheff_file)
 
 ZP_FLUXCAL = Instrument.zp_fluxcal
 
@@ -65,7 +56,7 @@ def _sn_vars(sn_vars_np, n_sne, field_idx=None):
 
 
 # =============================================================================
-# searcheff_map sentinels + interp
+# spectroscopic_efficiency sentinels + interp
 # =============================================================================
 
 
@@ -97,6 +88,20 @@ def test_2d_interp():
     pts = jnp.array([[0.5, 0.5], [0.0, 0.0], [1.0, 1.0]])
     result = np.asarray(interp_nd_regular(pts, axes, vals, opt_extrap=0))
     assert np.allclose(result, [0.5, 0.0, 1.0])
+
+
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.float64])
+def test_interp_knot_and_edge_gradients(dtype):
+    """An affine map retains its slopes and the clipping derivative at each edge."""
+    axes = (jnp.array([0., 1., 3.], dtype=dtype),
+            jnp.array([0., 1., 2.], dtype=dtype))
+    values = 2 * axes[0][:, None] + axes[1][None, :]
+    points = jnp.array([[-1., .4], [0., .4], [.4, .4],
+                        [1., .4], [3., .4], [4., .4]], dtype=dtype)
+    gradients = jax.jit(jax.vmap(jax.grad(
+        lambda p: interp_nd_regular(p[None], axes, values, opt_extrap=1)[0])))(points)
+    np.testing.assert_allclose(gradients, [[0., 1.], [1., 1.], [2., 1.],
+                                          [2., 1.], [1., 1.], [0., 1.]], atol=1e-6)
 
 
 def test_eff_roundoff_window():
@@ -224,7 +229,7 @@ def test_compute_dtseason_peak():
     per season the candidates are PEAKMJD - MJD_MIN and MJD_MAX - PEAKMJD,
     the smallest |DT| wins, so DT is positive in season and negative out.
     """
-    from jax_snlc_sim.survey.searcheff_map import compute_dtseason_peak
+    from jax_snlc_sim.simlib import compute_dtseason_peak
 
     # Field 0: seasons (60000-60100), (60200-60300). Field 1: one season
     # (60500-60800) plus an inf/-inf padded slot that must be ignored.
@@ -284,8 +289,8 @@ def test_detect_map_field_matching_and_overlap_fatal():
     MATCH_SEARCHEFF_FIELD (substring, 'ALL' matches everything;
     sntools_trigger.c:3266-3307); more than one map matching an
     observation aborts (GETEFF_PIPELINE_DETECT, :2449-2456)."""
-    from jax_snlc_sim.survey.searcheff_map import build_searcheff_config
-    from jax_snlc_sim.survey.searcheff_pipeline import DetectionCurve
+    from jax_snlc_sim.detection import build_searcheff_config
+    from jax_snlc_sim.detection import DetectionCurve
 
     def _map(filterlist, fieldlist):
         return DetectionCurve(filterlist=filterlist, fieldlist=fieldlist,
@@ -314,9 +319,8 @@ def test_detect_curve_endpoint_efficiencies():
     efficiencies, not 0/1 sentinels (GETEFF_PIPELINE_DETECT,
     sntools_trigger.c:2518-2519); SNR<=0 gives 0 for non-ABS curves
     (:2494)."""
-    from jax_snlc_sim.survey.searcheff_map import (
-        build_searcheff_config, make_jax_searcheff)
-    from jax_snlc_sim.survey.searcheff_pipeline import DetectionCurve
+    from jax_snlc_sim.detection import build_searcheff_config, detect_all
+    from jax_snlc_sim.detection import DetectionCurve
 
     cfg = build_searcheff_config(
         [DetectionCurve(filterlist='g', fieldlist='ALL',
@@ -325,7 +329,6 @@ def test_detect_curve_endpoint_efficiencies():
                         use_abs=False, is_mag=False)],
         [1], 1, 0.4, ['LSST-g'], ['X1'], ZP_FLUXCAL,
         apply_detect_single=False)
-    detect_fn, _ = make_jax_searcheff(cfg, 4)
 
     snrs = jnp.array([[1.0, 50.0, -1.0, 6.0]], dtype=jnp.float32)
     n = 200
@@ -333,8 +336,8 @@ def test_detect_curve_endpoint_efficiencies():
     for seed in range(n):
         keys = jax.vmap(lambda i: jax.random.fold_in(
             jax.random.PRNGKey(seed), i))(jnp.arange(1))
-        det = np.asarray(detect_fn(
-            snrs, jnp.zeros_like(snrs), jnp.ones_like(snrs, dtype=jnp.int32),
+        det = np.asarray(detect_all(
+            cfg, snrs, jnp.zeros_like(snrs), jnp.ones_like(snrs, dtype=jnp.int32),
             jnp.zeros_like(snrs, dtype=jnp.int32),
             jnp.ones_like(snrs, dtype=bool),
             jnp.zeros(1, dtype=jnp.int32), keys))
@@ -513,7 +516,7 @@ def test_pipeline_eff_file_honours_the_input_files_photflag_bits(
         searcheff_data_dir):
     """A PHOTFLAG the input file already set wins; the file fills in only the
     one still at zero (sntools_trigger.c:321-325)."""
-    from jax_snlc_sim.survey.searcheff_pipeline import read_pipeline_eff_file
+    from jax_snlc_sim.detection import read_pipeline_eff_file
 
     path = str(searcheff_data_dir / "SEARCHEFF_PIPELINE_LSST.DAT")
     both_from_file = read_pipeline_eff_file(path, 0, 0)
@@ -526,7 +529,7 @@ def test_pipeline_eff_file_honours_the_input_files_photflag_bits(
 def test_pipeline_eff_file_reads_a_gzipped_file(tmp_path, searcheff_data_dir):
     """The detection curves come through the shared io helpers, so a gzipped
     pipeline file reads like a plain one."""
-    from jax_snlc_sim.survey.searcheff_pipeline import read_pipeline_eff_file
+    from jax_snlc_sim.detection import read_pipeline_eff_file
 
     src = searcheff_data_dir / "SEARCHEFF_PIPELINE_LSST.DAT"
     gz = tmp_path / "SEARCHEFF_PIPELINE_LSST.DAT.gz"
@@ -545,7 +548,7 @@ def test_pipeline_eff_file_reads_a_gzipped_file(tmp_path, searcheff_data_dir):
 def test_pipeline_eff_file_requires_documentation(tmp_path):
     """SEARCHEFF maps are DOCANA-required whatever REQUIRE_DOCANA says
     (INPUTS_SEARCHEFF.OPTMASK_OPENFILE, snlc_sim.c:1297)."""
-    from jax_snlc_sim.survey.searcheff_pipeline import read_pipeline_eff_file
+    from jax_snlc_sim.detection import read_pipeline_eff_file
 
     f = tmp_path / "SEARCHEFF_PIPELINE_NODOC.DAT"
     f.write_text("FILTER: g\nSNR: 0.0 0.0\nSNR: 5.0 1.0\n")
@@ -557,7 +560,7 @@ def test_skip_docana_drops_the_block_and_only_the_block():
     """The one rule every SNANA reader uses: a line whose first token is
     exactly DOCUMENTATION: opens the block, DOCUMENTATION_END: closes it, and
     both keys go with the body (rd2columnFile, sntools.c:7297-7303)."""
-    from jax_snlc_core.io.docana import skip_docana
+    from jax_snlc_core.snana_files import skip_docana
 
     lines = ["DOCUMENTATION:\n", "  PURPOSE: SNR: 5.0 1.0\n",
              "DOCUMENTATION_END:\n", "FILTER: g\n",
@@ -570,7 +573,7 @@ def test_skip_docana_drops_the_block_and_only_the_block():
 
 def test_pipeline_eff_file_ignores_data_keys_inside_the_docana_block(tmp_path):
     """A DOCANA body may quote the keys it documents; they are not data."""
-    from jax_snlc_sim.survey.searcheff_pipeline import read_pipeline_eff_file
+    from jax_snlc_sim.detection import read_pipeline_eff_file
 
     f = tmp_path / "SEARCHEFF_PIPELINE_DOC.DAT"
     f.write_text("DOCUMENTATION:\n"
@@ -623,16 +626,16 @@ def test_pipeline_logic_default_unset_and_docana(tmp_path):
     (init_SEARCHEFF_LOGIC)."""
     logic = tmp_path / "SEARCHEFF_PIPELINE_LOGIC.DAT"
     logic.write_text(_DOCANA + "LSST:  2  ugrizY\n")
-    assert _read_searcheff_logic_file(
+    assert read_pipeline_logic(
         'DEFAULT', 'LSST', str(tmp_path)) == (2, 'ugrizY')
     for unset in (None, 'NONE'):
         with pytest.raises(SNANAError,
                            match="need a SEARCHEFF_PIPELINE_LOGIC_FILE"):
-            _read_searcheff_logic_file(unset, 'LSST', str(tmp_path))
+            read_pipeline_logic(unset, 'LSST', str(tmp_path))
 
     logic.write_text("LSST:  2  ugrizY\n")
     with pytest.raises(SNANAError, match="DOCUMENTATION"):
-        _read_searcheff_logic_file('DEFAULT', 'LSST', str(tmp_path))
+        read_pipeline_logic('DEFAULT', 'LSST', str(tmp_path))
 
 
 def test_maps_past_the_limit_are_passed_over(tmp_path):

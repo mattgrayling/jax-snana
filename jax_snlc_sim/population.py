@@ -6,23 +6,52 @@ it rather than assembling an answer from the input keys itself.
 
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 import jax
 import numpy as np
 
-from jax_snlc_sim.distributions import (
-    EXPHALFGAUSS_ZSHIFT_FIELDS, GENGAUSS_ZSHIFT_FIELDS, GenExpHalfGauss, GenGaussAsym,
-    validate_gaussian,
-    flat_distribution, mixture_mass)
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.input_settings import build_dataclass, convert
-from jax_snlc_sim.zvariation import (
-    EXPHALFGAUSS_COMPONENT_NAMES, GENGAUSS_COMPONENT_NAMES, ZVariationEntry,
-    shift_array)
+from jax_snlc_core.input_settings import build_dataclass, convert
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.distributions import (EXPHALFGAUSS_ZSHIFT_FIELDS, GENGAUSS_ZSHIFT_FIELDS,
+                                        GenExpHalfGauss, GenGaussAsym, flat_distribution,
+                                        mixture_mass, validate_gaussian)
+from jax_snlc_sim.zvariation import (EXPHALFGAUSS_COMPONENT_NAMES, GENGAUSS_COMPONENT_NAMES, REDSHIFT,
+                                     ZVariationEntry, shift_array)
 
 #: points per quantity when bounding a shift over that quantity's range
 _GRID_POINTS = 101
+
+
+@dataclass(frozen=True)
+class HostDustParameter:
+    """One host-dust quantity the sampler draws for every event, whatever the
+    SED model, alongside that model's own population parameters."""
+
+    #: the distributions and GENPDF maps key
+    key: str
+    #: spellings of the same quantity in GENGAUSS and GENPDF input
+    input_names: Tuple[str, ...]
+    #: the HOSTLIB column USESNPAR reads it from
+    hostlib_column: str
+    #: an exp + half-Gaussian profile rather than a GENGAUSS population
+    exp_halfgauss: bool
+    #: the per-SN parameter it lands in, where it has one of its own. EBV is a
+    #: parameterisation of AV, so the drawn value is AV either way.
+    param: Optional[str] = None
+
+
+#: SNANA grants the dust HOSTLIB columns to SALT alone and accepts AV and RV as
+#: WGTMAP dimensions for any model; jax grants both to every model, since every
+#: model draws host dust.
+HOST_DUST_PARAMETERS = (
+    HostDustParameter(key='RV', input_names=('RV',), hostlib_column='RV',
+                      exp_halfgauss=False, param='rv'),
+    HostDustParameter(key='AV', input_names=('AV', 'AV_HOST'),
+                      hostlib_column='AV', exp_halfgauss=True, param='av'),
+    HostDustParameter(key='EBV_HOST', input_names=('EBV', 'EBV_HOST'),
+                      hostlib_column='EBV', exp_halfgauss=True),
+)
 
 
 @jax.tree_util.register_dataclass
@@ -268,7 +297,6 @@ def population_spellings(names, aliases):
     its name, so the input may write a name in any case. A spelling claimed by
     two parameters, or by a parameter and a host-dust population, is
     refused."""
-    from .simulation import HOST_DUST_PARAMETERS
     dust = {spelling.lower(): p.key for p in HOST_DUST_PARAMETERS
             for spelling in (p.key, *p.input_names)}
     spellings = {}
@@ -287,8 +315,8 @@ def population_spellings(names, aliases):
 
 def model_spellings(model):
     """:func:`population_spellings` for a built model's own parameters."""
-    return population_spellings([name for name, _ in model._population],
-                                dict(model._population))
+    return population_spellings([name for name, _ in model.configured_population],
+                                dict(model.configured_population))
 
 
 def stream_name(name, aliases):
@@ -302,7 +330,6 @@ def stream_name(name, aliases):
 def configured_distributions(settings, model, structured):
     """The distributions given as settings, by population parameter name,
     for the selected model and the host dust."""
-    from .simulation import HOST_DUST_PARAMETERS
     names, aliases, _ = declared_population(model, structured)
     spellings = population_spellings(names, aliases)
     dust = {p.key: p.exp_halfgauss for p in HOST_DUST_PARAMETERS}
@@ -314,3 +341,48 @@ def configured_distributions(settings, model, structured):
                              f'choose from {sorted(names) + sorted(dust)}')
         result[name] = distribution_from_settings(value, dust=dust.get(name, False))
     return result
+
+
+def validate_config_populations(config, sed_model, hostlib) -> None:
+    """Check every parameter's record once the ranges of the quantities the
+    populations depend on are known.
+
+    Such a quantity is the redshift, another drawn parameter, or a HOSTLIB
+    column, and only the last of those needs the catalogue, which is why
+    this waits for ``hostlib`` (None without one) to load. The ranges are
+    the run's, so a run is accepted or rejected on its configuration rather
+    than on the events a batch draws. A model parameter a shift depends on
+    must be drawn before the one it shifts, as the draws go in the model's
+    declaration order.
+    """
+    populations = config.model.populations
+    drawn = sed_model.drawn_parameters(populations)
+    declared = {name for name, _ in sed_model.configured_population}
+    for i, name in enumerate(drawn):
+        later = [quantity for quantity in populations[name].depends_on()
+                 if quantity in declared and quantity not in drawn[:i]]
+        if later:
+            raise SNANAError(
+                f"A shift on {name} depends on {later[0]}, which is not drawn "
+                f"before it. The model draws its population parameters in "
+                f"the order {', '.join(drawn)}.",
+                function_name="validate_config_populations")
+    ranges = {REDSHIFT: config.rates.redshift_range}
+    for name in set(config.model.quantities_depended_on()):
+        if name in ranges:
+            continue
+        span = config.model.parameter_range(name)
+        if span is None:
+            columns = [] if hostlib is None else hostlib.selector.varnames
+            if name not in columns:
+                raise SNANAError(
+                    f"A shift depends on '{name}', which is neither a "
+                    f"population parameter nor a column this HOSTLIB carries. "
+                    f"Columns: {sorted(columns)}.",
+                    function_name="validate_config_populations")
+            column = np.asarray(
+                hostlib.catalogue.columns[columns.index(name)])
+            span = (float(column.min()), float(column.max()))
+        ranges[name] = span
+    for param_name, pop in config.model.populations.items():
+        validate(param_name, pop, ranges)

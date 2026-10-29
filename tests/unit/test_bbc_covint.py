@@ -2,8 +2,11 @@
 import numpy as np
 import pytest
 
-from jax_salt2mu.covint import sigint_muresid_list
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.map_kernels import estimate_intrinsic_scatter
+from jax_salt2mu.biascor import BiasCorEvents, sigint_coeff_grid
+from jax_salt2mu.config import BBCConfig
+from jax_salt2mu.tablevar import TableVar, EVENT_TYPE_BIASCOR
+from jax_snlc_core.logging import SNANAError
 
 
 def _reference_mad(x, covariance, weights):
@@ -46,42 +49,80 @@ def test_mad_search_matches_linear_scan(n, case):
     elif case == 'equal_variance':
         covariance[:] = .02
     expected = _reference_mad(x, covariance, weights)
-    actual = sigint_muresid_list(x, covariance, weights, abort=False, use_mad=True)
+    actual, _, _ = estimate_intrinsic_scatter(
+        x, covariance, weights, np.zeros(n, dtype=int), np.ones(n, dtype=bool),
+        ncell=1, use_mad=True)
     np.testing.assert_allclose(actual, expected, rtol=0., atol=2e-14)
 
 
 @pytest.mark.parametrize('mad', [False, True])
-def test_invalid_covariance_and_abort_policy(mad):
+def test_invalid_covariance_and_scatter_floor_diagnostics(mad):
+    """The map estimator reports invalid covariance and permits negative scatter."""
     x = np.zeros(10)
-    with pytest.raises(SNANAError, match='Invalid MUCOV'):
-        sigint_muresid_list(x, np.zeros(10), np.ones(10), use_mad=mad)
-    with pytest.raises(SNANAError, match='STD < AVG_MUERR'):
-        sigint_muresid_list(x, np.ones(10), np.ones(10), use_mad=mad)
-    assert sigint_muresid_list(x, np.ones(10), np.ones(10),
-                              abort=False, use_mad=mad) == -.3
+    for variance in (0., 1.):
+        result, diagnostics, counts = estimate_intrinsic_scatter(
+            x, np.full(10, variance), np.ones(10), np.zeros(10, dtype=int),
+            np.ones(10, dtype=bool), ncell=1, use_mad=mad)
+        invalid, narrow, floor, unbracketed = diagnostics
+        assert bool(invalid[0]) == (variance == 0.)
+        assert bool(narrow[0]) == (variance > 0.)
+        assert floor[0] and not unbracketed[0]
+        assert result[0] == -.3 and counts[0] == 10
 
 
-def test_mad_floor_with_abort_enabled():
-    # Uncentred scatter passes the initial check, but centred residuals vanish.
-    with pytest.raises(SNANAError, match='sig trial <'):
-        sigint_muresid_list(np.ones(10), np.full(10, .01), np.ones(10), use_mad=True)
+@pytest.mark.parametrize('residual, variance, message', [
+    (0., 0., 'Invalid MUCOV'),
+    (0., 1., 'STD < AVG_MUERR'),
+    (1., .01, 'STD < AVG_MUERR'),
+    # Equal, binary-exact scatter and noise reach the trial floor without a crossing.
+    (np.tile([-1 / 512, 1 / 512], 25), (1 / 512)**2, 'sig trial < -0.300000'),
+    # Unequal noise puts the first trial's pull width above one.
+    (np.tile([-1., 1.], 25), np.tile([.01, 1.99], 25), 'ONE NOT CONTAINED'),
+])
+def test_biascor_scatter_rejects_invalid_samples(residual, variance, message):
+    """Bias-correction preparation turns estimator diagnostics into named errors."""
+    n = 50
+    zeros = np.zeros(n)
+    indices = np.zeros(n, dtype=int)
+    table = TableVar(
+        event_type=EVENT_TYPE_BIASCOR, name=np.arange(n).astype(str),
+        idsurvey=indices, idsample=indices, zhd=zeros, zmuerr=zeros,
+        logmass=zeros, lcpar={}, covmat_fit=np.zeros((n, 1, 1)),
+        mumodel=zeros, cutbits=indices, snrmax=np.full(n, 100.),
+        sim_truth={'SIM_WGT_POP': np.ones(n)})
+    events = BiasCorEvents([], indices, np.zeros((n, 1)),
+                           np.broadcast_to(variance, (n,)), np.broadcast_to(residual, (n,)),
+                           np.zeros((n, 1)))
+    with pytest.raises(SNANAError, match=message):
+        sigint_coeff_grid(table, events, [], BBCConfig(sigint_biascor=-1.))
+
+
+def test_mad_floor_diagnostic():
+    """Uncentred width passes the initial check, but centred residuals vanish."""
+    _, diagnostics, _ = estimate_intrinsic_scatter(
+        np.ones(10), np.full(10, .01), np.ones(10), np.zeros(10, dtype=int),
+        np.ones(10, dtype=bool), ncell=1, use_mad=True)
+    invalid, narrow, floor, unbracketed = diagnostics
+    assert floor[0] and not (invalid[0] or narrow[0] or unbracketed[0])
 
 
 @pytest.mark.parametrize('first_width', [1.0005, 1.1])
 def test_mad_first_trial_crossing(first_width):
+    """The first trial accepts only crossings within the reference tolerance."""
     x = np.array([0., 0., 0., 0., 5 * np.sqrt(.26) * first_width / 1.48])
-    covariance = np.full(5, .01)
-    if first_width < 1.001:
-        assert sigint_muresid_list(x, covariance, np.ones(5),
-                                  abort=False, use_mad=True) == .5
-    else:
-        with pytest.raises(SNANAError, match='ONE NOT CONTAINED'):
-            sigint_muresid_list(x, covariance, np.ones(5), abort=False, use_mad=True)
+    result, diagnostics, _ = estimate_intrinsic_scatter(
+        x, np.full(5, .01), np.ones(5), np.zeros(5, dtype=int),
+        np.ones(5, dtype=bool), ncell=1, use_mad=True)
+    assert result[0] == .5
+    assert bool(diagnostics[3][0]) == (first_width >= 1.001)
 
 
 def test_large_scatter_does_not_require_a_grid_down_to_the_floor():
+    """Large residuals agree with the independent descending trial scan."""
     x = np.tile([-1.e6, 1.e6], 10)
     covariance = np.ones(len(x))
     weights = np.ones(len(x))
-    assert sigint_muresid_list(x, covariance, weights, abort=False, use_mad=True) == (
-        _reference_mad(x, covariance, weights))
+    result, _, _ = estimate_intrinsic_scatter(
+        x, covariance, weights, np.zeros(len(x), dtype=int),
+        np.ones(len(x), dtype=bool), ncell=1, use_mad=True)
+    assert result[0] == _reference_mad(x, covariance, weights)

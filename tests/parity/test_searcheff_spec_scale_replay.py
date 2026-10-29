@@ -10,14 +10,13 @@ import os
 from pathlib import Path
 
 import numpy as np
-import pytest
 from astropy.io import fits
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
-from replay_snana_dump import build_override_parameters
-from jax_snlc_sim import run as sim_run
-
 from parity._dumpall_helpers import compare_dumps, parse_dump
+from replay_snana_dump import build_override_parameters
+
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _run_jax_replay(input_file: Path, gv: str, snana_dump: Path,
@@ -54,7 +53,7 @@ def _run_jax_replay(input_file: Path, gv: str, snana_dump: Path,
     try:
         os.chdir(work_root)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, gv, selection, spectra_cache=spectra_cache)
+        save_snana_outputs(sim, results, gv, selection, spectra_by_sn=spectra_cache)
     finally:
         os.chdir(cwd)
 

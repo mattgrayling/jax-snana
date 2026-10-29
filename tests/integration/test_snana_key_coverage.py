@@ -21,52 +21,47 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _fit_helpers import fit_config
+from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 from scipy import stats
 
-from astropy.io import fits
-
-from jax_snlc_sim import run as sim_run
-from replay_snana_dump import build_override_parameters
-from jax_snlc_sim.builder import (
-    _build_murewgt, _load_simlib, build_simulation, resolve_counts,
+from jax_snlc_core.snana_files import (
+    SNANA_VERSION_STRING,
+    open_text,
+    parse_prescales,
+    read_fitres,
+    resolve_fits_path,
 )
-from jax_snlc_sim.config_parser import (
-    _parse_simlib_nskipmjd, _parse_string_prescales, build,
-    parse_snana_input_file, parse_take_spectrum_entry, prepare_spectrum_requests, read_keys,
-)
-from jax_snlc_sim.hostlib.hostlib_reader import essential_columns, read_hostlib
-from jax_snlc_sim.population import Population
-from jax_snlc_sim.spectrograph.genspec import keep_spectrum, nearpeak_mask
-from jax_snlc_core.io.fits_path import open_text, resolve_fits_path
-from jax_snlc_core.io.sfd_reader import SFDDustMap
-from jax_snlc_core.io.snana_table import SNANA_VERSION_STRING
+from jax_snlc_core.cosmology import distance_modulus, hubble_parameter
+from jax_snlc_core.dust import SFDDustMap
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
-from jax_snlc_core.models.bayesn_model import BayeSNModel
-from jax_snlc_core.models.fitted import PHOTOZ_PARAMETER
-from jax_snlc_core.models.non1ased_model import NON1ASEDModel
-from jax_snlc_core.models.salt_model import SALTModel
-from jax_snlc_core.models.simsed_model import (
-    SIMSEDModel, _draw_correlated_truncated, read_sed_binary,
-)
-from jax_snlc_core.physics.cosmology import (
-    hubble_parameter, distance_modulus,
-)
-from jax_snlc_sim.rate import dndz_density_on_grid
-from jax_snlc_sim.simulation import neutral_rate_mods
+from jax_snlc_core.models.bayesn import BayeSNModel
+from jax_snlc_core.models.non1a import NON1ASEDModel
+from jax_snlc_core.models.salt import SALTModel
+from jax_snlc_core.models.simsed import (SIMSEDModel, _draw_correlated_truncated,
+                                         read_sed_binary)
+from jax_snlc_fit import cuts, loader, run as fit_run, uncertainties
+from jax_snlc_fit.config import Fit, FitConfig, Model
+from jax_snlc_fit.fitter import BatchFitResult, prepare
+from jax_snlc_fit.loader import (snana_version_float, vpec_sign_is_correct)
+from _fit_helpers import load_and_batch_snana_fits
+from jax_snlc_fit.parameters import PHOTOZ_PARAMETER, flat_window
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.builder import _load_simlib, build_simulation
+from jax_snlc_sim.inputs import (_parse_simlib_nskipmjd, build,
+                                        parse_snana_input_file, read_keys)
 from jax_snlc_sim.distributions import GenGaussAsym
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.survey.survey_def import (
-    parse_survey_def, survey_from_simlib_file, survey_id,
-)
-from jax_snlc_fit import priors
-from jax_snlc_fit import run as fit_run
-from jax_snlc_fit.config import FitConfig, Fit, Model
-from jax_snlc_fit.data_loader import (
-    load_and_batch_snana_fits, snana_version_float, vpec_sign_is_correct,
-)
-from jax_snlc_fit.fit_results import BatchFitResult
-from jax_snlc_core.io.fitres_reader import read_fitres
-from _fit_helpers import fit_config
+from jax_snlc_sim.hostlib.catalogue import essential_columns, read_hostlib
+from jax_snlc_sim.population import Population
+from jax_snlc_sim.rate import (build_murewgt, dndz_density_on_grid,
+                               neutral_rate_mods, resolve_counts)
+from jax_snlc_sim.spectra import (keep_spectrum, nearpeak_mask, parse_take_spectrum_entry,
+                                  prepare_spectrum_requests, simlib_take_spectrum_entries)
+from jax_snlc_sim.atmosphere import read_observatory_sites
+from jax_snlc_sim.simlib import survey_from_simlib_file, survey_id
 
 _SALT3 = "tests/fixtures/snana/salt3_k21_replay/input.input"
 _NON1A = "tests/fixtures/snana/non1ased_v19_replay/input.input"
@@ -105,7 +100,7 @@ def _phot_by_cid(base_text, extra, tmp_path, col, tag, n_sne=20, seed=5):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / f"{tag}_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/B/B_HEAD.FITS")) as h:
         pmin, pmax, cid = h[1].data['PTROBS_MIN'], h[1].data['PTROBS_MAX'], h[1].data['SNID']
     with fits.open(resolve_fits_path(f"{d}/B/B_PHOT.FITS")) as h:
@@ -426,7 +421,7 @@ def test_simsed_gridonly_without_distribution_keys_is_flat_over_the_grid(tmp_pat
     inp.write_text("\n".join(keep) + "\nSIMSED_GRIDONLY: stretch\n"
                    "SIMSED_GRIDONLY: color\nGENRANGE_color: 0.4 0.6\n")
     config = dict(n_sne=900, random_seed=5)
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_core.models.simsed_model"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_core.models.simsed"):
         sim = sim_run.prepare(str(inp), **config)
         simulation = None if sim is None else sim.config
         resources = sim
@@ -588,7 +583,7 @@ def _written_sntypes(tmp_path, extra, tag, n_sne=10):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / f"{tag}_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/B/B_HEAD.FITS")) as h:
         return set(int(t) for t in h[1].data['SNTYPE'])
 
@@ -625,7 +620,7 @@ def _written_cids(tmp_path, extra, tag, n_sne=20):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / f"{tag}_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/B/B_HEAD.FITS")) as h:
         return set(int(c) for c in h[1].data['SNID'])
 
@@ -687,7 +682,7 @@ def test_vel_cmbapex_below_one_leaves_every_redshift_heliocentric(
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / "out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/B/B_HEAD.FITS")) as h:
         head = h[1].data
         assert len(head) > 0
@@ -757,7 +752,7 @@ def _subsample_index(extra, tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "NS", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, res, "NS", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     with fits.open(resolve_fits_path(str(tmp_path / "NS" / "NS_HEAD.FITS"))) as h:
         return np.asarray(h[1].data['SIM_SUBSAMPLE_INDEX'])
 
@@ -898,7 +893,7 @@ def test_simlib_entry_header_keys_match_snana(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     results, selection, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "J", selection, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "J", selection, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     head = fits.getdata(resolve_fits_path(next((tmp_path / "J").glob("*HEAD.FITS*"))), 1)
     phot = fits.getdata(resolve_fits_path(next((tmp_path / "J").glob("*PHOT.FITS*"))), 1)
     lib, z, pk = head['SIM_LIBID'], head['SIM_REDSHIFT_CMB'], head['SIM_PEAKMJD']
@@ -929,7 +924,7 @@ def test_simlib_entry_header_keys_match_snana(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     results, selection, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "T", selection, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "T", selection, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     surveys = {}
     for dat in (tmp_path / "T").glob("*.DAT"):
         text = dat.read_text()
@@ -1086,7 +1081,7 @@ def test_dump_mwebv_columns(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "MW", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "MW", sel, spectra_by_sn=spectra_cache, output_dir=out)
     lines = Path(out, "MW", "MW.DUMP").read_text().splitlines()
     varnames = next(l.split()[1:] for l in lines if l.startswith("VARNAMES:"))
     rows = [l.split()[1:] for l in lines if l.startswith("SN:")]
@@ -1118,7 +1113,7 @@ def test_dump_string_column(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "TN", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "TN", sel, spectra_by_sn=spectra_cache, output_dir=out)
     lines = Path(out, "TN", "TN.DUMP").read_text().splitlines()
     varnames = next(l.split()[1:] for l in lines if l.startswith("VARNAMES:"))
     rows = [l.split()[1:] for l in lines if l.startswith("SN:")]
@@ -1203,7 +1198,7 @@ def test_exposure_time_is_written_as_sim_exposure(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / "x_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/B/B_HEAD.FITS")) as h:
         head = h[1].data
         assert len(head) > 0
@@ -1278,7 +1273,7 @@ def test_genperfect_no_warning(tmp_path, caplog):
     no unrecognized-key warning."""
     inp = tmp_path / "in.input"
     inp.write_text(Path(_SALT3).read_text() + "\n" + _GP_ON + "\nGENPERFECT: 1\n")
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         parse_snana_input_file(str(inp))
     assert "Unrecognized SNANA input key" not in caplog.text
 
@@ -1389,7 +1384,7 @@ def test_mjd_explode_reanchor(tmp_path, caplog):
         assert 0.0 <= _first_cross_day(s.common_phases, s.template_seds[i]) <= 1.0 + 1e-4
 
     # Pin the reference MJD; the two keys are consumed (not flagged unrecognized).
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         for base in (_NON1A, _SIMSED):
             r = _run(base, "MJD_EXPLODE: 61000.0\nOPTMASK_T0SHIFT_EXPLODE: 1", tmp_path)
             assert np.allclose(np.asarray(r['parameters']['peakmjd_true']), 61000.0)
@@ -1414,7 +1409,7 @@ def _hostgal(extra, tmp_path, tag, cols, n_sne=80, seed=99):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / f"{tag}_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "H", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "H", sel, spectra_by_sn=spectra_cache, output_dir=d)
     with fits.open(resolve_fits_path(f"{d}/H/H_HEAD.FITS")) as h:
         return {c: np.asarray(h[1].data[c]) for c in cols}
 
@@ -1499,7 +1494,7 @@ def test_hostlib_knobs_guard_and_warning(tmp_path, caplog):
             "HOSTLIB_FIXRAN_PHI: 0.25\nHOSTLIB_MNINTFLUX_SNPOS: 0.1\nHOSTLIB_MXINTFLUX_SNPOS: 0.9\n"
             "HOSTLIB_SCALE_SERSIC_SIZE: 2.0\nHOSTLIB_FIXSERSIC: 1.0 0.5 4.0 30.0\n")
     inp = _write(tmp_path, Path(_HOSTLIB).read_text() + keys)
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         parse_snana_input_file(str(inp))
     unrec = "\n".join(m for m in caplog.messages if "Unrecognized SNANA input key" in m)
     assert not any(k in unrec for k in ("ABMAG", "FIXRAN", "INTFLUX", "SCALE_SERSIC", "FIXSERSIC"))
@@ -1667,7 +1662,7 @@ def test_hostlib_galid_unique_survives_ngen_lc_renumbering(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(tmp_path / "gu_ngenlc_out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "H", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "H", sel, spectra_by_sn=spectra_cache, output_dir=out)
     with fits.open(resolve_fits_path(f"{out}/H/H_HEAD.FITS")) as h:
         uniq = np.asarray(h[1].data['HOSTGAL_OBJID_UNIQUE'])
         objid = np.asarray(h[1].data['HOSTGAL_OBJID'])
@@ -1786,7 +1781,7 @@ def test_simsed_param_aliases_not_warned(tmp_path, caplog):
     inp = _write(tmp_path, Path(_SALT3).read_text() + "\nFLUXERRMODEL_OPTMASK: 1152\n")
     simsed = tmp_path / "simsed.input"
     simsed.write_text(Path(_SIMSED).read_text() + "\nSIMSED_USE_BINARY: 1\n")
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         parse_snana_input_file(str(inp))
         parse_snana_input_file(str(simsed))
     unrec = "\n".join(m for m in caplog.messages if "Unrecognized SNANA input key" in m)
@@ -1795,7 +1790,7 @@ def test_simsed_param_aliases_not_warned(tmp_path, caplog):
     # SIMSED_PATH_BINARY names SNANA's flux-table cache, which jax has no
     # analogue for: accepted so the official SIMSED inputs run, and logged
     simsed.write_text(Path(_SIMSED).read_text() + "\nSIMSED_PATH_BINARY: flux_cache\n")
-    with caplog.at_level(logging.INFO, logger="jax_snlc_core.models.simsed_model"):
+    with caplog.at_level(logging.INFO, logger="jax_snlc_core.models.simsed"):
         build_model(_SIMSED_MODEL, parse_snana_input_file(str(simsed)).model_config())
     assert any("SIMSED_PATH_BINARY flux_cache names SNANA's flux-table cache" in m
                for m in caplog.messages)
@@ -1847,7 +1842,6 @@ def test_sed_binary_reads_either_snana_layout(tmp_path):
         [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 0]],
         [[10, 11, 12, 13], [14, 15, 16, 17], [18, 19, 20, 0]],
     ])  # each record's last flux is unwritten and must be zero-padded
-
 
 
 def test_simsed_shapepar_feeds_simsed_params(tmp_path):
@@ -1949,10 +1943,10 @@ def test_mxradius_random_shift_moves_sn_and_hosts(tmp_path):
 def test_take_spectrum_prescale_parsing(tmp_path):
     """FIELD/prescale pairs, '+' or ',' separated (sntools.c
     parse_string_prescales); a bare name means prescale 1 (:988)."""
-    assert _parse_string_prescales("C3/4.3+X3/2.2") == {'C3': 4.3, 'X3': 2.2}
-    assert _parse_string_prescales("C3/4,X3/2") == {'C3': 4.0, 'X3': 2.0}
-    assert _parse_string_prescales(None) == {}
-    assert _parse_string_prescales("C3") == {'C3': 1.0}
+    assert parse_prescales("C3/4.3+X3/2.2") == {'C3': 4.3, 'X3': 2.2}
+    assert parse_prescales("C3/4,X3/2") == {'C3': 4.0, 'X3': 2.0}
+    assert parse_prescales(None) == {}
+    assert parse_prescales("C3") == {'C3': 1.0}
     cfg = parse_snana_input_file(str(_write(
         tmp_path, Path(_SALT3).read_text()
         + "\nTAKE_SPECTRUM_PRESCALE: TOY_A/4.0\nTAKE_SPECTRUM_DUMPCID: 17\n")))
@@ -2000,7 +1994,7 @@ def _spec_by_cid(base_text, extra, tmp_path, tag, simlib=None, n_sne=30, seed=5)
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     d = str(tmp_path / f"{tag}_out")
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, tag, sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, tag, sel, spectra_by_sn=spectra_cache, output_dir=d)
     out = {}
     with fits.open(resolve_fits_path(f"{d}/{tag}/{tag}_SPEC.FITS")) as h:
         hdr, flx = h[1].data, h[2].data
@@ -2133,7 +2127,6 @@ def test_use_simlib_take_spectrum_simlib_entry_aborts(tmp_path):
         sim = sim_run.prepare(str(inp), **config)
         simulation = None if sim is None else sim.config
         resources = sim
-        from jax_snlc_sim.builder import simlib_take_spectrum_entries
         simlib_take_spectrum_entries(sim.fields)
 
     with pytest.raises(SNANAError, match="host SEDs"):
@@ -2655,7 +2648,7 @@ def test_mushift_range_is_reweighted_only_under_a_z_dependent_rewgt(tmp_path):
 
     def table(extra):
         cfg = parse_snana_input_file(str(_write(tmp_path, base + extra)))
-        return _build_murewgt(cfg, None)
+        return build_murewgt(cfg, None)
 
     for key in ("DNDZ_ZPOLY_REWGT", "DNDZ_Z1POLY_REWGT"):
         mu, cdf = table(f"MUSHIFT: -0.1:0.3\n{key}: 0,1\n")
@@ -2682,7 +2675,7 @@ def test_dndz_modifier_keys_are_not_silent(tmp_path):
     def parse(extra):
         buf = io.StringIO()
         handler = logging.StreamHandler(buf)
-        log = logging.getLogger('jax_snlc_sim.config_parser')
+        log = logging.getLogger('jax_snlc_sim.inputs')
         log.addHandler(handler)
         try:
             cfg = parse_snana_input_file(str(_write(tmp_path, base + extra)))
@@ -3171,7 +3164,7 @@ def test_dumpall_keeps_host_columns_when_events_are_rejected(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "D", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "D", sel, spectra_by_sn=spectra_cache, output_dir=out)
 
     rows = [l.split()[1:] for l in open(f"{out}/D/D.DUMP") if l.startswith("SN:")]
     assert len(rows) == n_sne, "DUMPALL emits one row per generated event"
@@ -3196,7 +3189,7 @@ def _write_out(simulation, resources, config, sim, tmp_path, tag, extra_res=None
     sel = sim_run.apply_selection(sim, res)
     d = str(tmp_path / tag)
     os.makedirs(d, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "V", sel, spectra_cache=spectra_cache, output_dir=d)
+    save_snana_outputs(sim, res, "V", sel, spectra_by_sn=spectra_cache, output_dir=d)
     return d
 
 
@@ -3273,7 +3266,7 @@ def test_nepoch_taking_every_event_aborts_like_snana(tmp_path):
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
     with pytest.raises(SNANAError, match="NEPOCH"):
-        sim_run.save_snana_outputs(sim, res, "N", sel, spectra_cache=spectra_cache, output_dir=out)
+        save_snana_outputs(sim, res, "N", sel, spectra_by_sn=spectra_cache, output_dir=out)
 
 
 def test_an_event_with_no_model_flux_on_any_epoch_is_nepoch(tmp_path):
@@ -3316,7 +3309,7 @@ def test_wipeout_by_another_cut_is_not_an_abort(tmp_path):
     assert int(sel['n_passed']) == 0, "fixture must reject every event"
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
-    summary = sim_run.save_snana_outputs(sim, res, "W", sel, spectra_cache=spectra_cache, output_dir=out)
+    summary = save_snana_outputs(sim, res, "W", sel, spectra_by_sn=spectra_cache, output_dir=out)
     assert summary['n_passed'] == 0
 
 
@@ -3343,7 +3336,7 @@ def test_plain_dump_selection_columns_track_the_rows_it_emits(tmp_path):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(tmp_path / "out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "P", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "P", sel, spectra_by_sn=spectra_cache, output_dir=out)
 
     hdr, rows = None, []
     for line in open(f"{out}/P/P.DUMP"):
@@ -3417,7 +3410,7 @@ def test_sim_redshift_host_match_is_the_matched_host_redshift(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "JAX_ZHOST", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, res, "JAX_ZHOST", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     with fits.open(glob.glob(f"{tmp_path}/**/*HEAD.FITS*", recursive=True)[0]) as f:
         d = f[1].data
@@ -3461,7 +3454,7 @@ def test_storepar_columns_and_always_present_host_vars(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "JAX_SP", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, res, "JAX_SP", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     with fits.open(glob.glob(f"{tmp_path}/**/*HEAD.FITS*", recursive=True)[0]) as f:
         d = f[1].data
@@ -3517,7 +3510,7 @@ def test_zp_fluxcal_header_key_and_flux_scaling(tmp_path):
         simulation = None if sim is None else sim.config
         resources = sim
         res, sel, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, res, f"JAX_{tag}", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path / tag))
+        save_snana_outputs(sim, res, f"JAX_{tag}", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path / tag))
         head = glob.glob(f"{tmp_path}/{tag}/**/*HEAD.FITS*", recursive=True)[0]
         phot = glob.glob(f"{tmp_path}/{tag}/**/*PHOT.FITS*", recursive=True)[0]
         with fits.open(head) as h, fits.open(phot) as p:
@@ -3620,7 +3613,7 @@ def test_magmonitor_snr_column_gating_and_text(tmp_path):
         resources = sim
         res, sel, spectra_cache = sim_run.run_simulation(sim)
         d = tmp_path / tag
-        sim_run.save_snana_outputs(sim, res, "B", sel, spectra_cache=spectra_cache, output_dir=str(d))
+        save_snana_outputs(sim, res, "B", sel, spectra_by_sn=spectra_cache, output_dir=str(d))
         return d
 
     d_on = run("MAGMONITOR_SNR: 22", "on")
@@ -3695,7 +3688,7 @@ def test_simlib_survey_override_drives_both_the_name_and_the_id():
     name/ID pair drawn from different surveys shifts the systematic draws.
 
     CSP carries no `geo:` token in SURVEY.DEF, so this also covers the surveys
-    `parse_survey_def` excludes.
+    `read_observatory_sites` excludes.
     """
     simlib = "$JAX_TEST_FIXTURE_ROOT/simlib/JAX_TEST_LSST.SIMLIB"
 
@@ -3708,7 +3701,7 @@ def test_simlib_survey_override_drives_both_the_name_and_the_id():
     assert over_id == survey_id("CSP"), "IDSURVEY ignored SIMLIB_SURVEY"
     assert over_id != native_id, "fixture no longer discriminates"
 
-    assert "CSP" not in parse_survey_def(), "CSP gained a geo: entry"
+    assert "CSP" not in read_observatory_sites(), "CSP gained a geo: entry"
 
 def _restage_head(src_dir, dst_dir, version, snana_version, vpec=None):
     """Copy a fit fixture, rewriting the HEAD's SNANA_VERSION and VPEC."""
@@ -3869,27 +3862,27 @@ def test_errmax_bad_substitutes_the_declared_inistp(data_root):
 
     cfg = FitConfig()
     specs = model.get_fit_parameters()
-    r = fit_run.errmax_bad(cfg, specs, (), results(), init)
+    r = uncertainties.errmax_bad(cfg, specs, (), results(), init)
     # SN 0's x1 never left its start; SN 1's colour error is under the floor
     np.testing.assert_allclose(r.param_errors['x1'], [0.3, 0.12, 0.13])
     np.testing.assert_allclose(r.param_errors['c'], [0.05, 0.03, 0.05])
     assert r.n_sne == 3, "the error is flagged, the fit is not rejected"
 
     # FLOATPAR gates the substitution, so a held parameter is untouched
-    r = fit_run.errmax_bad(cfg, specs, ('x1', 'c'), results(), init)
+    r = uncertainties.errmax_bad(cfg, specs, ('x1', 'c'), results(), init)
     np.testing.assert_allclose(r.param_errors['x1'], [0.11, 0.12, 0.13])
     np.testing.assert_allclose(r.param_errors['c'], [0.05, 1e-5, 0.05])
 
     # MINOS_ERRMAX_BAD = F zeroes the floors alone, leaving the second
     # condition live: x1 is still substituted, the tiny colour error survives
-    r = fit_run.errmax_bad(FitConfig(fit=Fit(minos_errmax_bad=False)), specs,
+    r = uncertainties.errmax_bad(FitConfig(fit=Fit(minos_errmax_bad=False)), specs,
                            (), results(), init)
     np.testing.assert_allclose(r.param_errors['x1'], [0.3, 0.12, 0.13])
     np.testing.assert_allclose(r.param_errors['c'], [0.05, 1e-5, 0.05])
 
     # an explicit INISTP_<p> overrides the declared default, under the name
     # resolve_parameter_keys leaves on the config
-    r = fit_run.errmax_bad(FitConfig(model=Model(inistp={'c': 0.5})), specs,
+    r = uncertainties.errmax_bad(FitConfig(model=Model(inistp={'c': 0.5})), specs,
                            (), results(), init)
     np.testing.assert_allclose(r.param_errors['c'], [0.05, 0.5, 0.05])
 
@@ -3990,10 +3983,10 @@ def test_opt_sncid_list_bit1_starts_each_event_at_the_list_files_fit(tmp_path):
                         sncid_list_file=str(src / "FITRES.TEXT"))
 
     sim_dirs, _, kcor, model = fit_run._inputs(config)
-    batch, _, _, _ = fit_run.load(config, model, kcor, sim_dirs,
-                                  fit_run.read_shared_files(config))
-    fitter = fit_run.prepare(config, model, kcor, batch)
-    start = fit_run.start_values(fitter, fitter.config, batch, {})
+    batch, _, _, _ = loader.load(config, model, kcor, sim_dirs,
+                                  loader.read_shared_files(config))
+    fitter = prepare(config, model, kcor, batch)
+    start = fitter.start_values(fitter.config, batch, {})
 
     snana = read_fitres(str(src / "FITRES.TEXT")).df.set_index("CID")
     rows = snana.loc[np.asarray(batch.snids).astype(str)]
@@ -4009,8 +4002,6 @@ def test_subsurvey_follows_the_entry_whatever_its_libid(tmp_path):
     sntools_sim_readme.c:640); and the fitter writes each event's SUBSURVEY
     id under IDSURVEY, the survey's own id where there is none
     (snana.F90:3839-3843, :23294-23297)."""
-    import subprocess
-    import sys
 
     root = Path(__file__).resolve().parents[1] / "fixtures"
     simlib = (root / "data/simlib/JAX_TEST_LSST_WINDOWS.SIMLIB").read_text()
@@ -4028,7 +4019,7 @@ def test_subsurvey_follows_the_entry_whatever_its_libid(tmp_path):
     resources = sim
     results, selection, spectra_cache = sim_run.run_simulation(sim)
     version = "JAX_TEST_SUBSURVEY"
-    sim_run.save_snana_outputs(sim, results, version, selection, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, version, selection, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     vdir = tmp_path / version
     head = fits.getdata(resolve_fits_path(next(vdir.glob("*HEAD.FITS*"))), 1)
     lib = head['SIM_LIBID']
@@ -4066,8 +4057,6 @@ def test_cutwin_trestrange_matches_snana(tmp_path):
     it (snlc_fit.F90:12905-12909). snlc_fit.exe on this fixture: 30 drops
     CIDs 62 and 70 before the fit and 85 after; 45 drops 52, 62, 64, 70 and
     80 before and 85 after."""
-    import subprocess
-    import sys
 
     src = Path(__file__).resolve().parents[1] / "fixtures/snana/salt3_fit_dense"
     version = "JAX_TEST_SALT3_FIT_DENSE"
@@ -4123,7 +4112,7 @@ def test_fitwin_mb_err_cuts_when_unset(data_root):
         hessian_cond=np.ones(n), hessian_positive=np.ones(n, dtype=bool), edm=np.zeros(n),
         z_prior=None, iter1_verdicts={})
 
-    keep = fit_run._fitwin_mask({}, model, results, z, mu, None, FitConfig())
+    keep = cuts._fitwin_mask({}, model, results, z, mu, None, FitConfig())
     assert list(keep) == [True, False, True]
 
 
@@ -4167,17 +4156,17 @@ def test_error_bounds_are_per_parameter(data_root):
             'x0': np.full(n, 1e-7),
             'x1': np.array([0.2, 3.5, 0.2, 0.2, 0.2]),
             'c': np.array([0.02, 0.02, 1e-9, 0.02, np.nan])}
-    keep = fit_run._fit_error_bounds_mask(spec, {}, result(errs))
+    keep = cuts._fit_error_bounds_mask(spec, {}, result(errs))
     assert list(keep) == [True, False, False, False, False]
 
     # a held parameter is only checked for NaN (SNANA tests IF(FLOAT_x))
-    keep = fit_run._fit_error_bounds_mask(spec, {'x1'}, result(errs))
+    keep = cuts._fit_error_bounds_mask(spec, {'x1'}, result(errs))
     assert list(keep) == [True, True, False, False, False]
 
     # PKMJD's 10.0 is its own: 3.5 breaks x1's bound but is fine for PKMJD
     within = {'PKMJD': np.full(n, 3.5), 'x0': np.full(n, 1e-7),
               'x1': np.full(n, 0.2), 'c': np.full(n, 0.02)}
-    assert fit_run._fit_error_bounds_mask(spec, {}, result(within)).all()
+    assert cuts._fit_error_bounds_mask(spec, {}, result(within)).all()
 
 
 def test_peg_margins_are_per_parameter(data_root):
@@ -4211,14 +4200,14 @@ def test_peg_margins_are_per_parameter(data_root):
     config = FitConfig(model=Model(priors={
         'x1': {'flat_rolloff': {'lo': -3.0, 'hi': 3.0}},
         'c': {'flat_rolloff': {'lo': -0.3, 'hi': 0.3}}}))
-    keep = fit_run._sncid_pegged_mask(config, model, results, {})
+    keep = cuts._sncid_pegged_mask(config, model, results, {})
     assert list(keep) == [False, False, True, False, False]
     # c sits exactly on its own prior edge and survives, because it declares
     # no margin -- 0.05 would cut a sixth off a range that runs over tenths
     assert keep[2]
 
     # the default x1 range is wider than x1's own bounds, so nothing pegs
-    assert fit_run._sncid_pegged_mask(FitConfig(), model, results, {}).all()
+    assert cuts._sncid_pegged_mask(FitConfig(), model, results, {}).all()
 
 
 def test_prior_range_needs_a_roll_off_width(data_root):
@@ -4237,14 +4226,14 @@ def test_prior_range_needs_a_roll_off_width(data_root):
             priors={'AV': {'flat_rolloff': coefficients}}))
 
     with pytest.raises(SNANAError, match="no roll-off width"):
-        priors.flat_window(av(lo=0.0, hi=2.0), 'AV', spec['AV'])
+        flat_window(av(lo=0.0, hi=2.0), 'AV', spec['AV'])
 
     # supplying the width too is a complete request and is honoured
-    assert priors.flat_window(
+    assert flat_window(
         av(lo=0.0, hi=2.0, sigma=0.05), 'AV', spec['AV']) == (0.0, 2.0, 0.05)
 
     # and a parameter the model does give a prior needs no input at all
-    assert priors.flat_window(
+    assert flat_window(
         FitConfig(), 'THETA', spec['THETA']) == (-9.0, 9.0, 0.1)
 
 

@@ -38,7 +38,7 @@ dependencies = [
     "platformdirs>=4.0",
     "isal>=1.2",  # threaded gzip for the simulator's FITS output
     "pyarrow>=14.0",  # parquet engine for HostLibCacheManager (pd.{to,read}_parquet)
-    "pyyaml>=6.0",  # YAML fitter configs (snlc_fit.py load_fit_config)
+    "pyyaml>=6.0",  # YAML inputs
     "numpyro>=0.22.0",
 ]
 

@@ -15,7 +15,10 @@ import numpy as np
 import pytest
 
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.config_parser import parse_snana_input_file
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.inputs import parse_snana_input_file
+from jax_snlc_sim.simulation import run_key
+from jax_snlc_sim.spectra import compute_spectra_for_mask
 
 _F = "$JAX_TEST_FIXTURE_ROOT"
 
@@ -121,7 +124,7 @@ def test_specid_gates_on_spectrum_snr(tmp_path, source):
     inp_gated = tmp_path / "gated.input"
     _write_input(inp_gated, specmap=tmp_path / "m_gated.DAT", source=source)
     _write_specmap(tmp_path / "m_gated.DAT", gated=True)
-    sim_g, r_g, s_g, cache_g, resources = _run(inp_gated)
+    sim_g, r_g, s_g, _, resources = _run(inp_gated)
 
     inp_flat = tmp_path / "flat.input"
     _write_input(inp_flat, specmap=tmp_path / "m_flat.DAT", source=source)
@@ -146,11 +149,14 @@ def test_specid_gates_on_spectrum_snr(tmp_path, source):
         # epoch well before peak) sums to zero, as in SNANA's GENSPEC_SNR
         z1_cmb = 1.0 + np.asarray(p_g['sim_redshift_cmb'])
         cid = np.asarray(p_g['cid'])
+        candidate_spectra, candidate_snr = compute_spectra_for_mask(
+            sim_g, r_g, pf, key=run_key(sim_g.config))
+        np.testing.assert_allclose(snr_g[pf], candidate_snr[pf], rtol=1e-12, atol=0)
         has_spectrum &= np.array([
             any(np.any((0.5 * (s.lam_min + s.lam_max) >= 5000.0 * z)
                        & (0.5 * (s.lam_min + s.lam_max) <= 6000.0 * z)
                        & (np.asarray(s.sim_flam) > 0))
-                for s in cache_g.get(int(c), []))
+                for s in candidate_spectra.get(int(c), []))
             for c, z in zip(cid, z1_cmb)])
     assert np.array_equal(snr_g[pf] > 0, has_spectrum[pf]), (
         "snrsum must be populated for exactly the candidates with a spectrum")
@@ -186,7 +192,7 @@ def test_cidran_with_cached_spectra(tmp_path):
     SPEC share the remapped CIDs (exercises _remap_spectra_cids on the spectra
     cache)."""
     from astropy.io import fits
-    from jax_snlc_core.io.fits_path import resolve_fits_path
+    from jax_snlc_core.snana_files import resolve_fits_path
     inp = tmp_path / "cr.input"
     _write_input(inp, specmap=tmp_path / "m.DAT")
     _write_specmap(tmp_path / "m.DAT", gated=True)
@@ -198,7 +204,7 @@ def test_cidran_with_cached_spectra(tmp_path):
     resources = sim
     results, sel, spectra_cache = sim_run.run_simulation(sim)
     assert sim.specid_uses_snrsum_rest_v and spectra_cache is not None
-    sim_run.save_snana_outputs(sim, results, "CR", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "CR", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     d = tmp_path / "CR"
     with fits.open(resolve_fits_path(d / "CR_HEAD.FITS")) as h:

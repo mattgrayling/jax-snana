@@ -6,15 +6,10 @@ import numpy as np
 import pytest
 from scipy.interpolate import CubicHermiteSpline
 
-from jax_snlc_core.utils.interp import (
-    compute_catmullrom_slopes,
-    hermite_grid_slopes,
-    hermite_interp_1d,
-    hermite_interp_1d_batch,
-    hermite_interp_1d_select,
-    hermite_interp_grid,
-    upsample_grid_linear,
-)
+from jax_snlc_core.interpolation import (compute_catmullrom_slopes, hermite_grid_slopes,
+                                         hermite_interp_1d, hermite_interp_1d_batch,
+                                         hermite_interp_1d_select, hermite_interp_grid,
+                                         linear_between, linear_bin, upsample_grid_linear)
 
 
 # ---------------------------------------------------------------------------
@@ -177,3 +172,17 @@ def test_upsampled_grid_is_the_linear_surface_with_rounded_corners():
 
     plain, four, eight = excursion(1), excursion(4), excursion(8)
     assert four < plain / 3.5 and eight < four / 1.9
+
+
+def test_linear_interpolation_follows_interp_1dfun():
+    """interp_1DFUN's linear form (sntools.c): a grid point returns its own
+    value, a point between interpolates linearly, and quickBinSearch's bin
+    is the lowest that brackets the value, so a repeated grid value is never
+    a zero-width bin. Outside the grid, where interp_1DFUN aborts, the value
+    is held to the grid's end."""
+    xp = jnp.array([1.0, 2.0, 4.0, 4.0])
+    fp = jnp.array([[10.0, 1.0], [20.0, 3.0], [40.0, 7.0], [40.0, 7.0]])
+    for x, expected in [(2.0, [20.0, 3.0]), (3.0, [30.0, 5.0]), (4.0, [40.0, 7.0]),
+                        (0.0, [10.0, 1.0]), (9.0, [40.0, 7.0])]:
+        i, frac = linear_bin(jnp.asarray(x), xp)
+        np.testing.assert_array_equal(linear_between(fp[i], fp[i + 1], frac), expected)

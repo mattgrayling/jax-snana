@@ -12,13 +12,19 @@ per-epoch coordinate smear uses JAX (batch-invariant per-SN keys).
 """
 
 import math
+import os
+from dataclasses import dataclass
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.utils.interp import eval_genpoly
-from jax_snlc_sim.random_streams import event_keys
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import load_survey_geo, read_two_column_file
+from jax_snlc_core.utils import eval_genpoly
+from jax_snlc_core.random import event_keys
+from jax_snlc_sim.observations import (padded_rows, simlib_epochs)
 
 RADIAN = math.pi / 180.0
 FAC_DCR = 206265.0                      # arcsec per radian
@@ -29,6 +35,33 @@ UNIT_DELTA = 3600.0                     # deg -> arcsec
 DCR_NULL_ARCSEC = 999.0
 # observations per DCR batch
 DCR_BATCH = 4096
+
+
+@dataclass
+class SiteGeo:
+    """Observatory geo-coordinates and altitude-derived atmosphere params."""
+    geo_lat: float          # degrees
+    geo_lon: float          # degrees
+    geo_alt: float          # metres
+    temperature: float      # Celsius
+    pressure: float         # mm Hg
+    pwv: float              # mm Hg
+
+
+def read_observatory_sites(path=None) -> dict[str, SiteGeo]:
+    """SURVEY.DEF sites with atmosphere parameters derived from altitude.
+
+    Only surveys carrying a geo: token have a site. Temperature (C), pressure
+    and water vapour (mm Hg) follow SNANA's altitude formulas (sntools.c:3692).
+    """
+    sites = {}
+    for name, (lat, lon, alt) in load_survey_geo(path).items():
+        sites[name] = SiteGeo(
+            lat, lon, alt,
+            temperature=20.0 - 0.006 * alt,
+            pressure=760.0 * (1.0 - alt * 2.25577e-5) ** 5.25588,
+            pwv=3.0 * math.exp(-alt / 2000.0))
+    return sites
 
 
 def airmass_from_mjd(mjd, ra_deg, dec_deg, geo_lat_deg, geo_lon_deg):
@@ -259,7 +292,8 @@ def compute_atmosphere(*, mjd, filter_idx, valid_mask, ra_deg, dec_deg,
     snr_o = np.asarray(snr_obs, dtype=np.float64)
     psf = np.asarray(psf_fwhm, dtype=np.float64)
     statres_true = eval_genpoly(coordres_poly, np.where(snr_t > 0, psf / snr_t, 0.0))
-    statres_obs = eval_genpoly(coordres_poly, np.where(snr_o > 0, psf / snr_o, 0.0))
+    psf_over_snr = np.divide(psf, snr_o, out=np.zeros_like(psf), where=snr_o > 0)
+    statres_obs = eval_genpoly(coordres_poly, psf_over_snr)
     angres_true = np.sqrt(statres_true ** 2 + coordres_floor ** 2)
     angres_obs = np.sqrt(statres_obs ** 2 + coordres_floor ** 2)
     valid_shift = ra_shift < COORD_SHIFT_NULL_DEG
@@ -341,3 +375,115 @@ def compute_atmosphere(*, mjd, filter_idx, valid_mask, ra_deg, dec_deg,
         'dec_avg_band': dec_sim_avg_band,
     }
 
+
+def build_atmosphere_static(simulator):
+    """Site geo, cal-star SED and per-filter transmission on the shared
+    photometry grid for the DCR integral (INIT_ATMOSPHERE)."""
+    atm = simulator.config.instrument
+    site = simulator.site
+    if site is None:
+        raise SNANAError(
+            f"ATMOSPHERE: survey '{simulator.survey_name}' has no "
+            f"geo: entry in SURVEY.DEF")
+
+    photom = simulator.photometry
+    wave = np.asarray(photom.common_wave_grid, dtype=np.float64)
+    name_to_row = {n: i for i, n in enumerate(photom.filter_names)}
+    rows = [name_to_row[n] for n in simulator.filter_names]
+    trans_by_filter = np.asarray(photom.common_trans_grid, dtype=np.float64)[rows]
+
+    star_path = Path(os.path.expandvars(atm.atmos_sedstar_file)).expanduser()
+    star_wave, star_flux = read_two_column_file(star_path)
+    cal_flux = np.interp(wave, star_wave, star_flux, left=0.0, right=0.0)
+
+    return site, wave, trans_by_filter, cal_flux
+
+
+def compute_atmosphere_for_mask(simulator, results, selection_result,
+                                spectra_by_sn, *, key):
+    """Return airmass and DCR arrays aligned with simulation events and epochs.
+
+    Mirrors GEN_ATMOSPHERE_DRIVER: output-only, so it runs as a post-pass on
+    the passing-obs grid and never perturbs simulated flux. The chromatic SED
+    is the SED-true sim_flam interpolated onto the shared filter grid.
+    """
+    atm = simulator.config.instrument
+    site, wave, trans_by_filter, cal_flux = simulator.atmosphere_static
+    n_wave = wave.shape[0]
+
+    passing = np.asarray(selection_result['passing_mask'])
+    passing_indices = np.where(passing)[0]
+    obs = results['observation_schedule']
+
+    def grid(array, fill):
+        return padded_rows(results, array, passing_indices, fill)
+
+    mjd = grid(np.asarray(simlib_epochs(simulator, results, 'mjds'),
+                          dtype=np.float64), 0.0)
+    n_sne, max_obs = mjd.shape
+    filter_idx = grid(obs['filter_indices'], -1)
+    ra = np.asarray(results['parameters']['ra'], dtype=np.float64)[passing_indices]
+    dec = np.asarray(results['parameters']['dec'], dtype=np.float64)[passing_indices]
+    psf1s = grid(np.asarray(simlib_epochs(simulator, results, 'psf1s'),
+                            dtype=np.float64), 0.0)
+    pixsizes = np.asarray(simulator.flat_field_index['pixsizes'])
+    pixsize = pixsizes[np.asarray(results['parameters']['field_idx'])[passing_indices]]
+    psf_fwhm = psf1s * pixsize[:, None] * 2.355          # SIMLIB_OBS_GEN.PSF_FWHM
+    snr_true = grid(np.asarray(results['snrs_model'], dtype=np.float64), 0.0)
+    snr_obs = grid(np.asarray(results['snrs'], dtype=np.float64), 0.0)
+    obs_valid = grid(selection_result['valid_mask'], False)
+
+    # each epoch's SED is the nearest SED-true spectrum in MJD (IMJD_GENSPEC); none gives DCR null
+    cids = np.asarray(results['parameters']['cid'])[passing_indices]
+    lam_avg = None
+    spec_rows = []
+    spec_row = np.full((n_sne, max_obs), -1, dtype=np.int32)
+    for i in range(n_sne):
+        if not obs_valid[i].any():
+            continue
+        specs = spectra_by_sn.get(int(cids[i]))
+        if not specs:
+            continue
+        if lam_avg is None:
+            lam_avg = 0.5 * (np.asarray(specs[0].lam_min)
+                             + np.asarray(specs[0].lam_max))
+        spec_mjds = np.array([s.mjd for s in specs])
+        row_of_spec = {}
+        for j in np.where(obs_valid[i])[0]:
+            k = int(np.argmin(np.abs(spec_mjds - mjd[i, j])))
+            if abs(spec_mjds[k] - mjd[i, j]) < 0.06:
+                if k not in row_of_spec:
+                    row_of_spec[k] = len(spec_rows)
+                    spec_rows.append(np.interp(
+                        wave, lam_avg, np.asarray(specs[k].sim_flam),
+                        left=0.0, right=0.0))
+                spec_row[i, j] = row_of_spec[k]
+    spec_flam = (np.asarray(spec_rows, dtype=np.float64) if spec_rows
+                 else np.zeros((0, n_wave), dtype=np.float64))
+
+    sigma_site = (atm.sigma_site_temp, atm.sigma_site_bp, atm.sigma_site_pwv)
+    out = compute_atmosphere(
+        mjd=mjd, filter_idx=filter_idx, valid_mask=obs_valid,
+        ra_deg=ra, dec_deg=dec, global_indices=passing_indices,
+        psf_fwhm=psf_fwhm, snr_true=snr_true, snr_obs=snr_obs,
+        spec_flam=spec_flam, spec_row=spec_row, wave=wave,
+        trans_by_filter=trans_by_filter,
+        cal_flux=cal_flux, site=site, coordres_poly=atm.dcr_coordres_poly,
+        magshift_poly=atm.dcr_magshift_poly, coordres_floor=atm.coordres_floor,
+        sigma_site=sigma_site, key=key)
+
+    # Store values in the same event/epoch layout as the other simulation results.
+    epoch_indices = grid(np.arange(np.size(results['snrs'])), 0)[obs_valid]
+    atmosphere = {}
+    for name in ('airmass', 'd_ra', 'd_dec', 'sim_dcr_dra', 'sim_dcr_ddec',
+                 'sim_dcr_dmag', 'sim_dcr', 'coordres', 'lamavg_sed_wgted',
+                 'psf_fwhm', 'snr_true', 'snr_obs'):
+        values = np.full(np.size(results['snrs']), np.nan)
+        values[epoch_indices] = out[name][obs_valid]
+        atmosphere[name] = values
+
+    for name in ('ra_avg_band', 'dec_avg_band'):
+        values = np.full((len(passing), out[name].shape[1]), np.nan)
+        values[passing_indices] = out[name]
+        atmosphere[name] = values
+    return atmosphere

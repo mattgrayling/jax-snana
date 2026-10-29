@@ -5,14 +5,9 @@ import numpy as np
 import pytest
 from scipy.integrate import quad
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import (
-    cpl_comoving_integral,
-    cpl_e2,
-    distance_modulus,
-    flat_cpl_comoving_integral,
-    flat_cpl_e2,
-)
+from jax_snlc_core.cosmology import (cpl_comoving_integral, cpl_e2, distance_modulus,
+                                     flat_cpl_comoving_integral, flat_cpl_e2)
+from jax_snlc_core.utils import LIGHT_KM
 
 _HUBBLE_DISTANCE_MPC = LIGHT_KM / 70.0
 

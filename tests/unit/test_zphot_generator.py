@@ -2,25 +2,19 @@
 helpers and the HOSTLIB_ZPHOTEFF draw."""
 
 import numpy as np
-
 import pytest
 
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_sim.host_association import _apply_zphoteff
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.hostlib.association import _apply_zphoteff
+from jax_snlc_sim.hostlib.photoz import DECADE_QUANTILES
+from jax_snlc_sim.hostlib.photoz import (NRAND_ZPHOT, ZPHOT_MIN, GenZphot,
+                                                  ZphotEfficiency, build_genzphot,
+                                                  generate_zphot_from_calc,
+                                                  generate_zphot_quantiles_gaussian,
+                                                  read_zphoteff_file,
+                                                  validate_genzphot_fudgemap)
+from jax_snlc_core.random import root_key
 from jax_snlc_sim.simulation import Host
-from jax_snlc_sim.hostlib.zphot_generator import (
-    NRAND_ZPHOT,
-    ZPHOT_MIN,
-    GenZphot,
-    ZphotEfficiency,
-    build_genzphot,
-    generate_zphot_from_calc,
-    generate_zphot_quantiles_gaussian,
-    read_zphoteff_file,
-    validate_genzphot_fudgemap,
-)
-from jax_snlc_sim.hostlib.hostlib_reader import DECADE_QUANTILES
 
 
 def _model(fudgepar, outlier_range=(0.0, 1.0)):
@@ -79,10 +73,11 @@ def test_zphoteff_file_missing_or_without_two_columns_aborts(tmp_path):
         read_zphoteff_file(tmp_path / "NOSUCH.DAT", hosts)
     onecol = tmp_path / "ONECOL.DAT"
     onecol.write_text("0.1\n0.3\n")
-    with pytest.raises(SNANAError, match="two columns"):
+    with pytest.raises(SNANAError, match="two numbers"):
         read_zphoteff_file(onecol, hosts)
     good = tmp_path / "EFF.DAT"
-    good.write_text("# ZTRUE EFF\n0.0 1.0\n1.0 0.5\n")
+    good.write_text("DOCUMENTATION:\nPURPOSE: photo-z efficiency\nDOCUMENTATION_END:\n"
+                    "! comment\n% comment\n@ comment\n# ZTRUE EFF\n0.0 1.0\n1.0 0.5\n")
     efficiency = read_zphoteff_file(good, hosts)
     np.testing.assert_array_equal(efficiency.ztrue, [0.0, 1.0])
     np.testing.assert_array_equal(efficiency.eff, [1.0, 0.5])
@@ -168,3 +163,13 @@ def test_generate_zphot_quantiles_gaussian_custom_percentiles():
         'ZPHOT_Q005', 'ZPHOT_Q025', 'ZPHOT_Q050', 'ZPHOT_Q075', 'ZPHOT_Q095'}
     med = out['ZPHOT_Q050']
     np.testing.assert_allclose(med, zphot, atol=1e-6)
+
+
+def test_fudgemap_validation_keeps_input_precision():
+    """Host-side validation preserves ordered nodes in single-precision runs."""
+    import jax
+
+    with jax.enable_x64(False):
+        validate_genzphot_fudgemap(
+            np.array([0.1, 0.100000001, 0.5]), np.array([0.01, 0.02, 0.03]),
+            (0.1, 0.5))

@@ -6,18 +6,17 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jax_salt2mu.biascor_build import _build_one_map, _apply_biascor_grid_cut
-from jax_salt2mu.biascor_map import fitparbias_events
-from jax_salt2mu.cellgrid import CellGrid, uniform_bininfo
+from jax_salt2mu.biascor import (_apply_biascor_grid_cut, _build_one_map,
+                                 fitparbias_events, build_mucovscale_map, mucovscale_events)
 from jax_salt2mu.ccprior import build_ccprior_bins, cell_index
-from jax_salt2mu.config import BBCConfig, map_bins, validate_coordinates
+from jax_salt2mu.binning import CellGrid
+from _bbc_helpers import uniform_bininfo
+from jax_salt2mu.config import BBCConfig, map_bins, parse_bbc_input, validate_coordinates
 from jax_salt2mu.distances import bias_values
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.mucovscale import build_mucovscale_map, mucovscale_events
 from jax_salt2mu.samples import BiasCorSample
 from jax_salt2mu.tablevar import CUTBIT_BIASCOR, CUTBIT_TRUESNIa
-from jax_snlc_core.models import StandardisedModel, SALTModel
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import SALTModel, StandardisedModel
 
 
 class DistanceModel(StandardisedModel):
@@ -157,10 +156,10 @@ def test_named_alias_precedence(tmp_path):
     path = tmp_path / "bbc.input"
     path.write_text("nbinc_mucovscale=4\nmucovscale_bins.c=2\nx1min=-2\n")
     cfg = parse_bbc_input(str(path), ["nbinc_mucovscale=5", "lcpar_range.x1=-1,2"])
-    assert map_bins(SALTModel, cfg, "mucovscale_bins") == {"c": 5}
+    assert map_bins(SALTModel.mucovscale_bins, cfg.mucovscale_bins) == {"c": 5}
     assert cfg.lcpar_range["x1"] == (-1., 2.)
     cfg = parse_bbc_input(str(path), ["mucovscale_bins.c=0", "x1max=1"])
-    assert not map_bins(SALTModel, cfg, "mucovscale_bins")
+    assert not map_bins(SALTModel.mucovscale_bins, cfg.mucovscale_bins)
     assert cfg.lcpar_range["x1"] == (-2., 1.)
 
 
@@ -172,8 +171,9 @@ def test_invalid_bin_count(override):
 
 def test_auxiliary_loading_and_grid_cut():
     import pandas as pd
-    from jax_snlc_core.io.fitres_reader import FitresTable
-    from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, tablevar_from
+    from jax_snlc_core.snana_files import FitresTable
+    from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR
+    from _bbc_helpers import tablevar_from
 
     class Model(DistanceModel):
         biascor_binning = {name: (-1.5, 1.5, 1.) for name in ("a", "b", "d")}
@@ -200,7 +200,7 @@ def test_prior_gradient():
     import jax
     import jax.numpy as jnp
     from jax_salt2mu.ccprior import CCPriorInputs, PIFAC
-    from jax_salt2mu.likelihood import _ccprior_dPdmu
+    from jax_salt2mu.ccprior import _ccprior_dPdmu
     from jax_salt2mu.fitter import FitSpec
 
     class Model(DistanceModel):
@@ -231,16 +231,19 @@ def test_prior_gradient():
 
 
 @pytest.mark.parametrize("names", [(), ("a",), ("a", "b", "d")])
-def test_registered_model_preparation(names, monkeypatch):
+def test_registered_model_preparation(names):
+    """An explicitly registered distance model supports independent map coordinates."""
     import pandas as pd
-    from jax_snlc_core.models import MODEL_REGISTRY
-    from jax_snlc_core.io.fitres_reader import FitresTable
-    from jax_salt2mu.run import prepare_cell
+    from jax_snlc_core.models import MODEL_REGISTRY, SNModel, register_model
+    from jax_snlc_core.snana_files import FitresTable
+    from _bbc_helpers import prepare_cell
     from jax_salt2mu.tablevar import EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR
 
     model, cfg, tv, _, _, _ = sample(names)
-    model.GENMODEL_ALIASES = ("testdistance",)
-    monkeypatch.setitem(MODEL_REGISTRY, "TESTDISTANCE", model)
+
+    class RegisteredDistanceModel(model, SNModel):
+        GENMODEL_ALIASES = ("testdistance",)
+
     cfg.model_lcfit = "TESTDISTANCE"
     cfg.nzbin, cfg.zmin, cfg.zmax = 3, .1, .7
     cfg.opt_biascor = 16 | 32 | 128
@@ -254,11 +257,15 @@ def test_registered_model_preparation(names, monkeypatch):
     # Symmetric residuals avoid a zero pull variance in the error map.
     df["MU"] += np.tile([-.2, .2], n // 2)
     table = FitresTable(df, list(df), {}, varnames_by_file=[list(df)])
-    cell = prepare_cell(cfg, tables={EVENT_TYPE_DATA: table, EVENT_TYPE_BIASCOR: table})
-    assert cell.accept.any()
-    assert cell.maps.maps[0].axis_names == names
-    assert cell.maps.mucov_maps[0].axis_names == ("aux",)
-    assert np.all(np.isfinite(cell.inputs.fitparbias_nodes))
+    register_model("testdistance", RegisteredDistanceModel)
+    try:
+        cell = prepare_cell(cfg, tables={EVENT_TYPE_DATA: table, EVENT_TYPE_BIASCOR: table})
+        assert cell.accept.any()
+        assert cell.maps.maps[0].axis_names == names
+        assert cell.maps.mucov_maps[0].axis_names == ("aux",)
+        assert np.all(np.isfinite(cell.inputs.fitparbias_nodes))
+    finally:
+        del MODEL_REGISTRY["testdistance"]
 
 
 @pytest.mark.parametrize("names", [(), ("aux",), ("d", "a", "b")])
@@ -274,7 +281,7 @@ def test_error_map_dimensions(names):
 
 
 def test_single_cell_bias():
-    from jax_salt2mu.biascor_map import BiasCorMap, FitParBias
+    from jax_salt2mu.biascor import BiasCorMap, FitParBias
 
     bins = (uniform_bininfo(.1, .7, 1), uniform_bininfo(-40, 40, 1))
     m = BiasCorMap(CellGrid(bins), bins,

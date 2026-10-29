@@ -5,9 +5,9 @@ import pytest
 from scipy.integrate import quad
 
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.distances import mu_at
-from jax_snlc_core.physics.constants import LIGHT_KM
+from jax_snlc_core.utils import LIGHT_KM
 
 
 @pytest.mark.parametrize("radiation", [False, True])

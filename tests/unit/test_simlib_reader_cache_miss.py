@@ -13,12 +13,11 @@ import shutil
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
-from jax_snlc_sim.survey.simlib_reader import (
-    SimlibField, _get_cache_path, _is_cache_valid, read_simlib,
-)
+from jax_snlc_sim.simlib import SimlibField, _get_cache_path, read_simlib
 
 
 @pytest.fixture
@@ -66,7 +65,43 @@ def test_simlib_cache_roundtrip(lsst_simlib_path, cache_dir, tmp_path):
     # staleness: bumping the source mtime invalidates the cache
     reader = read_simlib(str(local_simlib), cache_dir=cache_dir)
     cache_path = Path(_get_cache_path(reader, cache_dir))
-    assert _is_cache_valid(reader, cache_dir)
+    local_simlib.write_text(local_simlib.read_text().replace('SURVEY: LSST', 'SURVEY: UPDATED'))
     new_mtime = cache_path.stat().st_mtime + 100.0
     os.utime(local_simlib, (new_mtime, new_mtime))
-    assert _is_cache_valid(reader, cache_dir) is False
+    refreshed = read_simlib(str(local_simlib), cache_dir=cache_dir)
+    assert refreshed.survey_name == 'UPDATED'
+
+
+def test_cache_refresh_preserves_open_readers(lsst_simlib_path, cache_dir):
+    """Refreshing the cache leaves an existing reader's complete file intact."""
+    from jax_snlc_sim.simlib import _save_to_cache
+
+    parsed = read_simlib(str(lsst_simlib_path), cache_dir=cache_dir)
+    cache_path = Path(_get_cache_path(parsed, cache_dir))
+    original_survey = parsed.survey_name
+    with h5py.File(cache_path, 'r') as snapshot:
+        parsed.survey_name = 'REFRESHED'
+        _save_to_cache(parsed, cache_dir)
+        assert snapshot.attrs['survey_name'] == original_survey
+        refreshed = read_simlib(str(lsst_simlib_path), cache_dir=cache_dir)
+        assert refreshed.survey_name == 'REFRESHED'
+    assert list(cache_dir.iterdir()) == [cache_path]
+
+
+@pytest.mark.parametrize('damage', ['old_reader', 'unreadable'])
+def test_invalid_cache_is_rebuilt(lsst_simlib_path, cache_dir, damage):
+    """Obsolete or unreadable cache files are replaced from the real source."""
+    parsed = read_simlib(str(lsst_simlib_path), cache_dir=cache_dir)
+    cache_path = Path(_get_cache_path(parsed, cache_dir))
+    if damage == 'old_reader':
+        with h5py.File(cache_path, 'r+') as cached:
+            cached.attrs['reader_hash'] = 'obsolete'
+            cached.attrs['survey_name'] = 'OBSOLETE'
+    else:
+        cache_path.write_text('not an HDF5 file')
+    rebuilt = read_simlib(str(lsst_simlib_path), cache_dir=cache_dir)
+    assert rebuilt.survey_name == parsed.survey_name
+    assert len(rebuilt.fields) == len(parsed.fields)
+    with h5py.File(cache_path, 'r') as cached:
+        assert cached.attrs['survey_name'] == parsed.survey_name
+        assert cached.attrs['reader_hash'] != 'obsolete'

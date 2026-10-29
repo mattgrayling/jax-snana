@@ -14,9 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
-from jax_snlc_core.io.fits_path import open_text
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_sim import run as sim_run
 
 
 def _parse_dump_mask(path: Path) -> np.ndarray:

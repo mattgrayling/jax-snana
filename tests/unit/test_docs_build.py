@@ -48,14 +48,16 @@ sys.exit(app.statuscode)
     assert 'class="math notranslate nohighlight"' in populations
     assert '$\\Delta t$' not in populations
 
-    from importlib import import_module
+    from jax_snlc_sim import inputs as sim_inputs
+    from jax_snlc_fit import config_parser as fit_parser
+    from jax_salt2mu import config as bbc_config
+    from jax_create_cov import config as cov_config
+    from jax_wfit import config as wfit_config
+
     unsupported = (tmp_path / "html" / "unsupported_input_keys.html").read_text()
-    for package in ("jax_snlc_sim", "jax_snlc_fit", "jax_salt2mu",
-                    "jax_create_cov", "jax_wfit"):
-        parser = import_module(f"{package}.config_parser")
+    for parser in (sim_inputs, fit_parser, bbc_config, cov_config, wfit_config):
         for key in parser._REJECTED_KEYS:
-            assert f">{key}</span>" in unsupported, (package, key)
-    fit_parser = import_module("jax_snlc_fit.config_parser")
+            assert f">{key}</span>" in unsupported, (parser.__name__, key)
     for suffix in fit_parser._FITWIN_REFUSED:
         assert f">FITWIN_{suffix}</span>" in unsupported
 

@@ -3,10 +3,10 @@
 import math
 from typing import Sequence
 
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 from .config import WFITConfig
-from .data import HubbleDiagram
+from .hubble import HubbleDiagram
 
 
 _RAND_MAX = 2_147_483_647

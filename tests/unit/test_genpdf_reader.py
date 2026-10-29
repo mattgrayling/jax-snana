@@ -1,9 +1,12 @@
 """Unit tests for the GENPDF file parser."""
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.genpdf_reader import parse_genpdf_file
+from jax_snlc_sim.genpdf import (load_all_genpdf, parse_genpdf_file, sample_genpdf,
+                                        sample_genpdf_conditional)
 
 
 def _write(tmp_path, content):
@@ -90,15 +93,6 @@ PDF: 0.0 1.0
 # ----------------------------------------------------------------------------
 # load_all_genpdf + sample_genpdf — high-level round-trip
 # ----------------------------------------------------------------------------
-
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-
-from jax_snlc_sim.genpdf_reader import (  # noqa: E402
-    load_all_genpdf,
-    sample_genpdf,
-    sample_genpdf_conditional,
-)
 
 
 def test_sample_genpdf_conditional_concentrates_near_conditional_peak(tmp_path):
@@ -226,7 +220,7 @@ PDF: 1.0  1.0  0.0
 def test_genpdf_construction_rejects_malformed_maps(tmp_path):
     """Negative PROB, duplicate cells, missing Cartesian cells, and zero-mass
     slices are recognised-input errors and abort at construction."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     cases = {
         "negative": """

@@ -10,8 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.hostlib.hostlib_reader import neighbour_offsets
-from jax_snlc_sim.hostlib.hostlib_selection import _compute_ddlr_and_sort
+from jax_snlc_sim.hostlib.catalogue import neighbour_offsets
+from jax_snlc_sim.hostlib.selection import _compute_ddlr_and_sort
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +365,8 @@ def test_true_host_dlr_smear_applies_on_top_of_dlr_columns():
     SMEAR_SERSIC=2 (ab_smear=1), the DLR along the major axis is
     sqrt(5^2 + 1^2)."""
     from types import SimpleNamespace
-    from jax_snlc_sim.hostlib.hostlib_selection import HostSelector
-    from jax_snlc_sim.hostlib.sersic_sampling import (
-        compute_sersic_integral_table)
+    from jax_snlc_sim.hostlib.selection import HostSelector
+    from jax_snlc_sim.hostlib.sersic import compute_sersic_integral_table
 
     ngal = 1
     catalogue = SimpleNamespace(sersic={
@@ -404,9 +403,8 @@ def test_position_sampling_supports_three_sersic_components():
     components (GEN_SNHOST_POS, sntools_host.c:7662-7671); a third or later
     component is reachable, up to MXSERSIC_HOSTLIB=9."""
     from types import SimpleNamespace
-    from jax_snlc_sim.hostlib.hostlib_selection import HostSelector
-    from jax_snlc_sim.hostlib.sersic_sampling import (
-        compute_sersic_integral_table)
+    from jax_snlc_sim.hostlib.selection import HostSelector
+    from jax_snlc_sim.hostlib.sersic import compute_sersic_integral_table
 
     ngal = 1
     a_comp = np.array([1.0, 2.0, 4.0], dtype=np.float32)

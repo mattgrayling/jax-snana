@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from jax_snlc_sim.survey.searcheff_map import read_searcheff_maps
+from jax_snlc_sim.spectroscopic_efficiency import read_searcheff_maps
 
 
 def test_all_real_files_parse():

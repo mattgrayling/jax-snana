@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _write_nbr_hostlib(out: Path, *, n_gal: int = 80, k_nbr: int = 5,
@@ -174,7 +175,7 @@ def nbr_head(tmp_path_factory):
     """
     import os
     from astropy.io import fits
-    from jax_snlc_core.io.fits_path import resolve_fits_path
+    from jax_snlc_core.snana_files import resolve_fits_path
 
     d = tmp_path_factory.mktemp("nbr")
     hostlib = d / "JAX_TEST_NBR.HOSTLIB"
@@ -190,7 +191,7 @@ def nbr_head(tmp_path_factory):
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     out = str(d / "out")
     os.makedirs(out, exist_ok=True)
-    sim_run.save_snana_outputs(sim, res, "N", sel, spectra_cache=spectra_cache, output_dir=out)
+    save_snana_outputs(sim, res, "N", sel, spectra_by_sn=spectra_cache, output_dir=out)
     with fits.open(resolve_fits_path(f"{out}/N/N_HEAD.FITS")) as h:
         cols = {n: np.asarray(h[1].data[n]) for n in h[1].data.names}
     return cols, hostlib
@@ -214,7 +215,7 @@ def test_host_first_reports_the_same_neighbours_as_host_after(nbr_fixture, tmp_p
         hosts[flow] = res["parameters"]
         out = tmp_path / flow
         os.makedirs(out)
-        sim_run.save_snana_outputs(sim, res, "N", sel, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, res, "N", sel, spectra_by_sn=spectra_cache, output_dir=str(out))
 
     for column in ("host_GALID", "host_NMATCH", "host_NMATCH2", "host_DDLR",
                    "host_HOSTGAL2_GALID", "host_HOSTGAL2_DDLR"):

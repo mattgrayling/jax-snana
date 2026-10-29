@@ -23,19 +23,17 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
-
 from astropy.io import fits
+from astropy.table import Table
 
 from jax_pipeline import BBC, Classify, Fit, Sim, Train, run
-from jax_pipeline.classifiers.perfect import Perfect
-from jax_pipeline.classifiers.supernnova import SuperNNova
+from jax_pipeline.classify import Perfect
+from jax_pipeline.supernnova import SuperNNova
 from jax_salt2mu import parse_bbc_input, run_bbc_fit
 from jax_salt2mu.output import write_m0dif
-from jax_salt2mu.tablevar import (EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR,
-                                  EVENT_TYPE_DATA)
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.io.snana_table import write_varnames_table
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres, write_varnames_table
 from jax_snlc_sim.output.fits import write_head_fits, write_phot_fits
 
 _DIR = os.path.abspath(os.path.join("tests", "fixtures", "snana", "bbc_des_beams"))
@@ -302,13 +300,17 @@ def test_supernnova_reads_jax_files_as_it_reads_snana_files(supernnova, tmp_path
     fixture = Path(_SNANA) / "gentype_map_k10"
     snana = tmp_path / "snana"
     snana.mkdir()
-    for name in ("HEAD.FITS.gz", "PHOT.FITS.gz", "SIM.README"):
-        shutil.copy(fixture / name, snana / name)
+    for name in ("HEAD.FITS.gz", "PHOT.FITS.gz"):
+        shutil.copy(fixture / name, snana / f"V_{name}")
+    shutil.copy(fixture / "SIM.README", snana / "V.README")
     rewritten = tmp_path / "jax"
     rewritten.mkdir()
-    head, phot, counts = _without_markers(snana / "HEAD.FITS.gz", snana / "PHOT.FITS.gz")
-    write_head_fits({}, "V", str(rewritten), head)
-    write_phot_fits({}, "V", str(rewritten), phot, counts)
+    head, phot, counts = _without_markers(snana / "V_HEAD.FITS.gz", snana / "V_PHOT.FITS.gz")
+    primary = fits.getheader(snana / "V_HEAD.FITS.gz")
+    keywords = {key: primary[key]
+                for key in ("DATATYPE", "SURVEY", "SIMOPT_MWCOLORLAW", "SIM_MWRV")}
+    write_head_fits(keywords, "V", str(rewritten), head)
+    write_phot_fits(keywords, "V", str(rewritten), phot, counts)
     shutil.copy(fixture / "SIM.README", rewritten / "V.README")
 
     by_snana = snn.predict(None, snana, model).sort_index()
@@ -427,3 +429,86 @@ def test_external_predictions_preserve_padded_cids(tmp_path):
         result = run(stage, outdir=outdir)["classified"][_NOMINAL].df
         assert result["CID"].tolist() == ["00123", "123", "00456"]
         np.testing.assert_allclose(result["PROB_IA"], [0.95, 0.25, 0.1])
+
+
+def test_replacing_predictions_keeps_column_names_unique(tmp_path):
+    """Replacing a probability and adding another preserves metadata on run and reload."""
+    fitted = tmp_path / 'input.FITRES'
+    fitted.write_text('VARNAMES: CID PROB_IA\nSN: 1 .2\nSN: 2 .3\n')
+    predictions = tmp_path / 'predictions.csv'
+    predictions.write_text('CID,PROB_IA,PROB_OTHER\n1,.9,.1\n')
+    stage = Classify('classified', fit=Fit('fit', fitres=fitted), predictions=predictions)
+    for _ in range(2):
+        table = run(stage, outdir=tmp_path / 'run')['classified'][_NOMINAL]
+        assert table.varnames == ['CID', 'PROB_IA', 'PROB_OTHER']
+        assert table.varnames_by_file == [table.varnames]
+        assert list(table.df.columns) == table.varnames
+        np.testing.assert_allclose(table.df['PROB_IA'], [.9, 0.])
+        np.testing.assert_allclose(table.df['PROB_OTHER'], [.1, 0.])
+
+
+@pytest.mark.parametrize("id_column", ["CID", "SNID"])
+def test_external_predictions_preserve_literal_ids_and_missing_probabilities(tmp_path, id_column):
+    """NA-like IDs remain literal while missing probabilities still become zero."""
+    fitted = tmp_path / "ids.FITRES"
+    fitted.write_text("VARNAMES: CID IDSURVEY MU\n"
+                      "SN: NA 10 40\nSN: NULL 10 41\nSN: 001 10 42\n"
+                      "SN: missing 10 43\nSN: blank 10 44\nSN: nanprob 10 45\n")
+    predictions = tmp_path / "predictions.csv"
+    predictions.write_text(f"{id_column},PROB_IA\nNULL,0.82\n001,0.73\nNA,0.91\n"
+                           "blank,\nnanprob,NaN\n")
+    stage = Classify("classified", fit=Fit("fit", fitres=fitted), predictions=predictions)
+    for _ in range(2):
+        result = run(stage, outdir=tmp_path / "run")["classified"][_NOMINAL].df
+        assert result["CID"].tolist() == ["NA", "NULL", "001", "missing", "blank", "nanprob"]
+        np.testing.assert_allclose(result["PROB_IA"], [.91, .82, .73, 0., 0., 0.])
+
+
+@pytest.mark.parametrize('head_gz,phot_gz', [(False, True), (True, False)])
+def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
+    """Mixed compression and TEXT produce identical selected classifier epochs."""
+    fits_dir = tmp_path / 'fits'
+    text_dir = tmp_path / 'text'
+    fits_dir.mkdir()
+    text_dir.mkdir()
+    head = Table({'SNID': ['1'], 'PTROBS_MIN': [1], 'PTROBS_MAX': [3],
+                  'PEAKMJD': [60001.], 'REDSHIFT_FINAL': [0.2],
+                  'REDSHIFT_FINAL_ERR': [0.001]})
+    phot = Table({'MJD': [60000., 60001., 60002.], 'BAND': ['g', 'g', 'r'],
+                  'FLUXCAL': [10., 11., 12.], 'FLUXCALERR': [1., 1., 1.],
+                  'PHOTFLAG': [0, 8, 0]})
+    primary = fits.PrimaryHDU()
+    primary.header['DATATYPE'] = 'DATA'
+    primary.header['SURVEY'] = 'DES'
+    head_path = fits_dir / ('selected_HEAD.FITS' + ('.gz' if head_gz else ''))
+    fits.HDUList([primary, fits.BinTableHDU(head)]).writeto(head_path)
+    phot.write(fits_dir / ('selected_PHOT.FITS' + ('.gz' if phot_gz else '')))
+    # An unlisted HEAD must not be opened or require a PHOT partner.
+    (fits_dir / 'unlisted_HEAD.FITS').write_text('not part of this version')
+    (fits_dir / 'version.LIST').write_text('selected_HEAD.FITS\n')
+    (text_dir / 'version.LIST').write_text('event.DAT\n')
+    (text_dir / 'event.DAT').write_text(
+        'SURVEY: DES\nSNID: 1\nFILTERS: gr\nPEAKMJD: 60001\n'
+        'REDSHIFT_FINAL: 0.2 +- 0.001\n'
+        'VARLIST: MJD FLT FLUXCAL FLUXCALERR PHOTFLAG\n'
+        'OBS: 60000 g 10 1 0\nOBS: 60001 g 11 1 8\nOBS: 60002 r 12 1 0\n')
+    classifier = SuperNNova(filters=('g',), band_map={'g': 'DES-g'})
+    actual = classifier._light_curves(fits_dir)
+    pd.testing.assert_frame_equal(actual, classifier._light_curves(text_dir))
+    assert actual['SNID'].tolist() == ['1']
+    assert actual['FLT'].tolist() == ['DES-g']
+    np.testing.assert_allclose(actual['FLUXCAL'], [10.])
+    np.testing.assert_allclose(actual['HOSTGAL_SPECZ'], [0.2])
+
+
+def test_classifier_requires_flags_only_when_rejecting_epochs(tmp_path):
+    """Flag-based rejection requires flags, but unfiltered data need none."""
+    (tmp_path / 'version.LIST').write_text('event.DAT\n')
+    (tmp_path / 'event.DAT').write_text(
+        'SURVEY: DES\nSNID: 1\nFILTERS: g\nPEAKMJD: 60001\n'
+        'REDSHIFT_FINAL: 0.2 +- 0.001\n'
+        'VARLIST: MJD FLT FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n')
+    with pytest.raises(SNANAError, match="PHOTFLAG"):
+        SuperNNova(filters=('g',))._light_curves(tmp_path)
+    actual = SuperNNova(filters=('g',), phot_reject_bits=())._light_curves(tmp_path)
+    assert actual['FLUXCAL'].tolist() == [10.]

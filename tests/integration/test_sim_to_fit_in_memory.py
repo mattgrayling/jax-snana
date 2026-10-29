@@ -10,10 +10,11 @@ astropy's FITS read.
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.snana_table import SNANA_VERSION_STRING
-from jax_snlc_fit.data_loader import (batch_from_columns,
-                                      load_and_batch_snana_fits)
+from jax_snlc_core.snana_files import SNANA_VERSION_STRING
+from jax_snlc_fit.loader import batch_from_columns
+from _fit_helpers import load_and_batch_snana_fits
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_sim.output.tables import mw_option_keys
 
 _BANDS = ["DES-g", "DES-r", "DES-i", "DES-z"]
@@ -35,7 +36,7 @@ def simulated(tmp_path_factory, repo_root):
     simulation = None if sim is None else sim.config
     resources = sim
     results, selection, spectra = sim_run.run_simulation(sim)
-    out = sim_run.save_snana_outputs(sim, results, "INMEM", selection, spectra_cache=spectra, output_dir=str(tmp))
+    out = save_snana_outputs(sim, results, "INMEM", selection, spectra_by_sn=spectra, output_dir=str(tmp))
     return tmp, simulation, resources, out
 
 

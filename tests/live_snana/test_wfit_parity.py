@@ -8,12 +8,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import distance_modulus
+from jax_snlc_core.cosmology import distance_modulus
+from jax_snlc_core.utils import LIGHT_KM
 from jax_wfit.blinding import blinding_statuses, parameter_random_integers
 from jax_wfit.config import WFITConfig
-from jax_wfit.data import load_hubble_diagrams, stack_arrays
-from jax_wfit.likelihood import hdibc_observed_mu
+from jax_wfit.hubble import load_hubble_diagrams
 from jax_wfit.output import ensemble_summary
 from jax_wfit.run import run_wfit
 

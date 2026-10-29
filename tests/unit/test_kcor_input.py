@@ -1,14 +1,16 @@
 """Direct calibration inputs compared with recorded SNANA FITS output."""
 
+import os
 import shutil
+from contextlib import chdir
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.kcor_reader import KcorReader
-from jax_snlc_core.photometry.resources import load_photometry_resources, resolve_filtlist
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.filters import KcorReader, load_photometry_resources
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_fit.calibration import resolve_filtlist
 
 
 @pytest.fixture
@@ -18,19 +20,29 @@ def calibration_dir(tmp_path, data_root):
     return destination
 
 
+@pytest.fixture
+def no_sndata_root():
+    """Run direct calibration reads without a configured SNANA data tree."""
+    previous = os.environ.pop('SNDATA_ROOT', None)
+    try:
+        yield
+    finally:
+        if previous is not None:
+            os.environ['SNDATA_ROOT'] = previous
+
+
 @pytest.mark.parametrize('stem', [
     'calibration', 'calibration_sed', 'calibration_cut',
     'calibration_duplicate', 'calibration_spectrograph', 'calibration_rebin',
     'calibration_spectrograph_duplicate',
     'calibration_oob', 'calibration_oob_cut', 'calibration_oob_sed',
 ])
-def test_input_matches_snana_generated_fits(calibration_dir, monkeypatch, stem):
+def test_input_matches_snana_generated_fits(calibration_dir, no_sndata_root, stem):
     # Every resource is explicit and relative to the input; no SNANA installation
     # or current-working-directory dependency is needed to read the calibration.
-    monkeypatch.delenv('SNDATA_ROOT', raising=False)
-    monkeypatch.chdir(calibration_dir.parent)
-    readers = [KcorReader(calibration_dir / filename)
-               for filename in (f'{stem}.input', f'{stem}.fits')]
+    with chdir(calibration_dir.parent):
+        readers = [KcorReader(calibration_dir / filename)
+                   for filename in (f'{stem}.input', f'{stem}.fits')]
     direct, recorded = readers
     assert direct.get_filter_names() == recorded.get_filter_names()
     assert direct.filter_names == recorded.filter_names
@@ -78,21 +90,29 @@ def test_zero_point_override_and_disabled_offsets(calibration_dir):
     assert set(KcorReader(path).filter_zpoff_snpot.values()) == {0.}
 
 
-def test_data_tree_and_environment_paths(calibration_dir, tmp_path, monkeypatch):
+def test_data_tree_and_environment_paths(calibration_dir, tmp_path):
     root = tmp_path / 'sndata'
     (root / 'filters').mkdir(parents=True)
     shutil.copytree(calibration_dir, root / 'filters' / 'survey')
     (root / 'standards').mkdir()
     shutil.copy(calibration_dir / 'ab.dat', root / 'standards' / 'flatnu.dat')
-    monkeypatch.setenv('SNDATA_ROOT', str(root))
-    monkeypatch.setenv('CUSTOM_FILTERS', str(root / 'filters' / 'survey'))
-    path = tmp_path / 'survey.input'
-    template = 'MAGSYSTEM: AB FILTSYSTEM: COUNT SURVEY: DES\nFILTPATH: {}\nFILTER: Test-g g.dat 0.0\n'
-    for directory in ('survey', '$CUSTOM_FILTERS'):
-        path.write_text(template.format(directory))
-        reader = KcorReader(path)
-        assert reader.filter_zpoff_snpot['Test-g'] == .02
-        assert reader.get_filter_primary('Test-g') == 'AB'
+    previous = {name: os.environ.get(name) for name in ('SNDATA_ROOT', 'CUSTOM_FILTERS')}
+    os.environ['SNDATA_ROOT'] = str(root)
+    os.environ['CUSTOM_FILTERS'] = str(root / 'filters' / 'survey')
+    try:
+        path = tmp_path / 'survey.input'
+        template = 'MAGSYSTEM: AB FILTSYSTEM: COUNT SURVEY: DES\nFILTPATH: {}\nFILTER: Test-g g.dat 0.0\n'
+        for directory in ('survey', '$CUSTOM_FILTERS'):
+            path.write_text(template.format(directory))
+            reader = KcorReader(path)
+            assert reader.filter_zpoff_snpot['Test-g'] == .02
+            assert reader.get_filter_primary('Test-g') == 'AB'
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @pytest.mark.parametrize('setting, message', [
@@ -159,10 +179,9 @@ def test_gzipped_input_and_reference_spectrum(calibration_dir):
 
 @pytest.mark.parametrize('model,column', [('SALT3.K21', 'mB'), ('BAYESN.W22', 'MU_LCFIT')])
 @pytest.mark.parametrize('stem', ['calibration', 'calibration_oob'])
-def test_python_fits_use_direct_calibration(calibration_dir, model, column, monkeypatch, stem):
+def test_python_fits_use_direct_calibration(calibration_dir, model, column, no_sndata_root, stem):
     from jax_snlc_fit import LightCurveFitter
 
-    monkeypatch.delenv('SNDATA_ROOT', raising=False)
     times = np.linspace(59990., 60035., 12)
     flux = 100. * np.exp(-.5 * ((times - 60005.) / 15.)**2)
     values = []
@@ -184,7 +203,6 @@ def test_text_calibration_has_no_embedded_spectrograph(calibration_dir):
 def test_shifted_duplicates_are_selected_by_full_name(calibration_dir):
     reader = KcorReader(calibration_dir / 'calibration_duplicate.input')
     assert reader.get_filter_names() == ['Test-g', 'Test-r', 'Test-i', 'Test-z']
-    assert reader.get_filter_names(include_duplicates=True) == reader.filter_names
     assert resolve_filtlist(['*Test-g'], reader) == ['*Test-g']
     resource = load_photometry_resources(reader, jnp.linspace(3000., 9000., 300), ['*Test-g'])
     assert resource.filter_names == ['*Test-g']

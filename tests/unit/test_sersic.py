@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_sim.hostlib.sersic_sampling import (
+from jax_snlc_sim.hostlib.sersic import (
     compute_sersic_bn, load_sersic_bn_table)
 
 # File-backed lookup loaded once for the tests (build-path load, HOST-12)

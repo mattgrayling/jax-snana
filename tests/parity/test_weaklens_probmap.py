@@ -13,11 +13,10 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.random_streams import root_key
-from jax_snlc_sim.sampler import apply_lensdmu_smear
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.lensing import apply_lensdmu_smear
 
 # the map's first redshift bin; below it SNANA scales the bin-0 draw by
 # z/zMIN (gen_lensDMU, sntools_weaklens.c:310-313)

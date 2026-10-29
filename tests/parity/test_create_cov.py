@@ -22,10 +22,10 @@ import numpy as np
 import pytest
 import yaml
 
-from jax_create_cov import create_covariance, load_config
-from jax_create_cov.config_parser import build_config
-from jax_create_cov.inputs import read_yaml
-from jax_snlc_core.io.cov_matrix import read_covariance_npz
+from jax_create_cov import create_covariance
+from jax_create_cov.config import build_config
+from jax_create_cov.config import read_yaml
+from jax_snlc_core.snana_files import read_covariance_npz
 
 _FIXTURE = os.path.join("tests", "fixtures", "snana", "create_cov")
 _N_COVOPT = 8  # the seven configured, plus the one create_covariance prepends

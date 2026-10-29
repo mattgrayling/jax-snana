@@ -28,8 +28,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[3]))
 
-from jax_snlc_core.physics.constants import LIGHT_KM          # noqa: E402
-from jax_snlc_core.physics.cosmology import distance_modulus    # noqa: E402
+from jax_snlc_core.cosmology import distance_modulus  # noqa: E402
+from jax_snlc_core.utils import LIGHT_KM  # noqa: E402
 
 SEED = 7
 NSN = 120

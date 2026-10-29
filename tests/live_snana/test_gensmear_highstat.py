@@ -15,7 +15,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import jax
@@ -30,9 +29,10 @@ for extra in ("tests/parity", "."):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump  # noqa: E402
 from replay_snana_dump import build_override_parameters  # noqa: E402
 from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
 from _replay_helpers import load_snana_phot, load_jax_phot  # noqa: E402
 
 _N_MC = 250
@@ -118,7 +118,7 @@ def test_gensmear_highstat(fixture_name, genversion, tmp_path):
     zero_coherent = 'magsmear' in override
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "HISTAT", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "HISTAT", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = load_snana_phot(head, phot)
     jax_phot = load_jax_phot(tmp_path / "HISTAT", "HISTAT")

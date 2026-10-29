@@ -10,13 +10,13 @@ Two complementary checks on the same fixture:
 """
 
 import numpy as np
+from _replay_helpers import load_jax_phot, load_snana_phot, slice_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import slice_replay  # noqa: E402
-from _replay_helpers import load_snana_phot, load_jax_phot  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def test_sn2galz_bayesn_simmagobs_parity(snana_fixture, tmp_path):
@@ -37,7 +37,7 @@ def test_sn2galz_bayesn_simmagobs_parity(snana_fixture, tmp_path):
     override = build_override_parameters(dump_cols, simulation, resources, head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SN2GALZ_REPLAY", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SN2GALZ_REPLAY", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = load_snana_phot(fx.head_fits, fx.phot_fits)
     jax_phot = load_jax_phot(tmp_path / "SN2GALZ_REPLAY", "SN2GALZ_REPLAY")

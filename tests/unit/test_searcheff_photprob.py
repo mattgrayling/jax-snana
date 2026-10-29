@@ -13,15 +13,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.survey.searcheff_photprob import (
-    IVARABS_REDSHIFT,
-    IVARABS_SNR,
-    PhotoprobMap,
-    evaluate_photprob,
-    prepare_photprob,
-    resolve_photprob_fieldlist_indices,
-)
-from jax_snlc_sim.survey.searcheff_pipeline import read_pipeline_eff_file
+from jax_snlc_core.snana_files import MAG_UNDEFINED
+from jax_snlc_sim.detection import (
+    IVARABS_SNR, PhotoprobMap, evaluate_photprob, prepare_photprob,
+    read_pipeline_eff_file)
+from jax_snlc_sim.spectroscopic_efficiency import resolve_fieldlist_indices
 
 
 @pytest.fixture(scope="module")
@@ -40,8 +36,8 @@ def _eval_photprob(maps, snr, filt, filter_names, det, valid, z,
     z_arr = jnp.asarray(np.atleast_1d(z), dtype=jnp.float32)
 
     n_filt = len(filter_names)
-    sbmag_2d = jnp.full((n_sne, n_filt), 99.0, dtype=jnp.float32)
-    galmag_2d = jnp.full((n_sne, n_filt), 99.0, dtype=jnp.float32)
+    sbmag_2d = jnp.full((n_sne, n_filt), MAG_UNDEFINED, dtype=jnp.float32)
+    galmag_2d = jnp.full((n_sne, n_filt), MAG_UNDEFINED, dtype=jnp.float32)
     for src, dst in [(sbmag_dict, sbmag_2d), (galmag_dict, galmag_2d)]:
         if not src:
             continue
@@ -373,7 +369,7 @@ def test_no_maps():
 def test_overlapping_maps_fatal():
     """Two maps matching the same (field, filter) abort, as SNANA does on
     NMATCH>1 in setObs_for_PHOTPROB (sntools_trigger.c:2589-2594)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     def _map(filterlist):
         return PhotoprobMap(
@@ -396,7 +392,7 @@ def test_overlapping_maps_fatal():
 def test_reader_rejects_zero_mass_and_duplicate_rows(tmp_path):
     """A ROW whose weights sum to zero, or a repeated grid coordinate, is
     malformed input and fatal."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     header = (
         "DOCUMENTATION:\n    PURPOSE: test\nDOCUMENTATION_END:\n"
@@ -457,16 +453,16 @@ def test_reduced_corr_spans_maps():
     assert abs(ri - np.sqrt(0.9 * 0.4)) < 0.15
 
 
-def test_fieldlist_matches_every_simlib_entry_of_the_field():
-    """A map's FIELDLIST matches every SIMLIB entry carrying a listed FIELD,
+def test_fieldlist_matches_substrings_across_simlib_entries():
+    """FIELDLIST matches substrings and tolerates fields absent from the SIMLIB,
     as SNANA's per-event MATCH_SEARCHEFF_FIELD does, not only the last entry
     of each field name."""
     m = PhotoprobMap(
         name="TEST", varnames=["SNR"], ivarabs=[IVARABS_SNR], nvar_map=1,
         nfun_cdf=100, grid_axes=[np.array([1.0, 50.0])],
         grid_cdf=np.tile(np.linspace(0.01, 1.0, 100), (2, 1)),
-        cdf_bins=np.linspace(0.0, 1.0, 101), fieldlist="C3+X1",
+        cdf_bins=np.linspace(0.0, 1.0, 101), fieldlist="C3+X1+UNUSED",
         valmin=np.array([1.0]), valmax=np.array([50.0]))
-    resolve_photprob_fieldlist_indices([m], ["C3", "X1", "E2", "C3", "X1"])
+    resolve_fieldlist_indices([m], ["C3", "X1", "E2", "C3", "X"])
     np.testing.assert_array_equal(m.fieldlist_mask,
                                   [True, True, False, True, True])

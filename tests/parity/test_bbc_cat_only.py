@@ -4,16 +4,14 @@ Every line of the output is compared except SNANA_VERSION, which carries each
 program's own build string. See the fixture README for the reference commands.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import contextlib
 import os
 
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.output import write_cat_fitres
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 _DIR = os.path.abspath("tests/fixtures/snana/bbc_des_beams")
 _A = "catA.FITRES"

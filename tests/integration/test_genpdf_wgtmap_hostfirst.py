@@ -10,17 +10,16 @@ Exercises:
   conditional GENPDF can read host LOGMASS.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-
-from jax_snlc_core.utils.error_handling import SNANAError  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _write_logmass_only_wgtmap(out: Path) -> None:
@@ -486,17 +485,16 @@ def test_subpop_refused_when_usesnpar_would_overwrite_the_parameter(tmp_path):
     x1 column, and without one USESNPAR aborts earlier for having nothing to
     use at all.
     """
-    from jax_snlc_core.utils.error_handling import SNANAError
     from jax_snlc_core.models import MODEL_REGISTRY
-    from jax_snlc_sim.builder import _check_snpar_conflict
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.hostlib.association import _check_snpar_conflict
+    from jax_snlc_sim.inputs import parse_snana_input_file
 
     inp = tmp_path / "clash.input"
     _write_variation_input(inp, lines=_TWO_POPULATIONS)
     config = parse_snana_input_file(str(inp))
 
     class _Model:
-        _population = tuple(
+        configured_population = tuple(
             (name, MODEL_REGISTRY["salt"].population_aliases.get(name, ()))
             for name in MODEL_REGISTRY["salt"].population_parameters)
 
@@ -529,7 +527,7 @@ def test_sim_subpop_column_is_written_only_when_classes_are_declared(
     declares classes: a jax-only column, so every other run's columns are
     unchanged and the output contract against SNANA still holds."""
     from astropy.io import fits
-    from jax_snlc_core.io.fits_path import open_text, resolve_fits_path
+    from jax_snlc_core.snana_files import resolve_fits_path
 
     inp = tmp_path / "columns.input"
     _write_variation_input(inp, lines=lines)
@@ -538,7 +536,7 @@ def test_sim_subpop_column_is_written_only_when_classes_are_declared(
     resources = sim
     results, selection, spectra = sim_run.run_simulation(sim)
     outdir = str(tmp_path / "out")
-    sim_run.save_snana_outputs(sim, results, "SUBPOP", selection, spectra_cache=spectra, output_dir=outdir)
+    save_snana_outputs(sim, results, "SUBPOP", selection, spectra_by_sn=spectra, output_dir=outdir)
     head = resolve_fits_path(str(Path(outdir) / "SUBPOP" / "SUBPOP_HEAD.FITS"))
     with fits.open(head) as hdus:
         columns = {c.name for c in hdus[1].columns}
@@ -572,7 +570,6 @@ def test_variation_depending_on_an_already_drawn_parameter(tmp_path):
 def test_a_parameter_with_no_distribution_is_refused(tmp_path):
     """Without SALT2BETA_cPOLY nothing supplies beta, so a run that gives it
     no distribution stops on the first batch, naming the keys to give."""
-    from jax_snlc_core.utils.error_handling import SNANAError
 
     inp = tmp_path / "variation.input"
     _write_variation_input(inp, hostlib=False, lines="")
@@ -598,7 +595,6 @@ def test_a_zero_width_parameter_still_takes_its_variation(tmp_path):
 def test_variation_depending_on_a_parameter_drawn_later_aborts(tmp_path):
     """SALT draws x1, then c, then alpha, so a relation of x1 on alpha has
     no value to read and says so rather than using a default."""
-    from jax_snlc_core.utils.error_handling import SNANAError
     with pytest.raises(SNANAError, match="depends on SALT2alpha, which is not "
                                          "drawn before it"):
         _run_variation(
@@ -612,7 +608,6 @@ def test_a_variation_on_a_drawn_parameter_leaves_the_host_ordering_alone(
     population. One depending on an already-drawn parameter reads no host,
     so it coexists with a WGTMAP that bins on SN variables, which draws the
     population first; one on a host column cannot."""
-    from jax_snlc_core.utils.error_handling import SNANAError
 
     wgtmap = tmp_path / "X1_LOGMASS.WGTMAP"
     rows = ["VARNAMES_WGTMAP: x1 LOGMASS WGT"]
@@ -633,7 +628,6 @@ def test_a_variation_on_a_drawn_parameter_leaves_the_host_ordering_alone(
 def test_subpop_variation_on_an_unknown_target_aborts(tmp_path):
     """A class-scoped VARIATION is validated against the same registry a
     run-level one is, so a misspelt target cannot quietly do nothing."""
-    from jax_snlc_core.utils.error_handling import SNANAError
     with pytest.raises(SNANAError, match="not a recognised SIM-parameter or one of WGT"):
         _run_variation(tmp_path, lines=(
             "SUBPOP: YOUNG WGT 1.0\n"

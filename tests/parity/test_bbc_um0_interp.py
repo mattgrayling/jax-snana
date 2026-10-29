@@ -12,10 +12,10 @@ References are on the bbc_des_beams 5D config; see that fixture's refs.py.
 import numpy as np
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"

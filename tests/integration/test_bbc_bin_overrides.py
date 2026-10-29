@@ -3,10 +3,12 @@
 import numpy as np
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.run import prepare_cell, run_bbc_fit, write_outputs
+from jax_salt2mu.config import parse_bbc_input
+from jax_salt2mu.run import run_bbc_fit
+from _bbc_helpers import prepare_cell
+from jax_salt2mu.output import write_outputs
 from jax_salt2mu.tablevar import CUTBIT_MINBIN, CUTBIT_z
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import read_fitres
 
 
 @pytest.mark.parametrize("invalid_bin", [None, 3, 99], ids=["assigned", "at-limit", "past-limit"])

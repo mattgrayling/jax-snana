@@ -7,9 +7,8 @@ import shutil
 import numpy as np
 import pytest
 
-from jax_snlc_core.models.non1ased_model import (
-    NON1ASEDModel, read_non1a_list)
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models.non1a import NON1ASEDModel, read_non1a_list
 
 _MODEL_DIR = "tests/fixtures/data/models/NON1ASED.V19_TEST"
 
@@ -39,7 +38,6 @@ def test_unknown_non1a_index_fatal_at_configure():
     at model construction, matching SNANA's INDEXVALID check
     (genmag_NON1ASED.c:408-412); known indices resolve to dense stack
     positions with no dictionary fallback."""
-    from jax_snlc_core.utils.error_handling import SNANAError
 
     model = NON1ASEDModel.load(_MODEL_DIR, {})
     known = sorted(model.index_map)

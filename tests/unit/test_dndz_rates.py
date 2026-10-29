@@ -3,25 +3,19 @@
 import numpy as np
 import pytest
 
-from jax_snlc_sim.rate import (
-    _SFRfun_MD14,
-    _compute_rate_on_grid,
-    _parse_dndz_multiplier,
-    _rate_cc_s15,
-    _sfr_bg03,
-    parse_dndz_entries,
-)
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.rate import (compute_rate_on_grid, _parse_dndz_multiplier,
+                               _sfr_bg03, _SFRfun_MD14, parse_dndz_entries)
 
 
 def _resolved_counts(cfg):
-    from jax_snlc_sim.builder import resolve_counts
+    from jax_snlc_sim.rate import resolve_counts
     return resolve_counts(cfg, cfg.hz_map())
 
 
 def _resolved_budgets(cfg):
     """The per-template MXGEN the build would set, via the model's own hook."""
-    from jax_snlc_core.models.non1ased_model import NON1ASEDModel
+    from jax_snlc_core.models.non1a import NON1ASEDModel
     n_simulated, _, frac_pec1a, _ = _resolved_counts(cfg)
     model = object.__new__(NON1ASEDModel)
     model._non1a_config = cfg.model._structured_config['non1a_config']
@@ -40,8 +34,8 @@ def test_md14_peaks_near_z2():
 def test_cc_s15_scales_with_user_scale():
     """CC_S15 rate scales linearly with user-provided ``scale``."""
     z = np.array([0.5])
-    r1 = _rate_cc_s15({"scale": 1.0, "h0": 70.0}, z)
-    r2 = _rate_cc_s15({"scale": 2.0, "h0": 70.0}, z)
+    r1 = compute_rate_on_grid(z, {"model": "CC_S15", "scale": 1.0, "h0": 70.0})
+    r2 = compute_rate_on_grid(z, {"model": "CC_S15", "scale": 2.0, "h0": 70.0})
     np.testing.assert_allclose(r2, 2.0 * r1, rtol=1e-6)
 
 
@@ -135,7 +129,7 @@ def test_parse_dndz_powerlaw_non_numeric_fatal():
 
 
 # ----------------------------------------------------------------------------
-# _compute_rate_on_grid: unknown-model error
+# compute_rate_on_grid: unknown-model error
 # ----------------------------------------------------------------------------
 
 
@@ -151,7 +145,7 @@ def test_parse_dndz_powerlaw_non_numeric_fatal():
 def _rate_mod_count(tmp_path, extra, non1ased=False, drop_dndz=False, subs=()):
     """Expected SN count for salt3_k21_replay plus `extra` config lines."""
     import pathlib
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
 
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "tests/fixtures/snana/salt3_k21_replay/input.input").read_text()
@@ -227,7 +221,7 @@ def test_dndz_non1a_is_an_alias(tmp_path):
     for alias in ("DNDZ_NON1A", "DNDZ_NONIA"):
         inp = tmp_path / f"{alias}.input"
         inp.write_text(src.replace("DNDZ:  POWERLAW", f"{alias}:  POWERLAW"))
-        from jax_snlc_sim.config_parser import parse_snana_input_file
+        from jax_snlc_sim.inputs import parse_snana_input_file
         got = _expected_count(parse_snana_input_file(str(inp)))
         assert got == pytest.approx(base), f"{alias} did not alias DNDZ"
 
@@ -236,7 +230,6 @@ def test_dndz_non1a_is_an_alias(tmp_path):
 # DNDZ_FILE: tabulated R(z), read and interpolated as SNANA does
 # ---------------------------------------------------------------------------
 
-from jax_snlc_core.utils.error_handling import SNANAError  # noqa: E402
 
 # A kinked table, so the count depends on the interpolation scheme: nearest-node
 # or a flat read would not reproduce SNANA's number.
@@ -255,14 +248,14 @@ _KINK_TABLE_COMMENTED = (
 ) + _KINK_TABLE
 
 
-def _dndz_file_count(tmp_path, table, name="rate.dat", drop_dndz=True, **kwargs):
+def _dndz_file_count(tmp_path, table, name="rate.dat", drop_dndz=True, extra="", **kwargs):
     path = tmp_path / name
     path.write_text(table)
-    return _rate_mod_count(tmp_path, f"DNDZ_FILE: {path}\n",
+    return _rate_mod_count(tmp_path, f"DNDZ_FILE: {path}\n" + extra,
                            drop_dndz=drop_dndz, **kwargs)
 
 
-def test_dndz_file_matches_snana(tmp_path, monkeypatch):
+def test_dndz_file_matches_snana(tmp_path):
     """DNDZ_FILE reads R(z) from a table and interpolates it linearly.
 
     Reference values from stock SNANA with INIT_ONLY, off salt3_k21_replay
@@ -273,23 +266,22 @@ def test_dndz_file_matches_snana(tmp_path, monkeypatch):
     -- the count scales linearly with solid angle, so this pins the agreement
     to 1e-5 instead of the +-0.5 that rounding to 877 would allow.
     """
-    # SNANA's frozen event counts omit radiation. Apply that convention only
-    # to this parity comparison; ordinary rate tests retain the JAX default.
-    from functools import partial
-    import jax_snlc_sim.rate as rate
-    monkeypatch.setattr(rate, "hubble_parameter",
-                        partial(rate.hubble_parameter, radiation=False))
-    monkeypatch.setattr(rate, "transverse_comoving_distance",
-                        partial(rate.transverse_comoving_distance, radiation=False))
+    # Supply SNANA's radiation-free reference cosmology through the normal
+    # HzFUN_FILE input. Production's analytic cosmology includes radiation.
+    z = np.linspace(0., 0.6, 6001)
+    hz = 70. * np.sqrt(0.315 * (1. + z)**3 + 0.685)
+    hz_path = tmp_path / 'snana_hz.dat'
+    np.savetxt(hz_path, np.column_stack([z, hz]))
+    cosmology = f'HzFUN_FILE: {hz_path}\n'
 
     flat = "".join(f"{0.1*i:.3f} 2.500000e-05\n" for i in range(6))
-    assert _dndz_file_count(tmp_path, flat) == pytest.approx(902, abs=0.5)
+    assert _dndz_file_count(tmp_path, flat, extra=cosmology) == pytest.approx(902, abs=0.5)
 
-    kink = _dndz_file_count(tmp_path, _KINK_TABLE)
+    kink = _dndz_file_count(tmp_path, _KINK_TABLE, extra=cosmology)
     assert kink == pytest.approx(877, abs=0.5)
 
     big = _dndz_file_count(
-        tmp_path, _KINK_TABLE,
+        tmp_path, _KINK_TABLE, extra=cosmology,
         subs=[("SOLID_ANGLE:  0.0150", "SOLID_ANGLE:  1.5000")])
     assert big == pytest.approx(87662, rel=1e-5)
 
@@ -326,7 +318,7 @@ def test_dndz_file_cannot_be_mixed_with_dndz(tmp_path):
 def _pec1a_config(tmp_path, nominal, pec1a, extra=""):
     """non1ased_v19_replay with a PEC1A template and two rate models."""
     import pathlib
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "tests/fixtures/snana/non1ased_v19_replay/input.input").read_text()
     src = src.replace("NON1A: 834 1.0 0.00 0.00 21",
@@ -385,7 +377,7 @@ def test_dndz_pec1a_reweights_do_not_reach_the_pec1a_rate(tmp_path):
 def test_dndz_pec1a_requires_a_non1a_model(tmp_path):
     """DNDZ_PEC1A key allowed only for NON1A model (snlc_sim.c:2793)."""
     import pathlib
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "tests/fixtures/snana/salt3_k21_replay/input.input").read_text()
     inp = tmp_path / "salt_pec1a.input"
@@ -397,7 +389,7 @@ def test_dndz_pec1a_requires_a_non1a_model(tmp_path):
 def test_pec1a_templates_without_a_pec1a_rate_abort(tmp_path):
     """prep_NON1ASED aborts on PEC1A SEDs with PEC1A rate=0."""
     import pathlib
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "tests/fixtures/snana/non1ased_v19_replay/input.input").read_text()
     src = src.replace("NON1A: 834 1.0 0.00 0.00 21",
@@ -418,7 +410,7 @@ def test_dndz_pec1a_normalises_weights_within_each_class(tmp_path):
     A single WGTSUM across all three would give 600/200/200 instead.
     """
     import pathlib
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "tests/fixtures/snana/non1ased_v19_replay/input.input").read_text()
     src = src.replace("NON1A: 834 1.0 0.00 0.00 21",
@@ -446,7 +438,7 @@ def test_dndz_pec1a_normalises_weights_within_each_class(tmp_path):
 def _rate_of(tokens, z, cosmology=None):
     p = parse_dndz_entries([tokens], (0.01, 2.0), h0=70.0,
                            cosmology=cosmology)[0]
-    return np.asarray(_compute_rate_on_grid(np.asarray(z), p), dtype=float)
+    return np.asarray(compute_rate_on_grid(np.asarray(z), p), dtype=float)
 
 
 def test_hubble_and_flat_are_constants():

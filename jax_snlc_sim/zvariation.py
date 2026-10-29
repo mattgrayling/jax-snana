@@ -14,16 +14,17 @@ second bin lies above z=0 is fatal, since SNANA needs a leading bin below
 the generation range.
 """
 
-from jax_snlc_core.utils.error_handling import SNANAError
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.interp import eval_genpoly
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
+
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.utils import eval_genpoly
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +269,7 @@ def load_variation(values, spellings, names_from_input, hostlib_file,
                    if extra_targets else "") + ".",
                 function_name="load_variation")
         by_parameter.setdefault(e.parname, []).append(e)
-        slog.line(logger, f"{where}VARIATION for {e.parname} vs {e.depends_on}")
+        log.line(logger, f"{where}VARIATION for {e.parname} vs {e.depends_on}")
     return by_parameter
 
 
@@ -309,8 +310,8 @@ def load_zvariation(poly_keys, zvar_file, spellings, names_from_input,
             raise SNANAError(
                 f"{e.parname}-shift = {shift0} at z=0, "
                 f"but shift(z=0) must be zero")
-        slog.line(logger, f"ZVARIATION for {e.parname}: "
-                          f"{'ZPOLY' if e.poly is not None else 'ZBINS'}")
+        log.line(logger, f"ZVARIATION for {e.parname}: "
+                 f"{'ZPOLY' if e.poly is not None else 'ZBINS'}")
 
     return {e.parname: e for e in entries}
 

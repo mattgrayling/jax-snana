@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.io.wgtmap_reader import interpolate_wgtmap
+from jax_snlc_core.snana_files import interpolate_wgtmap
 
 
 def test_linear_ramp_recovers_linear_weight():
@@ -44,7 +44,7 @@ def test_galaxies_outside_grid_clamp_to_edges():
 # _interpolate_weights_with_snvar — multi-bin SN-var path
 # ----------------------------------------------------------------------------
 
-from jax_snlc_sim.hostlib.wgtsum_computer import _interpolate_weights_with_snvar  # noqa: E402
+from jax_snlc_sim.hostlib.host_selection_weights import (_interpolate_weights_with_snvar)
 
 
 def test_interpolate_with_snvar_returns_per_bin_weights():

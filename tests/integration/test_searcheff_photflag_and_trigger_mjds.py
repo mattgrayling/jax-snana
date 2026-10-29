@@ -23,7 +23,7 @@ import pytest
 
 
 from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.selection import _build_columnar_data  # noqa: E402
+from jax_snlc_sim.output.tables import build_columnar_data  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +37,7 @@ def jax_columnar(snana_fixture):
     simulation = None if sim is None else sim.config
     resources = sim
     results, selection, _ = sim_run.run_simulation(sim)
-    return _build_columnar_data(resources, results, selection)
+    return build_columnar_data(resources, results, selection)
 
 
 def test_photflag_bits(jax_columnar):

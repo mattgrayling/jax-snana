@@ -7,10 +7,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.genmag_smear import (
-    _parse_coh_sigmas, build_correlated_band_smear, build_smear_model, oir_bands,
-)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.scatter import (_parse_coh_sigmas, build_correlated_band_smear,
+                                       build_smear_model, oir_bands)
 
 _WL = jnp.array([3000.0, 5000.0, 8000.0])
 
@@ -228,24 +227,21 @@ def test_g10_last_node_reachable_at_zmin(tmp_path):
 
 def test_phasecor_clips_before_correlation():
     import jax
-    from jax_snlc_sim.sampler import _draw_phasecor_scatter
-    from jax_snlc_sim.simulation import Instrument
-
-    instrument = Instrument(phasecor_n_grid=3)
+    from jax_snlc_sim.scatter import draw_phase_scatter
     keys = jax.random.split(jax.random.PRNGKey(42), 256)
     clip = (-0.7, 1.2)
-    normals = _draw_phasecor_scatter(instrument, jnp.eye(3), keys, clip)
+    normals = draw_phase_scatter(jnp.eye(3), keys, clip)
     assert np.all((normals >= clip[0]) & (normals <= clip[1]))
     covariance = jnp.array([[1., .8, .4], [.8, 1., .5], [.4, .5, 1.]])
     chol = jnp.linalg.cholesky(covariance)
-    correlated = _draw_phasecor_scatter(instrument, chol, keys, clip)
+    correlated = draw_phase_scatter(chol, keys, clip)
     np.testing.assert_allclose(correlated, normals @ chol.T, atol=1e-12)
 
 
 @pytest.mark.parametrize('double', [False, True])
 def test_phasecor_coefficients_match_working_precision(double):
     import jax
-    from jax_snlc_sim.builder import _init_phasecor
+    from jax_snlc_sim.scatter import prepare_phase_scatter
     from jax_snlc_sim.simulation import Model, SimulationConfig
 
     config = SimulationConfig(model=Model(genmag_smear_addphasecor=(.03, 2.)))
@@ -254,7 +250,7 @@ def test_phasecor_coefficients_match_working_precision(double):
     original_coefficients = np.linalg.cholesky(covariance).astype(np.float32)
 
     with jax.enable_x64(double):
-        coefficients = _init_phasecor(config)
+        coefficients = prepare_phase_scatter(config)
 
     assert coefficients.dtype == (np.float64 if double else np.float32)
     np.testing.assert_array_equal(coefficients, original_coefficients)

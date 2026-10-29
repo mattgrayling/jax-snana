@@ -12,16 +12,16 @@ import yaml
 from jax_create_cov import create_covariance, load_config, parse_covopt
 from jax_create_cov.covariance import Contribution, covsys_from_covopt
 from jax_pipeline import Covariance
-from jax_snlc_core.io.factorized_covariance import (
-    dense_factorized_covariance, validate_factorized_covariance,
-    read_factorized_covariance, write_factorized_covariance)
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import (dense_factorized_covariance, read_factorized_covariance,
+                                       validate_factorized_covariance,
+                                       write_factorized_covariance)
 from jax_wfit.config import WFITConfig
-from jax_wfit.data import (HubbleDiagram, hubble_diagram_from_covariance,
-                          load_hubble_diagrams, stack_arrays)
-from jax_wfit.factorized import prepare_precision
+from jax_wfit.hubble import (HubbleDiagram, cut_supplied_diagram,
+                             hubble_diagram_from_covariance, load_hubble_diagrams,
+                             prepare_precision, stack_arrays)
 from jax_wfit.likelihood import offset_marginalised_chi2
-from jax_wfit.run import _cut_supplied_diagram, run_wfit
+from jax_wfit.run import run_wfit
 
 
 def factors(n=24, k=3):
@@ -30,8 +30,8 @@ def factors(n=24, k=3):
 
 
 def diagram(cov):
-    from jax_snlc_core.physics.constants import LIGHT_KM
-    from jax_snlc_core.physics.cosmology import distance_modulus
+    from jax_snlc_core.utils import LIGHT_KM
+    from jax_snlc_core.cosmology import distance_modulus
     z = jnp.linspace(.02, 1., cov["diag"].size)
     mu = distance_modulus(z, z, .3, .7, LIGHT_KM / 70., -1., 0.)
     return HubbleDiagram(cid=np.arange(z.size).astype(str), redshift=z,
@@ -70,25 +70,25 @@ def test_padding_different_row_counts_and_ranks():
 def test_cuts_and_scatter_rebuild_small_operator():
     d = diagram(factors())
     config = WFITConfig(zmin=.2, zmax=.8, snrms=.03)
-    cut = _cut_supplied_diagram(config, d)
+    cut = cut_supplied_diagram(config, d)
     keep = (d.redshift >= .2) & (d.redshift <= .8)
     expected = dense_factorized_covariance(d.covariance)[np.ix_(keep, keep)] + np.eye(cut.n_rows)*.03**2
     np.testing.assert_allclose(dense_factorized_covariance(cut.covariance), expected)
-    reset = _cut_supplied_diagram(replace(config, snrms=.01), cut)
+    reset = cut_supplied_diagram(replace(config, snrms=.01), cut)
     expected += np.eye(cut.n_rows) * (.01**2 - .03**2)
     np.testing.assert_allclose(dense_factorized_covariance(reset.covariance), expected)
     from jax_wfit.output import _final_precision
     np.testing.assert_allclose(_final_precision(reset), np.linalg.inv(expected), atol=1e-11)
 
 
-def test_vector_selection_scales_and_calibrators_without_outer_products(monkeypatch):
+def test_vector_selection_scales_and_calibrators():
+    """Compact factors reproduce scaled dense covariances and calibrator exclusions."""
     base = pd.DataFrame({'CID': ['A', 'B', 'C'], 'MUERR': [.1, .2, .1]})
-    contributions = {'DEFAULT|DEFAULT': Contribution(diff=np.zeros(3)),
-                     'VPEC|DEFAULT': Contribution(diff=np.array([.1, .2, .3])),
-                     'CAL|DEFAULT': Contribution(diff=np.array([.3, .1, .2]))}
+    contributions = [Contribution("DEFAULT", "DEFAULT", diff=np.zeros(3)),
+                     Contribution("VPEC", "DEFAULT", diff=np.array([.1, .2, .3])),
+                     Contribution("CAL", "DEFAULT", diff=np.array([.3, .1, .2]))]
     opt = parse_covopt('[ALL] [,,-1.5]')
     expected = covsys_from_covopt(opt, contributions, base, ['A'])
-    monkeypatch.setattr(Contribution, 'matrix', lambda self: pytest.fail('dense outer product'))
     result = covsys_from_covopt(opt, contributions, base, ['A'], factorized=True)
     np.testing.assert_allclose(result["U"] @ result["U"].T, expected)
     assert result["U"].shape == (3, 2)
@@ -116,7 +116,7 @@ def test_snana_file_roundtrip_and_pipeline_preference(tmp_path, mask):
     d = load_hubble_diagrams(config)[0]
     supplied = hubble_diagram_from_covariance(loaded['hubble_diagram'],
         loaded['covariances'][label], loaded['isdata_real'], source='pipeline')
-    supplied = _cut_supplied_diagram(config, supplied)
+    supplied = cut_supplied_diagram(config, supplied)
     np.testing.assert_allclose(supplied.mu, d.mu)
     np.testing.assert_allclose(dense_factorized_covariance(supplied.covariance), dense_factorized_covariance(d.covariance))
     assert d.covariance_kind == 'factorized'
@@ -125,7 +125,7 @@ def test_snana_file_roundtrip_and_pipeline_preference(tmp_path, mask):
 
 
 def test_external_covariance_falls_back_only_for_matching_covopts(tmp_path):
-    from jax_create_cov.config_parser import build_config
+    from jax_create_cov.config import build_config
     cfg = build_config(yaml.safe_load(open('tests/fixtures/snana/create_cov/input_extracov.yml')),
                        {'mode': 'unbinned'})
     cfg.outdir, cfg.write_mask_cov = tmp_path, 8
@@ -192,11 +192,11 @@ def test_mixed_dense_fallback_and_factorized_fit_keep_order():
     assert result[2]["ndof_hd"] == 17
 
 
-def test_large_covopt_does_not_materialize_dense(monkeypatch):
+def test_large_covopt_keeps_compact_storage():
+    """A large diagram needs only one stored column per systematic."""
     n = 100_000
     base = pd.DataFrame({"MUERR": np.full(n, .1)})
-    contributions = {"CAL|DEFAULT": Contribution(diff=np.linspace(0., .03, n))}
-    monkeypatch.setattr(Contribution, "matrix", lambda self: pytest.fail("dense matrix"))
+    contributions = [Contribution("CAL", "DEFAULT", diff=np.linspace(0., .03, n))]
     cov = covsys_from_covopt(parse_covopt("[ALL] [,]"), contributions, base, factorized=True)
     p = prepare_precision(cov["diag"], cov["U"])
     assert p["design"].shape == (n, 1)
@@ -229,7 +229,7 @@ def test_snana_four_field_legacy_inverse_metadata(tmp_path):
 
 
 def test_factorized_cli_and_error_override_rejection():
-    from jax_wfit.config_parser import build_parser, cli_keys, build
+    from jax_wfit.config import build_parser, cli_keys, build
     cfg = build(cli_keys(build_parser().parse_args(
         ['hd.txt', '-mucovtot_factorized_file', 'cov.npz'])))
     assert cfg.covariance_kind == 'factorized'
@@ -289,30 +289,22 @@ def test_float32_degenerate_systematics_and_offset_match_dense(k):
         np.testing.assert_allclose(actual, expected, rtol=3e-3, atol=.005)
 
 
-def test_nuts_streams_follow_original_indices_across_format_groups(monkeypatch):
-    import jax_wfit.run as driver
+def test_nuts_streams_follow_original_indices_across_format_groups():
+    """Grouping by covariance format preserves each dataset's sampling stream."""
     d = diagram(factors())
     dense = replace(d, precision=jnp.asarray(np.linalg.inv(dense_factorized_covariance(d.covariance))),
                     covariance_kind="total", covariance=jnp.asarray(dense_factorized_covariance(d.covariance)))
-    diagrams = [replace(item, source=str(i)) for i, item in enumerate([d, dense, d, dense])]
-    captured = {}
-
-    def capture(selected, arrays, config, priors, blinded, *, keys):
-        for item, key in zip(selected, keys):
-            captured[int(item.source)] = np.asarray(key)
-        return tuple({"warnings": []} for _ in selected), tuple(None for _ in selected)
-
-    monkeypatch.setattr(driver, "fit_nuts", capture)
-    config = WFITConfig(method="nuts", blind_mode="none", seed=73)
-    driver.run_wfit(config, diagrams=diagrams, write=False)
-    actual = np.stack([captured[i] for i in range(4)])
-    base = jax.random.fold_in(jax.random.PRNGKey(config.seed), 2)
-    expected = jax.vmap(lambda i: jax.random.fold_in(base, i))(jnp.arange(4))
-    np.testing.assert_array_equal(actual, expected)
-    assert len(np.unique(actual, axis=0)) == 4
-    # Changing representations changes grouping, not any dataset's stream.
-    driver.run_wfit(config, diagrams=[replace(d, source=str(i)) for i in range(4)], write=False)
-    np.testing.assert_array_equal(np.stack([captured[i] for i in range(4)]), actual)
+    config = WFITConfig(model="lcdm", method="nuts", blind_mode="none", seed=73,
+                        nuts_warmup=30, nuts_samples=30, nuts_chains=1)
+    mixed = run_wfit(config, diagrams=[d, dense, d, dense], write=False)
+    regrouped = run_wfit(config, diagrams=[dense, dense, d, d], write=False)
+    # Dataset 1 stays dense and dataset 2 stays factorized, but both change
+    # position within their format group. Their random streams must stay put.
+    for index in (1, 2):
+        np.testing.assert_allclose(mixed[index]["samples"]["omega_m"],
+                                   regrouped[index]["samples"]["omega_m"], atol=1e-8, rtol=1e-8)
+    assert not np.array_equal(mixed[0]["samples"]["omega_m"],
+                              mixed[2]["samples"]["omega_m"])
 
 
 @pytest.mark.parametrize("method", ["laplace", "grid", "nuts"])

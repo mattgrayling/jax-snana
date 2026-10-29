@@ -12,11 +12,11 @@ References are SALT2mu.exe on the 5D biasCor config; see the fixture README.
 import numpy as np
 import pytest
 
-from jax_salt2mu.config import (BBCConfig, BLINDMASK_MUz, resolve_blinding,
-                                unblinded)
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import BBCConfig
+from jax_salt2mu.blinding import (BLINDMASK_MUz, resolve_blinding, unblinded)
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import read_fitres
 
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"

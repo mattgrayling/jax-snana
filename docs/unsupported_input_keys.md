@@ -21,7 +21,7 @@ options, are given in the task settings pages linked below.
 For accepted keys and flag values, see {doc}`simulation_keys`.
 
 ```{eval-rst}
-.. rejectedkeys:: jax_snlc_sim.config_parser._REJECTED_KEYS
+.. rejectedkeys:: jax_snlc_sim.inputs._REJECTED_KEYS
 ```
 
 (unsupported-fitting-keys)=
@@ -44,7 +44,7 @@ The parameter suffixes below are not supported in parameter settings such
 as `INIVAL_<PARAM>`, `INISTP_<PARAM>` and `USESIM_<PARAM>`:
 
 ```{eval-rst}
-.. rejectedkeys:: jax_snlc_fit.config_parser._UNSUPPORTED_PARAM_KEYS
+.. rejectedkeys:: jax_snlc_fit.parameters._UNSUPPORTED_PARAM_KEYS
 ```
 
 (unsupported-distance-keys)=
@@ -56,7 +56,7 @@ These are keys passed to BBC itself. Pipeline options such as `NSPLITRAN`
 are handled separately by the {doc}`Pippin interface <snana_and_pippin>`.
 
 ```{eval-rst}
-.. rejectedkeys:: jax_salt2mu.config_parser._REJECTED_KEYS
+.. rejectedkeys:: jax_salt2mu.config._REJECTED_KEYS
 ```
 
 `datafile_override` is also rejected when it names a file; use `datafile`.
@@ -71,7 +71,7 @@ but not counts specified separately by survey or field.
 For accepted settings, see {doc}`covariance_keys`.
 
 ```{eval-rst}
-.. rejectedkeys:: jax_create_cov.config_parser._REJECTED_KEYS
+.. rejectedkeys:: jax_create_cov.config._REJECTED_KEYS
 ```
 
 (unsupported-cosmology-keys)=
@@ -82,5 +82,5 @@ with a single leading dash when used as SNANA command-line flags, for example
 `-fitswrite`.
 
 ```{eval-rst}
-.. rejectedkeys:: jax_wfit.config_parser._REJECTED_KEYS
+.. rejectedkeys:: jax_wfit.config._REJECTED_KEYS
 ```

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from jax_snlc_fit.data_loader import _build_batch
+from jax_snlc_fit.loader import _build_batch
 
 
 @pytest.fixture
@@ -62,19 +62,20 @@ def test_absent_epoch_ignore_cid_leaves_observations_unchanged(tables):
         np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
 
 
-def test_magcor_bulk_lookup_matches_original_loader(tables, monkeypatch):
-    from jax_snlc_fit import data_loader
+def test_magcor_corrects_only_the_listed_epochs(tables):
+    """A MAGCOR entry dims its own epoch's flux by 10^(-0.4 MAGCOR) and leaves
+    every other epoch, and every error, as loaded."""
     head, phot = tables
     corrections = {}
     for row in head[:2]:
         i = int(row['PTROBS_MIN']) - 1
         corrections[(str(row['SNID']).strip(), round(float(phot['MJD'][i]), 3),
                      str(phot['BAND'][i]).strip()[-1])] = .02
-    actual = build(head, phot, sim_magcor_map=corrections)
-    def original(values, cids, mjds, bands):
-        return np.array([values.get((cid, round(float(mjd), 3), band), 0.)
-                         for cid, mjd, band in zip(cids, mjds, bands)])
-    monkeypatch.setattr(data_loader, '_magcor_values', original)
-    expected = build(head, phot, sim_magcor_map=corrections)
-    for name in ('fluxcals', 'fluxcalerrs', 'mjd_offsets', 'observation_mask'):
-        np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+    corrected = build(head, phot, sim_magcor_map=corrections)
+    plain = build(head, phot)
+    for name in ('fluxcalerrs', 'mjd_offsets', 'observation_mask'):
+        np.testing.assert_array_equal(getattr(corrected, name), getattr(plain, name))
+    changed = np.asarray(corrected.fluxcals) != np.asarray(plain.fluxcals)
+    assert changed.sum() == len(corrections)
+    np.testing.assert_allclose(np.asarray(corrected.fluxcals)[changed],
+                               np.asarray(plain.fluxcals)[changed] * 10 ** (-0.4 * .02))

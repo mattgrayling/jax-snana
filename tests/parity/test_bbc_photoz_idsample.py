@@ -14,12 +14,13 @@ import numpy as np
 import pytest
 
 from jax_salt2mu.config import resolve
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit
 from jax_salt2mu.samples import partition_idsamples
-from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA, read_tablevar
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA
+from _bbc_helpers import read_tablevar
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import read_fitres
 
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"

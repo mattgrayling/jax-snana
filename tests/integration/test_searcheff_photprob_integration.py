@@ -12,7 +12,8 @@ import numpy as np
 
 
 from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.selection import _build_columnar_data  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.output.tables import build_columnar_data  # noqa: E402
 
 
 def test_photprob_pipeline_integration(snana_fixture, tmp_path):
@@ -34,7 +35,7 @@ def test_photprob_pipeline_integration(snana_fixture, tmp_path):
     results, sel, _ = sim_run.run_simulation(sim)
     assert int(sel["n_passed"]) > 0, "photprob-patched fixture passed no SNe"
 
-    columnar = _build_columnar_data(resources, results, sel)
+    columnar = build_columnar_data(resources, results, sel)
     obs = columnar["observations"]
     pp = obs.get("photprob")
     snr = obs.get("snr")
@@ -98,7 +99,7 @@ def test_photprob_without_detection_curves_stays_null(snana_fixture,
     results, sel, _ = sim_run.run_simulation(sim)
     assert int(sel["n_passed"]) > 0
 
-    columnar = _build_columnar_data(resources, results, sel)
+    columnar = build_columnar_data(resources, results, sel)
     pp = np.asarray(columnar["observations"]["photprob"])
     assert pp.size > 0
     assert np.all(pp == -9.0)
@@ -120,7 +121,7 @@ def test_text_output_writes_photprob_only_with_photprob_maps(snana_fixture,
         simulation = None if sim is None else sim.config
         resources = sim
         results, sel, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, results, "T", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path / tag))
+        save_snana_outputs(sim, results, "T", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path / tag))
         dat = sorted((tmp_path / tag).rglob("*.DAT"))
         assert dat, "no TEXT light curves written"
         return next(line.split()[1:] for line in dat[0].read_text().splitlines()

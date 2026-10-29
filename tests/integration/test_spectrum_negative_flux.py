@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.spectra import compute_spectra_for_mask
 
 
 @pytest.mark.parametrize('source', [
@@ -31,7 +32,7 @@ def test_spectrum_drivers_clip_negative_flux(source, fixture_root, data_root, tm
     fluxes = []
     for flags in (0, 16):
         sim.config.model.genmodel_mskopt = flags
-        spectra, _ = sim_run.compute_spectra_for_mask(
+        spectra, _ = compute_spectra_for_mask(
             sim, results, np.ones(2, dtype=bool), key=root_key(5))
         assert spectra, source
         fluxes.append(np.concatenate([s.sim_flam_full for events in spectra.values()

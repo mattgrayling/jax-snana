@@ -17,23 +17,20 @@ import sys
 
 import numpy as np
 import pytest
-
-from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots,
-                          fit_config, for_fit, load_batch, override,
-                          parse_fitres, peak_start, regenerate_lcplot,
+from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots, fit_config, for_fit,
+                          load_batch, override, parse_fitres, peak_start, regenerate_lcplot,
                           run_fit)
 
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_fit.batch import (
-    ERRFLAG_FIT_COLOR_ITER1, ERRFLAG_FIT_CUTS, ERRFLAG_FIT_FITPROB_ITER1,
-    ERRFLAG_FIT_SHAPE_ITER1, ERRFLAG_FITPREP_ADJUST, ERRFLAG_NO_FIT,
-    select_events)
-from jax_snlc_fit.data_loader import (load_and_batch_snana_fits,
-                                      model_sim_columns)
-from jax_snlc_fit.fit_results import BatchFitResult
-from jax_snlc_fit.loss_functions import z_prior_sigma
-from jax_snlc_fit.run import (_record, _snana_flags, build_selection, select,
-                              sncid_list)
+from jax_snlc_core.snana_files import read_fitres
+from jax_snlc_fit.batch import (ERRFLAG_FIT_COLOR_ITER1, ERRFLAG_FIT_CUTS,
+                                ERRFLAG_FIT_FITPROB_ITER1, ERRFLAG_FIT_SHAPE_ITER1,
+                                ERRFLAG_FITPREP_ADJUST, ERRFLAG_NO_FIT)
+from jax_snlc_fit.cuts import build_selection, mark_errflags, select, select_events, sncid_list
+from jax_snlc_fit.fitter import BatchFitResult
+from jax_snlc_fit.photoz import z_prior_sigma
+from jax_snlc_fit.loader import model_sim_columns
+from _fit_helpers import load_and_batch_snana_fits
+from jax_snlc_fit.output import _snana_flags
 
 
 _LSST_BANDS = ["LSST-u", "LSST-g", "LSST-r", "LSST-i", "LSST-z", "LSST-Y"]
@@ -152,7 +149,6 @@ def test_fixed_redshift_dof(snana_fixture):
 def test_photoz_initialisation_preserves_fixed_amplitude_and_redshift(snana_fixture):
     """Held inputs survive both the coarse search and the final optimiser."""
     import jax.numpy as jnp
-    from jax_snlc_fit.run import start_values
 
     fx = snana_fixture('salt3_fit_photoz')
     config = fit_config(fx.root / 'fit.nml', batch_size=1, n_fit_iterations=1)
@@ -160,7 +156,7 @@ def test_photoz_initialisation_preserves_fixed_amplitude_and_redshift(snana_fixt
     batch = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=1)
     fitter = build_fitter(config, build_fit_model(config), batch)
     batch = for_fit(fitter, batch)
-    start = start_values(fitter, fitter.config, batch, fitter.usesim_columns)
+    start = fitter.start_values(fitter.config, batch, fitter.usesim_columns)
     results, _ = fitter.fit_sample(batch, start)
     for name, value in config.model.fixed.items():
         np.testing.assert_allclose(results.params[name], value, rtol=1e-12)
@@ -204,7 +200,7 @@ def test_missing_redshift_is_fitted_without_a_prior(snana_fixture):
 
 def test_photoz_external_start(snana_fixture):
     """External fit values seed every parameter, bypassing the coarse grid."""
-    from jax_snlc_fit.run import _sncid_inival, start_values
+    from jax_snlc_fit.loader import start_values_from_sncid_list
 
     fx = snana_fixture('salt3_fit_photoz')
     config = fit_config(fx.root / 'fit.nml', batch_size=1,
@@ -214,9 +210,9 @@ def test_photoz_external_start(snana_fixture):
     batch = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=1)
     fitter = build_fitter(config, build_fit_model(config), batch)
     batch = for_fit(fitter, batch)
-    batch.sncid_inival = _sncid_inival(
+    batch.sncid_inival = start_values_from_sncid_list(
         read_fitres(fx.root / 'FITRES.TEXT'), batch.snids, fitter.param_names)
-    start = start_values(fitter, fitter.config, batch, fitter.usesim_columns)
+    start = fitter.start_values(fitter.config, batch, fitter.usesim_columns)
     for name, values in batch.sncid_inival.items():
         np.testing.assert_array_equal(start[name], values)
     assert not config.fit.skip_grid_search
@@ -435,7 +431,7 @@ def test_photoz_fitres_columns_vs_snana(salt3_photoz_fit_results):
     applied, the start redshift and its step scaled by PRIOR_ZERRSCALE
     (snlc_fit.F90:8561); under the best-redshift Gaussian, the data redshift
     and its error."""
-    from jax_snlc_fit.sntable import build_fitres_table
+    from jax_snlc_fit.output import build_fitres_table
 
     fx, results, batch, fitter = salt3_photoz_fit_results
     redshifts = np.asarray(results.params["zPHOT"])
@@ -538,7 +534,7 @@ def test_host_columns_vs_snana(snana_fixture):
     'FITRES(text:host)' (the fixture nml) matches build_host_columns per CID.
     Host columns are data copies (+ computed SBMAG/CONFUSION/QZPHOT), so no
     fit is needed and the match is exact-tolerance."""
-    from jax_snlc_fit.sntable import build_host_columns
+    from jax_snlc_fit.output import build_host_columns
 
     fx = snana_fixture("salt3_fit_photoz")
     batch = load_and_batch_snana_fits(
@@ -584,7 +580,7 @@ def _overridden_batch(snana_fixture, data_root, files, head="salt3_fit_photoz",
                       dofit_photoz=False):
     """The salt3_fit_photoz light curves loaded under a SIM_HEADER_OVERRIDE_FILE
     list from the header_override data directory, with ``head``'s HEAD."""
-    from jax_snlc_fit.data_loader import read_header_override_file
+    from jax_snlc_fit.loader import read_header_override_file
 
     override = read_header_override_file(
         [",".join(str(data_root / "header_override" / f) for f in files)])
@@ -601,7 +597,7 @@ def test_header_override_vs_snana(snana_fixture, data_root):
     SNANA: overridden CIDs get the new zHEL/VPEC with SNANA-recomputed
     zCMB/zHD, untouched CIDs are unchanged. Data-derived columns, no fit
     (the reference is a spec-z fit with NFIT_ITERATION = 1)."""
-    from jax_snlc_fit.sntable import build_event_columns
+    from jax_snlc_fit.output import build_event_columns
 
     batch = _overridden_batch(snana_fixture, data_root, ["redshift_vpec.dat"])
     pre, _, _ = build_event_columns(batch)
@@ -622,7 +618,7 @@ def _assert_host_photoz_columns(batch, rows, prefixes, host2_text=False):
     """HOST[2]_ZPHOT[ERR] (the override's grid statistics, exact) and
     HOST[2]_QZPHOT[STD] (the splined PDF, within the documented quadrature)
     per CID against an SNANA FITRES."""
-    from jax_snlc_fit.sntable import build_host_columns
+    from jax_snlc_fit.output import build_host_columns
 
     cols = build_host_columns(batch.host_data, batch.zp_fluxcal, host_text=True,
                               host2_text=host2_text,
@@ -674,7 +670,7 @@ def test_header_override_logmass_grid_vs_snana(snana_fixture, data_root,
     host's photo-z (SET_LOGMASS, snana.F90:17831; FITANA_LOGMASS,
     snlc_fit.F90:13047). The override covers CIDs 1 to 40; the rest keep
     their catalogue mass. HOST_LOGMASS_ZPHOT stays the null SNANA writes."""
-    from jax_snlc_fit.sntable import build_host_columns
+    from jax_snlc_fit.output import build_host_columns
 
     batch = _overridden_batch(snana_fixture, data_root, ["logmass_cid.dat"],
                               dofit_photoz=dofit_photoz)
@@ -699,7 +695,7 @@ def test_event_columns_vs_snana(snana_fixture):
     SNR/BANDLIST family over all epochs; the photoz fixture's SNR columns
     are fit-windowed (see host2 README) so only the pure data copies are
     compared there."""
-    from jax_snlc_fit.sntable import build_event_columns
+    from jax_snlc_fit.output import build_event_columns
 
     data_cols = ["IDSURVEY", "TYPE", "FIELD", "CUTFLAG_SNANA", "ERRFLAG_FIT",
                  "RA", "DEC", "VPEC", "VPECERR", "LENSDMU", "LENSDMUERR",
@@ -749,7 +745,7 @@ def test_snana_table_vs_snana(snana_fixture):
     PHOT epochs, host/SIM blocks. fitted_snids come from the reference
     FITRES (SNANA's CUTFLAG=3 set), so fitted-z columns (photo-z mode) and
     the 1-vs-3 split (SNANA fit rejects) are excluded from value checks."""
-    from jax_snlc_fit.sntable import build_snana_table
+    from jax_snlc_fit.output import build_snana_table
 
     for name, zfitted in (("salt3_fit_photoz", True),
                           ("salt3_fit_select", False)):
@@ -765,7 +761,7 @@ def test_snana_table_vs_snana(snana_fixture):
         sntable = config.output
         # only the fitted set is reproducible here; the 1-vs-3 split is
         # excluded from the checks below
-        cutflag, errflag = _snana_flags(_record(batch, (fitted, 0)))
+        cutflag, errflag = _snana_flags(mark_errflags(batch, (fitted, 0)))
         varnames, cols, _ = build_snana_table(
             batch, sntable, cutflag=cutflag, errflag=errflag,
             nepoch_outlier={} if 'outlier' in sntable.tables else None,
@@ -831,7 +827,7 @@ def test_outlier_table_vs_snana(salt3_photoz_fit_results):
     earlier-iteration fit flux — so membership is gated as an overlap
     fraction. TREST carries SNANA's float32-MJD truncation
     (SNGL(MJD8), snana.F90:17280): gated at 5e-3."""
-    from jax_snlc_fit.sntable import build_outlier_table
+    from jax_snlc_fit.output import build_outlier_table
 
     fx, results, batch, fitter = salt3_photoz_fit_results
     mask = np.asarray(results.observation_mask)[:batch.n_sne]
@@ -884,7 +880,7 @@ def test_lcplot_vs_snana(salt3_photoz_fit_results):
     (fluxes, SIM_FLUXCAL, DATAFLAG, MJD at 1dp — SNANA prints float32
     MJDs); the fit-curve grid has SNANA's exact Tobs points; CHI2/Tobs
     and curve fluxes are fit-derived and not value-pinned."""
-    from jax_snlc_fit.sntable import (LCPLOT_TOBS_GRID, build_lcplot_table)
+    from jax_snlc_fit.output import (LCPLOT_TOBS_GRID, build_lcplot_table)
 
     fx, results, batch, fitter = salt3_photoz_fit_results
     hdr, ref = None, []
@@ -970,7 +966,7 @@ def test_lcplot_vs_snana(salt3_photoz_fit_results):
 def test_event_columns_fit_stage_vs_snana(salt3_photoz_fit_results):
     """In photo-z mode SNANA fills zHEL/zCMB/zHD from the fitted zPHOT;
     the zfit override reproduces that within combined fit errors."""
-    from jax_snlc_fit.sntable import build_event_columns
+    from jax_snlc_fit.output import build_event_columns
 
     fx, results, batch, _ = salt3_photoz_fit_results
     pre, _, _ = build_event_columns(
@@ -997,7 +993,7 @@ def test_host2_confusion_vs_snana(snana_fixture):
     """Doctored-HEAD anchor (salt3_fit_host2): HOST_CONFUSION Gupta-Eq-3
     branch + HOST2_* propagation vs SNANA text:host2. HOST2_MAG/MAGERR are
     gated against the HEAD values (SNANA's reader writes 99)."""
-    from jax_snlc_fit.sntable import build_host_columns
+    from jax_snlc_fit.output import build_host_columns
 
     fx = snana_fixture("salt3_fit_host2")
     phot = snana_fixture("salt3_fit_photoz")
@@ -1049,9 +1045,6 @@ def test_photoz_trest_cut_matches_snana(snana_fixture, repo_root, data_root,
     all 100 events, exactly as it does with no cut at all. Applying the nominal
     window directly as a per-SN cut instead drops five.
     """
-    import os
-    import subprocess
-    import sys
     fx = snana_fixture("salt3_fit_photoz")
     version = "JAX_TEST_SALT3_FIT_PHOTOZ"
     vdir = tmp_path / version
@@ -1086,7 +1079,7 @@ def test_photoz_trest_cut_matches_snana(snana_fixture, repo_root, data_root,
 
     # T0GAPMAX counts only gaps touching the peak window, and that window is
     # (CUTWIN_TRESTMIN(2), CUTWIN_TRESTMAX(1)) rather than a key of its own
-    # (snana.F90:20851). Left open it inverts and collapses to TGAPMAX; bounded
+    # (snana.F90:21105-21106). Left open it inverts and collapses to TGAPMAX; bounded
     # it is a different cut, so both regimes are anchored.
     assert rows("PZT0.FITRES.TEXT", "CUTWIN_T0GAPMAX", "0.0,12.0") == 100
     assert rows("PZT0WIN.FITRES.TEXT", "CUTWIN_TRESTMIN", "-20.0,-2.0",
@@ -1132,7 +1125,7 @@ def test_snana_flags_iter1_codes(snana_fixture):
     fx = snana_fixture("salt3_fit_photoz")
     config = fit_config(fx.root / "fit.nml")
     loaded = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=7)
-    precut = _record(loaded, (loaded.snids[:6], ERRFLAG_FIT_CUTS))
+    precut = mark_errflags(loaded, (loaded.snids[:6], ERRFLAG_FIT_CUTS))
     fitted = loaded.take(np.arange(6))
     zero = np.zeros(6)
     results = BatchFitResult(

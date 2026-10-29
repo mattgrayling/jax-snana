@@ -20,9 +20,10 @@ import jax
 import pytest
 import yaml
 
-from jax_snlc_fit import run as fit_run
 from jax_pipeline import Fit, Sim, run
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_fit import loader, run as fit_run
+from jax_snlc_fit.fitter import prepare
 
 _NOMINAL = "nominal"
 
@@ -360,10 +361,10 @@ def test_a_set_up_and_stop_input_generates_nothing(fixture_dir, tmp_path):
 
 @pytest.mark.parametrize('snana_output', [False, True])
 def test_retained_data_reselection_matches_a_fresh_load(
-        fixture_dir, tmp_path, monkeypatch, snana_output):
-    """CID synchronization preserves arrays, pre-fit flags and cut counts."""
+        fixture_dir, tmp_path, snana_output):
+    """CID synchronization on the retained data writes the same tables, pre-fit
+    flags included, as fitting a fresh load of the same CIDs."""
     import dataclasses
-    import numpy as np
 
     data = tmp_path / 'sample'
     data.mkdir()
@@ -377,36 +378,54 @@ def test_retained_data_reselection_matches_a_fresh_load(
     files = stage._files(configs)[(0, 0)]
     model = groups[0][1]
     config = fit_run._at_version(configs[(0, 0)], data)
-    retained = fit_run.load(config, model, files['kcor'], [data], files['shared'],
+    retained = loader.load(config, model, files['kcor'], [data], files['shared'],
                             keep_preselection=True)
     assert retained[0].n_sne > 1
     config = dataclasses.replace(config, selection=dataclasses.replace(
         config.selection, sncid_list=list(retained[0].snids[:2])))
-    expected = fit_run.load(config, model, files['kcor'], [data], files['shared'])
-    fitter = fit_run.prepare(config, model, files['kcor'], expected[0])
+    expected = loader.load(config, model, files['kcor'], [data], files['shared'])
+    fitter = prepare(config, model, files['kcor'], expected[0])
 
-    def compare(left, right):
-        if dataclasses.is_dataclass(left):
-            compare(vars(left), vars(right))
-        elif isinstance(left, dict):
-            assert left.keys() == right.keys()
-            for key in left:
-                compare(left[key], right[key])
-        elif left is None:
-            assert right is None
-        else:
-            np.testing.assert_array_equal(left, right)
+    def tables(prepared_data, prefix):
+        prefixed = dataclasses.replace(config, output=dataclasses.replace(
+            config.output, textfile_prefix=str(tmp_path / prefix)))
+        fit_run.fit_dataset(fitter, prefixed, files['kcor'], files['shared'],
+                            prepared_data=prepared_data)
+        return {path.name.removeprefix(prefix): [
+                    line for line in path.read_text().splitlines() if 'CPU' not in line]
+                for path in tmp_path.glob(f'{prefix}.*')}
 
-    def check_inputs(fitter, config, batch, precut, ladder, cosmology):
-        compare(batch, expected[0])
-        compare(precut, expected[1])
-        assert ladder == expected[2]
-        return None, None, {}
+    reselected = tables(retained, 'reselected')
+    assert reselected.keys() == ({'.FITRES.TEXT', '.SNANA.TEXT'} if snana_output
+                                 else {'.FITRES.TEXT'})
+    assert reselected == tables(None, 'fresh')
 
-    def no_reload(*args, **kwargs):
-        pytest.fail('CID synchronization reread the photometry')
 
-    monkeypatch.setattr(fit_run, 'load', no_reload)
-    monkeypatch.setattr(fit_run, '_fit_and_write', check_inputs)
-    fit_run.fit_dataset(fitter, config, files['kcor'], files['shared'],
-                        prepared_data=retained)
+def test_combined_yaml_simulations_preserve_prefix_and_id_overrides(tmp_path, fixture_root):
+    """Combined YAML runs preserve explicit prefixes and CID offsets in real output."""
+    from astropy.table import Table
+
+    data = fixture_root / 'data'
+    settings = dict(genmodel=str(data / 'models/SALT3.K21'), genfilters='ugrizY',
+                    simlib_file=str(data / 'simlib/JAX_TEST_LSST_DENSE.SIMLIB'),
+                    kcor_file=str(data / 'kcor/JAX_TEST_LSST.fits'), random_seed=42,
+                    redshift_range=[.1, .2], trest_range=[-10, 40],
+                    peakmjd_range=[60540, 61460], sigma_ratio=0., ngentot_lc=2,
+                    format_mask=32, opt_mwebv=0,
+                    dndz_entries=[['POWERLAW', 2.5e-5, 1.5]],
+                    populations={
+                        'SALT2x1': {'peak': 0., 'range': [0., 0.]},
+                        'SALT2c': {'peak': 0., 'range': [0., 0.]},
+                        'SALT2ALPHA': {'peak': .14, 'range': [.14, .14]},
+                        'SALT2BETA': {'peak': 3.1, 'range': [3.1, 3.1]}})
+    path = tmp_path / 'sim.yaml'
+    path.write_text(yaml.safe_dump(settings))
+    overrides = [{}, {'genprefix': 'custom', 'cidoff': 12}]
+    stage = Sim('combined', [path, path], overrides=overrides, batch_size=2)
+    output = stage.run({}, tmp_path / 'combined')
+
+    listed = (output / 'combined.LIST').read_text().split()
+    assert listed == ['combined_sim_0_HEAD.FITS', 'custom_HEAD.FITS']
+    custom = Table.read(output / 'custom_HEAD.FITS.gz', hdu=1)
+    assert sorted(int(cid) for cid in custom['SNID']) == [13, 14]
+    assert overrides == [{}, {'genprefix': 'custom', 'cidoff': 12}]

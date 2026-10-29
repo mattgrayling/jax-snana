@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit.config import Fit, FitConfig
-from jax_snlc_fit.config_parser import build, parse_fit_input_file, read_fit_input
-from jax_snlc_fit.inputs import build_config, command_settings, declarations
+from jax_snlc_fit.config_parser import (build, build_config, command_line_input, command_settings,
+                                        declarations,
+                                        parse_fit_input_file, read_fit_input)
 
 
 def test_python_yaml_and_cli_settings_agree(tmp_path):
@@ -92,30 +93,19 @@ def test_prior_override_does_not_need_a_matching_key_in_the_file(tmp_path):
     'fitmodel_name: SALT3.K21\nbatch_size: 8\n',
     '&FITINP\n FITMODEL_NAME = SALT3.K21\n BATCH_SIZE = 8\n&END\n',
 ])
-def test_cli_reads_once_and_resolves_model_override(tmp_path, monkeypatch, text):
-    import snlc_fit
-    from jax_snlc_fit.run import _model_type
+def test_cli_resolves_model_override(tmp_path, text):
+    """CLI model overrides select the model's named options before parsing them."""
+    from jax_snlc_fit.config_parser import fitted_model_type
 
     path = tmp_path / 'fit.input'
     path.write_text(text)
-    reads = []
-    read_text = Path.read_text
-
-    def read(source, *args, **kwargs):
-        if source == path:
-            reads.append(source)
-        return read_text(source, *args, **kwargs)
-
-    configs = []
-    monkeypatch.setattr(Path, 'read_text', read)
-    monkeypatch.setattr(snlc_fit, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_fit, 'run_fitting', lambda cfg, **kwargs: configs.append(cfg))
-    snlc_fit.main([str(path), '--fitmodel-name', 'REDBACK.arnett_bolometric',
-                   '--redback-tgrid-nbin', '128', '--batch-size', '2'])
-    assert len(reads) == 1
-    assert _model_type(configs[0]) == 'redback'
-    assert configs[0].fit.batch_size == 2
-    assert configs[0].model._model_key_values['REDBACK_TGRID_NBIN'] == 128
+    input_file, _, overrides = command_line_input([
+        str(path), '--fitmodel-name', 'REDBACK.arnett_bolometric',
+        '--redback-tgrid-nbin', '128', '--batch-size', '2'])
+    config = parse_fit_input_file(input_file, overrides)
+    assert fitted_model_type(config) == 'redback'
+    assert config.fit.batch_size == 2
+    assert config.model._model_key_values['REDBACK_TGRID_NBIN'] == 128
 
 
 def test_mapping_overrides_preserve_other_entries_and_caller():
@@ -140,16 +130,21 @@ def test_invalid_named_settings_fail(values):
         build_config(values)
 
 
-def test_new_field_needs_no_parser_registration(monkeypatch):
-    # The owner declaration is the only information given to the parser.
-    from dataclasses import make_dataclass, field
-    owner = make_dataclass('ExtendedFit', [('example_setting', int, 1),
-                           ('derived_value', int, field(default=0, init=False))], bases=(Fit,))
-    monkeypatch.setitem(FitConfig.__annotations__, 'fit', owner)
-    assert command_settings(['--example-setting', '12'], {}) == {'example_setting': 12}
-    assert build_config({'example_setting': 12}).fit.example_setting == 12
-    with pytest.raises(SNANAError, match='Unknown fit settings'):
-        build_config({'derived_value': 5})
+def test_new_field_needs_no_parser_registration():
+    """The shared settings parser discovers real fields on an extended owner."""
+    from dataclasses import dataclass, field
+    from jax_snlc_core.input_settings import build_dataclass, settings_parser
+
+    @dataclass
+    class ExtendedFit(Fit):
+        example_setting: int = 1
+        derived_value: int = field(default=0, init=False)
+
+    args = settings_parser(ExtendedFit).parse_args(['--example-setting', '12'])
+    assert vars(args) == {'example_setting': 12}
+    assert build_dataclass(ExtendedFit, vars(args)).example_setting == 12
+    with pytest.raises(SNANAError, match='Unknown ExtendedFit setting'):
+        build_dataclass(ExtendedFit, {'derived_value': 5})
 
 
 def test_omitted_precision_and_explicit_false_are_distinct():
@@ -184,7 +179,7 @@ def test_prior_cli_can_reset_to_model_defaults():
     {'distribution': 'normal', 'mean': 0, 'sigm': 1},
 ])
 def test_prior_domains_fail(prior):
-    from jax_snlc_fit.priors import parse_prior
+    from jax_snlc_fit.parameters import parse_prior
     with pytest.raises(SNANAError):
         parse_prior(prior)
 
@@ -192,7 +187,7 @@ def test_prior_domains_fail(prior):
 def test_public_time_prior_uses_absolute_mjd():
     import jax.numpy as jnp
     import numpy as np
-    from jax_snlc_fit.priors import per_sn, prior_chi2
+    from jax_snlc_fit.parameters import per_sn, prior_chi2
     data = per_sn(jnp.array([0.]), jnp.array([35.]), jnp.array([60000.]))
     prior = (('gauss', 0, {'centre': 60002., 'sigma': 2., 'public_time': True}),)
     np.testing.assert_allclose(prior_chi2(jnp.array([0.]), prior, data[0]), 1.)
@@ -207,15 +202,12 @@ def test_negative_cli_values_use_standard_argparse_syntax():
     assert config.fit.fitwin_trest == (-100., 45.)
 
 
-def test_cli_shared_options_can_precede_input_file(tmp_path, monkeypatch):
-    import snlc_fit
+def test_cli_shared_options_can_precede_input_file(tmp_path):
     path = tmp_path / 'fit.yaml'
     path.write_text('fitmodel_name: SALT3.K21\n')
-    configs = []
-    monkeypatch.setattr(snlc_fit, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_fit, 'run_fitting', lambda cfg, **kwargs: configs.append(cfg))
-    snlc_fit.main(['--batch-size', '2', str(path)])
-    assert configs[0].fit.batch_size == 2
+    input_file, _, overrides = command_line_input(['--batch-size', '2', str(path)])
+    config = parse_fit_input_file(input_file, overrides)
+    assert config.fit.batch_size == 2
 
 
 def test_named_overrides_reject_unused_positional_values():
@@ -298,23 +290,19 @@ def test_snana_yaml_accepts_mixed_case_parameter_suffixes(tmp_path):
 
 def test_named_and_snana_defaults_agree():
     from dataclasses import asdict
-    from jax_snlc_fit.config_parser import build
-    from jax_snlc_fit.inputs import build_config
     assert asdict(build({})) == asdict(build_config())
     assert build_config({'tables': {}}).output.tables == {}
     assert build_config({'tables': {'lcplot': 'key'}}).output.mxlc == 5
     assert build({}, settings={'tables': {'lcplot': 'key'}}).output.mxlc == 5
 
 
-def test_model_options_can_precede_file_with_explicit_model(tmp_path, monkeypatch):
-    import snlc_fit
+def test_model_options_can_precede_file_with_explicit_model(tmp_path):
     path = tmp_path / 'fit.yaml'
     path.write_text('fitmodel_name: BAYESN.W22\n')
-    configs = []
-    monkeypatch.setattr(snlc_fit, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_fit, 'run_fitting', lambda cfg, **kwargs: configs.append(cfg))
-    snlc_fit.main(['--fitmodel-name', 'SALT3.K21', '--opt-salt2fit', '1', str(path)])
-    assert configs[0].model._model_key_values['OPT_SALT2FIT'] == 1
+    input_file, _, overrides = command_line_input([
+        '--fitmodel-name', 'SALT3.K21', '--opt-salt2fit', '1', str(path)])
+    config = parse_fit_input_file(input_file, overrides)
+    assert config.model._model_key_values['OPT_SALT2FIT'] == 1
 
 
 @pytest.mark.parametrize('setting, quantity', [
@@ -361,13 +349,11 @@ def test_cut_quantity_normalization_preserves_column_and_band_names():
     ['FITMODEL_NAME', 'REDBACK.arnett_bolometric'],
     ['FITMODEL_NAME=REDBACK.arnett_bolometric'],
 ])
-def test_cli_snana_model_override_discovers_named_model_options(tmp_path, monkeypatch, selector):
-    import snlc_fit
+def test_cli_snana_model_override_discovers_named_model_options(tmp_path, selector):
     path = tmp_path / 'fit.nml'
     path.write_text('&FITINP\n FITMODEL_NAME = SALT3.K21\n&END\n')
-    configs = []
-    monkeypatch.setattr(snlc_fit, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_fit, 'run_fitting', lambda cfg, **kwargs: configs.append(cfg))
-    snlc_fit.main([str(path), *selector, '--redback-tgrid-nbin', '128'])
-    assert configs[0].model.fitmodel_name == 'REDBACK.arnett_bolometric'
-    assert configs[0].model._model_key_values['REDBACK_TGRID_NBIN'] == 128
+    input_file, _, overrides = command_line_input([
+        str(path), *selector, '--redback-tgrid-nbin', '128'])
+    config = parse_fit_input_file(input_file, overrides)
+    assert config.model.fitmodel_name == 'REDBACK.arnett_bolometric'
+    assert config.model._model_key_values['REDBACK_TGRID_NBIN'] == 128

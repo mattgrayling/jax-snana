@@ -15,8 +15,8 @@ def test_fit_only_model_registration(repo_root):
 
         MODEL_REGISTRY['fitonly'] = FitOnly
         import jax_pipeline
-        from jax_snlc_sim.config_parser import parse_snana_input_file, build
-        from jax_snlc_core.utils.error_handling import SNANAError
+        from jax_snlc_sim.inputs import parse_snana_input_file, build
+        from jax_snlc_core.logging import SNANAError
 
         parsed = parse_snana_input_file(
             'tests/fixtures/snana/atmosphere_replay/input.input')

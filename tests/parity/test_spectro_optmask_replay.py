@@ -21,13 +21,13 @@ template term, shifts FLAMERR by tens of percent — far above the gates.
 import os
 
 import numpy as np
+from _replay_helpers import load_jax_phot, load_snana_phot
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import load_snana_phot, load_jax_phot  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _load_spec(path):
@@ -60,7 +60,7 @@ def _replay(fx, tmp_path, version):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, version, sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, version, sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     return simulation, resources
 
 
@@ -219,7 +219,7 @@ def test_spectro_nospec(snana_fixture, tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "NOSPEC", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "NOSPEC", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     assert not os.path.exists(
         resolve_fits_path(tmp_path / "NOSPEC" / "NOSPEC_SPEC.FITS"))
 

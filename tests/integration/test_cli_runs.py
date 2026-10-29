@@ -4,11 +4,10 @@ import gzip
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-from jax_snlc_core.io.fitres_reader import read_fitres_header
+from jax_snlc_core.snana_files import read_fitres_header
 
 
 def _stage_fit_version(tmp_path, head, phot, data_root):

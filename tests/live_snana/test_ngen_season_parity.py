@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jax_snlc_sim.config_parser import parse_snana_input_file
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 def _write_input(path: Path, *, kcor_path: str, simlib_path: str,
@@ -96,7 +96,7 @@ def test_ngen_season_parity_against_live(tmp_path, lsst_kcor_path,
     )
     snana_n = int(match.group(1))
 
-    from jax_snlc_sim.builder import resolve_counts
+    from jax_snlc_sim.rate import resolve_counts
     jax_cfg = parse_snana_input_file(str(inp))
     jax_n = resolve_counts(jax_cfg, jax_cfg.hz_map())[0]
     assert jax_n == snana_n, (

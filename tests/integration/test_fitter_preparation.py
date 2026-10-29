@@ -7,7 +7,7 @@ import pytest
 
 from jax_pipeline import Fit
 from jax_snlc_core.utils import group_equal
-from jax_snlc_fit import run
+from jax_snlc_fit import fitter, loader, run
 from jax_snlc_fit.fitter import fit_band_window
 
 
@@ -49,7 +49,7 @@ def test_shared_preparation_matches_independent_loading(
                  'bands': {'FILTLIST_FIT': 'gri'}})
     configs, models = stage._groups()
     files = stage._files(configs)
-    cells = [dict(config=run.resolved_config(configs[key], model), model=model,
+    cells = [dict(config=fitter.resolved_config(configs[key], model), model=model,
                   **files[key]) for keys, model in models for key in keys]
     # Separate model objects with the same data requirements share measured arrays.
     cells.insert(1, {**cells[0], 'model': dataclasses.replace(cells[0]['model'])})
@@ -60,13 +60,13 @@ def test_shared_preparation_matches_independent_loading(
         i = group[0]
         cell = cells[i]
         for directory in directories:
-            expected = run.load(run._at_version(cell['config'], directory),
+            expected = loader.load(run._at_version(cell['config'], directory),
                 cell['model'], cell['kcor'], [directory], cell['shared'],
                 keep_preselection=synchronise)
             assert_prepared_equal(prepared[i][directory][:3], expected[:3])
-            needs.append(run.batch_needs(cell['config'], expected[0]))
+            needs.append(fitter.batch_needs(cell['config'], expected[0]))
         windows.append(fit_band_window(cell['model'], expected[0].photometry))
-    assert shape == run.shape_for(cells[0]['config'], needs, windows)
+    assert shape == fitter.shape_for(cells[0]['config'], needs, windows)
     first, duplicate = (prepared[i][directories[0]][0] for i in (0, 1))
     assert first is not duplicate
     assert first.fluxcals is duplicate.fluxcals

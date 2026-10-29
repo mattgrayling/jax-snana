@@ -2,16 +2,15 @@
 
 ``mu_at`` is the reference cosmology; the rest project a model's standardisation
 onto a distance and its coefficients, which the biasCor, CC-prior and likelihood
-all need. Kept apart from covint, which is only the intrinsic-scatter matrix.
+all need.
 """
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.physics.cosmology import distance_modulus
-
-from jax_snlc_core.physics.constants import LIGHT_KM, LN10
+from jax_snlc_core.cosmology import distance_modulus
+from jax_snlc_core.utils import LIGHT_KM, LN10
 
 from .config import MASK_BIASCOR_MU, parval, use_gamma0
 

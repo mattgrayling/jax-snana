@@ -11,13 +11,11 @@ so the assertion is on aggregate pass count per bit.
 
 from pathlib import Path
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 
-
-from jax_snlc_sim import cutmask  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim import cutwin
 
 
 def _parse_dump_cutmask(path: Path) -> np.ndarray:
@@ -48,10 +46,10 @@ def test_cutwin_perbit_aggregate_rates(snana_fixture):
     jax_mask = np.asarray(sel["cutmask"]).astype(int)
 
     active_bits = {
-        "TRESTMIN":  cutmask.CUTBIT_TRESTMIN,
-        "TRESTMAX":  cutmask.CUTBIT_TRESTMAX,
-        "SNRMAX":    cutmask.CUTBIT_SNRMAX,
-        "NOBS_SNR":  cutmask.CUTBIT_NOBS_SNR,
+        "TRESTMIN":  cutwin.CUTBIT_TRESTMIN,
+        "TRESTMAX":  cutwin.CUTBIT_TRESTMAX,
+        "SNRMAX":    cutwin.CUTBIT_SNRMAX,
+        "NOBS_SNR":  cutwin.CUTBIT_NOBS_SNR,
     }
 
     failures = []
@@ -79,13 +77,14 @@ def test_cutwin_perbit_aggregate_rates(snana_fixture):
 
 def _run_kernel(cuts, snrs, mjds, epoch_mask, filter_names=("LSST-g", "LSST-r")):
     import jax.numpy as jnp
-    from jax_snlc_sim.survey.cutwin import make_jax_cutwin
+    from jax_snlc_sim.cutwin import cutwin_all, prepare_cutwin
 
-    fn = make_jax_cutwin(cuts, list(filter_names), byfield_masks=())
+    arrays, options = prepare_cutwin(cuts, list(filter_names), byfield_masks=())
     snrs = jnp.asarray(snrs, dtype=jnp.float32)
     n_sne, max_obs = snrs.shape
     zeros = jnp.zeros_like(snrs)
-    _, fails, _ = fn(
+    _, fails, _ = cutwin_all(
+        arrays, options,
         snrs, zeros, jnp.zeros_like(snrs, dtype=jnp.int32),
         jnp.ones_like(snrs, dtype=bool), jnp.asarray(mjds, dtype=jnp.float32),
         jnp.asarray(epoch_mask, dtype=bool),

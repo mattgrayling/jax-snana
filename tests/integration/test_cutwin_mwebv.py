@@ -3,13 +3,10 @@ selection applies as SNANA's gen_cutwin does (snlc_sim.c:24454-24456), and
 the generic CUTWIN_<VAR> family.
 """
 
-from pathlib import Path
-
-import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim import run as sim_run
 
 
 def test_cutwin_mwebv_partial_pass_when_one_field_in_range(snana_fixture):
@@ -67,7 +64,7 @@ def test_engine_derived_quantities_are_all_cuttable(snana_fixture, tmp_path):
     supplied with a value by the time the cut runs.
     """
     import inspect
-    from jax_snlc_sim.survey.cutwin import range_cut_quantities
+    from jax_snlc_sim.cutwin import range_cut_quantities
 
     derived = [name for name, p in
                inspect.signature(range_cut_quantities).parameters.items()

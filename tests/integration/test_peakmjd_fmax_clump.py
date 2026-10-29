@@ -6,13 +6,12 @@ estimate peak_mjd. With dense cadence the recovered value should track truth
 within a few days for the bulk of the sample.
 """
 
-from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
 
-
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def test_fmax_clump_recovers_peak_mjd(snana_fixture):
@@ -89,7 +88,7 @@ def test_fmax_clump_resolves_clumps_beyond_1000_days():
     (MXWIN_SNRCUT, get_obs_atFLUXMAX): two clumps in a multi-season
     baseline stay in separate bins, and the denser one wins even when a
     brighter sparse clump sits nearby in time."""
-    from jax_snlc_core.photometry.peakmjd import fmax_clump_peakmjd
+    from jax_snlc_core.peak_time import fmax_clump_peakmjd
 
     mjd_a = np.arange(0.0, 50.0, 10.0)              # 5 bright early epochs
     mjd_c = np.array([1000.0, 1003.0, 1006.0])      # 3 brighter epochs
@@ -117,7 +116,7 @@ def test_take_spectrum_epochs_follow_the_generated_peak(snana_fixture, tmp_path)
     cfg = dict(n_sne=40, random_seed=122459)
     sim = sim_run.prepare(str(inp), **cfg)
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "SPECPK", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SPECPK", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     with fits.open(tmp_path / "SPECPK" / "SPECPK_HEAD.FITS.gz") as h:
         head = {int(r["SNID"]): (float(r["SIM_PEAKMJD"]), float(r["PEAKMJD"]),

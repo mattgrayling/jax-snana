@@ -4,12 +4,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.dust_laws import load_dust_law
-from jax_snlc_sim.hostlib.hostspec_reader import HostSpecTable, HostSpectra
-from jax_snlc_core.photometry.spectrograph import SpectrographCalibration
-from jax_snlc_sim.spectrograph.genspec import (
-    _apply_mw_extinction, _host_bins_to_smeared, _seds_to_smeared, mw_transmission,
-)
+from jax_snlc_core.dust import load_dust_law
+from jax_snlc_core.spectrograph import SpectrographCalibration
+from jax_snlc_sim.hostlib.spectra import HostSpecTable, HostSpectra
+from jax_snlc_sim.spectra import (_apply_mw_extinction, _host_bins_to_smeared,
+                                  _seds_to_smeared, mw_transmission)
 
 
 def calibration(lam_min, lam_max):
@@ -120,8 +119,8 @@ def test_spectral_scatter_and_mw_truth(data_root, scatter_name, grey_offset):
     """Scheduled spectra use the selected events' existing scatter and true dust."""
     import jax
     from jax_snlc_core.models import build_model
-    from jax_snlc_sim.genmag_smear import build_smear_model
-    from jax_snlc_sim.spectrograph.genspec import generate_simlib_spectra, _sed_to_bin_flux
+    from jax_snlc_sim.scatter import build_smear_model
+    from jax_snlc_sim.spectra import generate_simlib_spectra, _sed_to_bin_flux
 
     model = build_model(str(data_root / 'models/SALT3.K21'), {})
     wave = model.wavelength_grid

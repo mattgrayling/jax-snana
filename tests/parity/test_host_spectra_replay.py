@@ -12,9 +12,10 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.physics.dust_laws import DustLaw
-from jax_snlc_sim.hostlib.hostspec_reader import HostSpectra
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_core.dust import DustLaw
+from jax_snlc_sim.hostlib.spectra import HostSpectra
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.spectra import compute_spectra_for_mask
 
 _FIXTURES = Path(__file__).parent.parent / 'fixtures' / 'snana'
 _INPUT = str(_FIXTURES / 'host_spectra_replay' / 'input.input')
@@ -26,7 +27,7 @@ class _FlatUnitLaw(DustLaw):
     """A(λ)/A(V) == 1 everywhere, so the expected dimming is closed-form."""
 
     def __init__(self):
-        super().__init__('flat', -1)
+        super().__init__('flat')
 
     def extinction_curve(self, wavelength, rv, **kwargs):
         return jnp.ones_like(jnp.asarray(wavelength))
@@ -55,7 +56,7 @@ def _snana_host_rows(genversion=_GENVERSION, fixture='host_spectra_replay'):
 def _jax_host_flam(input_path=_INPUT):
     """Host SIM_FLAM per galaxy, through the shipping pipeline."""
     from jax_snlc_sim import run as sim_run
-    from jax_snlc_sim.spectrograph.genspec import (
+    from jax_snlc_sim.spectra import (
         _host_bins_to_smeared, _parse_spectro_options, observed_bins)
     _prepared = sim_run.prepare(input_path, **dict(
         n_sne=5, random_seed=1))
@@ -144,7 +145,7 @@ def test_host_rows_are_flagged_and_written_at_the_mjd_sentinel():
     resources = sim
     res, _, _ = sim_run.run_simulation(sim)
     n = len(np.asarray(res['parameters']['sim_redshift_cmb']))
-    spectra, _ = sim_run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, res, np.ones(n, dtype=bool),
         key=root_key(simulation.run.random_seed))
     hosts = [s for v in spectra.values() for s in v if s.is_host]
@@ -155,7 +156,7 @@ def test_host_rows_are_flagged_and_written_at_the_mjd_sentinel():
 
     simulation.spectra.take_spectrum_prescale = {
         field.field_name: 1e9 for field in resources.fields}
-    prescaled, _ = sim_run.compute_spectra_for_mask(
+    prescaled, _ = compute_spectra_for_mask(
         sim, res, np.ones(n, dtype=bool),
         key=root_key(simulation.run.random_seed))
     kept = [s for rows in prescaled.values() for s in rows]
@@ -180,7 +181,7 @@ def _contam_spectra(hostsnfrac):
     simulation.spectra.take_spectrum_hostsnfrac = hostsnfrac
     res, _, _ = sim_run.run_simulation(sim)
     n = len(np.asarray(res['parameters']['sim_redshift_cmb']))
-    spectra, _ = sim_run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, res, np.ones(n, dtype=bool),
         key=root_key(simulation.run.random_seed))
     return {snid: (next(s for s in v if s.is_host),
@@ -221,7 +222,7 @@ def test_hostsnfrac_uses_bin_widths_and_shared_support():
     the sums running only over bins where both spectra carry flux -- so an
     empty SN-peak bin must drop the host flux there from the ratio too.
     """
-    from jax_snlc_sim.spectrograph.genspec import host_contam_scale
+    from jax_snlc_sim.spectra import host_contam_scale
     # Deliberately unequal bin widths: SNANA sums GENFLUX*LAMBIN and GENFLUX is
     # itself FLAM*LAMBIN, so the weight is LAMBIN^2 -- which only shows up when
     # the bins differ. Equal widths cancel out of the ratio entirely.
@@ -259,7 +260,7 @@ def test_hostsnfrac_scale_is_epoch_independent():
                 spec_cfg['epoch_range'] = (trest, trest)
         res, _, _ = sim_run.run_simulation(sim)
         n = len(np.asarray(res['parameters']['sim_redshift_cmb']))
-        spectra, _ = sim_run.compute_spectra_for_mask(
+        spectra, _ = compute_spectra_for_mask(
             sim, res, np.ones(n, dtype=bool),
             key=root_key(simulation.run.random_seed))
         return {snid: next(s.scale_host_contam for s in v if not s.is_host)
@@ -308,7 +309,7 @@ def _tiny_calib(lam_min, lam_max):
 
 
 def _host_flam(table, coeffs, z, calib, mwebv=0.0, static_data=None):
-    from jax_snlc_sim.spectrograph.genspec import _host_bins_to_smeared
+    from jax_snlc_sim.spectra import _host_bins_to_smeared
     opt = {'lamspike_idx': -1, 'smearing_matrix': np.eye(calib.n_lam)}
     sim_flam, _, _ = _host_bins_to_smeared(
         HostSpectra(table, np.asarray(coeffs)[None, :]),
@@ -321,7 +322,7 @@ def test_host_bins_apply_mw_extinction():
     """MWEBV > 0 must dim the stored host flux by the transmission factor;
     the fixture runs with OPT_MWEBV: 0, so nothing else covers this.
     """
-    from jax_snlc_sim.hostlib.hostspec_reader import read_host_spec_table
+    from jax_snlc_sim.hostlib.spectra import read_host_spec_table
     table = read_host_spec_table(_eazy_basis(), 'SPECBASIS')
     coeffs = np.full(table.n_spec, 0.3)
     calib = _tiny_calib([4000.0, 6000.0], [4100.0, 6100.0])
@@ -332,16 +333,15 @@ def test_host_bins_apply_mw_extinction():
     assert np.allclose(on / off, expected, rtol=1e-6)
 
 
-def test_host_bins_outside_the_basis_grid_are_zeroed():
+def test_host_bins_outside_the_basis_grid_are_zeroed(tmp_path):
     """A spectrograph bin whose rest range leaves the basis span carries no
     flux (sntools_host.c:2310-2311). The fixture's bins all land on-grid.
     """
-    from jax_snlc_sim.hostlib.hostspec_reader import read_host_spec_table
+    from jax_snlc_sim.hostlib.spectra import read_host_spec_table
     text = ("FLAM_SCALE: 1.0\nVARNAMES: ROW WAVELENGTH SPECBASIS00\n"
             "ROW: 1 4000.0 1.0\nROW: 2 4010.0 1.0\nROW: 3 4020.0 1.0\n")
-    import tempfile
-    with tempfile.NamedTemporaryFile('w', suffix='.dat', delete=False) as fh:
-        fh.write(text); path = fh.name
+    path = tmp_path / 'host_basis.dat'
+    path.write_text(text)
     table = read_host_spec_table(path, 'SPECBASIS')
     # wave_min = [3995, 4005, 4015], wave_max = [.., .., 4025]. Bin 1 straddles
     # wave_min[-1], so the trapezoid alone would give it flux; SNANA does not.
@@ -356,8 +356,8 @@ def test_host_magnitude_ignores_mw_extinction():
     the mag is the galaxy's true brightness while the spectrum is what is
     observed. jax reproduces that, so genmag must not move with MWEBV.
     """
-    from jax_snlc_sim.hostlib.hostspec_reader import read_host_spec_table
-    from jax_snlc_sim.spectrograph.genspec import _host_bins_to_smeared
+    from jax_snlc_sim.hostlib.spectra import read_host_spec_table
+    from jax_snlc_sim.spectra import _host_bins_to_smeared
     table = read_host_spec_table(_eazy_basis(), 'SPECBASIS')
     calib = _tiny_calib([4000.0, 6000.0], [4100.0, 6100.0])
     static = {'mw_dust_law': _FlatUnitLaw(), 'rv_mw': 3.1}

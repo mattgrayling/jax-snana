@@ -9,14 +9,18 @@ model key is parsed, stored or copied in general code, these tests fail.
 import re
 from pathlib import Path
 
-from jax_snlc_core.models import (MODEL_REGISTRY, FittedModel, SNModel,
-                                  SimulatedModel, StandardisedModel,
-                                  model_input_keys)
+from jax_snlc_core.models import (MODEL_REGISTRY, FittedModel, SimulatedModel, SNModel,
+                                  StandardisedModel, model_input_keys)
 from jax_snlc_fit.config_parser import RECORD_CLASSES
 
 
 class _EveryRole(SNModel, SimulatedModel, FittedModel):
     """The generic keys are what the base and the roles declare."""
+
+
+class _FittedFirst(FittedModel, SNModel, SimulatedModel):
+    """The same bases, the fitted role first."""
+
 
 REPO = Path(__file__).resolve().parents[2]
 FIT_SOURCES = sorted(Path(REPO, 'jax_snlc_fit').glob('*.py')) + [
@@ -30,6 +34,12 @@ BBC_SOURCES = sorted(Path(REPO, 'jax_salt2mu').glob('*.py')) + [
 # shared by every model rather than owned by one, as the fitter's input
 # sees them.
 GENERIC_KEYS = set(model_input_keys(_EveryRole))
+
+
+def test_base_order_does_not_change_the_input_keys():
+    """A field the base class keeps out of construction, such as SNModel's
+    config, is not an input key whichever role a model lists first."""
+    assert model_input_keys(_FittedFirst, None) == model_input_keys(_EveryRole, None)
 
 
 def _model_keys():
@@ -102,15 +112,15 @@ _FORMAT_LITERALS = {
     # the central command-line-only key table; the SALT2BETA_cPOLY key SNANA
     # parses for every GENMODEL (snlc_sim.c:2368); the GENPOP_ASYMGAUSS file
     # format, whose blocks carry SALT2 populations (snlc_sim.c:6437)
-    'config_parser.py': {'NON1A_INDEX_FORCE', 'NONIA_INDEX_FORCE',
+    'inputs.py': {'NON1A_INDEX_FORCE', 'NONIA_INDEX_FORCE',
                          'SALT2BETA_cPOLY', 'SALT2x1', 'SALT2c'},
     # the GENPDF_FILE format's own VARNAMES spelling, in the examples of
     # what the reader accepts; the reader itself reads whatever the file names
-    'genpdf_reader.py': {'SALT2c'},
+    'genpdf.py': {'SALT2c'},
     # the SEARCHEFF map-file format's own variable spellings
-    'searcheff_map.py': {'SALT2x1', 'SALT2c'},
+    'spectroscopic_efficiency.py': {'SALT2x1', 'SALT2c'},
     # the SIMLIB header format carries SALT2 parameters (snlc_sim.c:22099)
-    'simlib_reader.py': {'SALT2x1', 'SALT2c'},
+    'simlib.py': {'SALT2x1', 'SALT2c'},
 }
 
 

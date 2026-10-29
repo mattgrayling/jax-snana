@@ -21,7 +21,7 @@ name, ``inputs()`` and ``run()``, and is used like the built-in ones. Running th
 again loads every stage whose inputs have not changed.
 
 Tables returned by Fit, Classify and BBC are
-:class:`~jax_snlc_core.io.fitres_reader.FitresTable` objects, with the rows in ``df``
+:class:`~jax_snlc_core.snana_files.FitresTable` objects, with the rows in ``df``
 and the ``# KEY: value`` header as strings in ``meta``. Covariance returns its
 Hubble diagram as a pandas DataFrame and its covariance entries as dictionaries
 containing either factors or a dense inverse matrix. The distance fit's
@@ -32,7 +32,7 @@ of its executables. A fit's FITOPTs and a distance fit's MUOPTs are each a
 dict from label to the input keys it overrides, and each stage runs once per
 cell of the grid they form. Precision is set for the whole process: a script
 that wants double calls
-:func:`~jax_snlc_core.utils.precision.configure_precision` before
+:func:`~jax_snlc_core.utils.configure_precision` before
 :func:`run`.
 
 The stages report through Python's ``logging`` at INFO. The command-line
@@ -43,11 +43,10 @@ it only warnings are printed, and ``MANIFEST.yml`` in the output directory
 records what was loaded and what was rerun.
 """
 
-from jax_snlc_core.utils.precision import configure_precision
+from jax_snlc_core.utils import configure_precision
 
 from .classify import Classify, Train
-from .run import run
-from .report import cosmology_summary
+from .run import cosmology_summary, run
 from .stages import BBC, Cosmology, Covariance, Data, Fit, Sim, Stage
 
 __all__ = [

@@ -1,4 +1,4 @@
-"""SN rate models and rate-integral physics.
+"""SN rate models, generated counts, and redshift sampling distributions.
 
 DNDZ rate functions (POWERLAW, POWERLAW2, CC_S15, MD14), per-z rate
 evaluation, and the SOLID_ANGLE × time × ∫R(z) dV(z) integral that
@@ -7,6 +7,7 @@ sampler state.
 """
 
 import logging
+from dataclasses import asdict, dataclass, field
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -15,17 +16,33 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.io.two_column import read_two_column_file
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import (
-    hubble_parameter, transverse_comoving_distance,
-)
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.interp import eval_genpoly
+from jax_snlc_core.cosmology import (
+    ANISOTROPY_V04_PARS, cos_sep_cmb_apex_galactic, cosmo_params,
+    distance_modulus, distance_modulus_to_redshift, hubble_parameter,
+    transverse_comoving_distance)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import MODEL_REGISTRY
+from jax_snlc_core.snana_files import read_two_column_file
+from jax_snlc_core.utils import LIGHT_KM, eval_genpoly
 
 logger = logging.getLogger(__name__)
 
 PC_KM = 3.085678e13   # parsec in km (sntools.h:70)
+
+
+@dataclass
+class RateModifiers:
+    """Multiplicative DNDZ reweighting, neutral unless supplied."""
+
+    scale: float = 1.0
+    zexp: float = 0.0
+    zpoly: List[float] = field(default_factory=list)
+    z1poly: List[float] = field(default_factory=list)
+
+
+def neutral_rate_mods() -> Dict[str, Any]:
+    """Default DNDZ modifiers, leaving the rate unchanged."""
+    return asdict(RateModifiers())
 
 
 def _SFRfun_MD14(z: np.ndarray, A: float, B: float, C: float, D: float) -> np.ndarray:
@@ -55,21 +72,6 @@ def _parse_dndz_multiplier(name_str: str) -> Tuple[float, str]:
     return 1.0, name_str
 
 
-def _rate_powerlaw(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """R(z) = A * (1+z)^B, used by both POWERLAW and POWERLAW2."""
-    return dndz_param['A'] * (1.0 + z_grid) ** dndz_param['B']
-
-
-def _rate_cc_s15(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Strolger 2015 CC rate: k * h^2 * SFR_MD14(z) * user_scale
-    (SNANA snlc_sim.c:18009-18020)."""
-    A_md, B_md, C_md, D_md = 0.015, 1.50, 5.00, 6.10
-    k = 0.0091
-    h = dndz_param['h0'] / 100.0
-    scale = dndz_param['scale']
-    return scale * k * h**2 * _SFRfun_MD14(z_grid, A_md, B_md, C_md, D_md)
-
-
 def _rate_from_file(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
     """DNDZ_FILE rate table, interpolated linearly (interp_1DFUN OPT_INTERP=1).
 
@@ -85,39 +87,6 @@ def _rate_from_file(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
             f"z={z_grid.min():.4f} to {z_grid.max():.4f}.",
             function_name="_rate_from_file")
     return np.interp(z_grid, z_table, rate_table)
-
-
-def _rate_md14(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Madau & Dickinson 2014 SFR(z), normalised by R0 at z=0
-    (SNANA snlc_sim.c:18021-18027)."""
-    A_md, B_md, C_md, D_md = 0.015, 2.90, 2.70, 5.60
-    R0 = dndz_param['R0']
-    sfr0 = _SFRfun_MD14(np.array([0.0]), A_md, B_md, C_md, D_md)[0]
-    return R0 * _SFRfun_MD14(z_grid, A_md, B_md, C_md, D_md) / sfr0
-
-
-def _rate_constant(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """HUBBLE (3e-5, "approx SNIa rate at z ~ 0") and FLAT (1e-8, which SNANA
-    calls meaningless, and exists only to avoid an abort), snlc_sim.c:18003."""
-    return np.full_like(z_grid, dndz_param['rate'], dtype=np.float64)
-
-
-def _rate_pisn(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Pair-instability SN rate polynomial in Gpc^-3 (snlc_sim.c:18030)."""
-    z = z_grid
-    rate = (1.98 + 6.38 * z + 6.558 * z**2
-            - 4.42 * z**3 + 0.8312 * z**4 - 0.0508 * z**5)
-    return dndz_param['scale'] * rate / 1.0e9
-
-
-def _rate_tde(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Tidal-disruption-event rate R0 * 10^(-0.5z/0.6) (snlc_sim.c:18041)."""
-    return dndz_param['R0'] * 10.0 ** (-0.5 * z_grid / 0.6)
-
-
-def _rate_zpoly(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Rate as a polynomial in z (snlc_sim.c:18069, eval_GENPOLY)."""
-    return eval_genpoly(dndz_param['coeffs'], z_grid)
 
 
 def _sfr_bg03(z: np.ndarray, h0: float) -> np.ndarray:
@@ -145,49 +114,53 @@ def _sfr_integral(z_grid: np.ndarray, cosmology) -> np.ndarray:
     return total * a_bin * (1.0e6 * PC_KM) / seconds_per_year
 
 
-def _rate_abmodel(dndz_param: Dict, z_grid: np.ndarray) -> np.ndarray:
-    """Two-component A+B rate: A * (stellar mass) + B * SFR (snlc_sim.c:18043).
-
-    SNANA's prompt term is inert: it passes (H0, z) to a function declared
-    (z, H0) (snlc_sim.c:18051), collapsing B's contribution to ~1e-13. jax
-    passes them the right way round.
-    """
-    A, B, cosmology = dndz_param['A'], dndz_param['B'], dndz_param['cosmology']
-    sfr_int = _sfr_integral(z_grid, cosmology)
-    return A * sfr_int + B * _sfr_bg03(z_grid, cosmology.h0)
-
-
-_DNDZ_RATE_MODELS = {
-    'POWERLAW':  _rate_powerlaw,
-    'POWERLAW2': _rate_powerlaw,
-    'CC_S15':    _rate_cc_s15,
-    'MD14':      _rate_md14,
-    'FILE':      _rate_from_file,
-    'HUBBLE':    _rate_constant,
-    'FLAT':      _rate_constant,
-    'PISN_PLK12': _rate_pisn,
-    'TDE':       _rate_tde,
-    'ZPOLY':     _rate_zpoly,
-    'ABMODEL':   _rate_abmodel,
-}
-
 # sntools.h:76. DNDZ_FILE declares the full SNANA redshift range
 # (snlc_sim.c:2915); the table itself bounds what can be evaluated.
 ZMAX_SNANA = 10.0
 
 
 def _unknown_dndz_model(model: str) -> str:
-    return (f"Unknown DNDZ model: '{model}'. "
-            f"Supported: {', '.join(_DNDZ_RATE_MODELS)}.")
+    return (f"Unknown DNDZ model: '{model}'. Supported: POWERLAW, POWERLAW2, "
+            "CC_S15, MD14, FILE, HUBBLE, FLAT, PISN_PLK12, TDE, ZPOLY, ABMODEL.")
 
 
-def _compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
-    """Compute volumetric rate R(z) on a redshift grid for a single DNDZ model."""
+def compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
+    """Compute volumetric rate R(z) on a redshift grid for one DNDZ model."""
     model = dndz_param['model']
-    if model not in _DNDZ_RATE_MODELS:
-        raise SNANAError(_unknown_dndz_model(model),
-                         function_name="_compute_rate_on_grid")
-    return _DNDZ_RATE_MODELS[model](dndz_param, z_grid)
+    if model in ('POWERLAW', 'POWERLAW2'):
+        return dndz_param['A'] * (1.0 + z_grid) ** dndz_param['B']
+    if model == 'CC_S15':
+        # Strolger 2015: k * h^2 * SFR_MD14 (snlc_sim.c:18009-18020).
+        h = dndz_param['h0'] / 100.0
+        return (dndz_param['scale'] * 0.0091 * h**2
+                * _SFRfun_MD14(z_grid, 0.015, 1.50, 5.00, 6.10))
+    if model == 'MD14':
+        # Madau & Dickinson SFR normalised to R0 at z=0.
+        sfr0 = _SFRfun_MD14(np.array([0.0]), 0.015, 2.90, 2.70, 5.60)[0]
+        return (dndz_param['R0']
+                * _SFRfun_MD14(z_grid, 0.015, 2.90, 2.70, 5.60) / sfr0)
+    if model == 'FILE':
+        return _rate_from_file(dndz_param, z_grid)
+    if model in ('HUBBLE', 'FLAT'):
+        return np.full_like(z_grid, dndz_param['rate'], dtype=np.float64)
+    if model == 'PISN_PLK12':
+        # Pair-instability SN rate in Gpc^-3 (snlc_sim.c:18030).
+        z = z_grid
+        rate = (1.98 + 6.38 * z + 6.558 * z**2
+                - 4.42 * z**3 + 0.8312 * z**4 - 0.0508 * z**5)
+        return dndz_param['scale'] * rate / 1.0e9
+    if model == 'TDE':
+        return dndz_param['R0'] * 10.0 ** (-0.5 * z_grid / 0.6)
+    if model == 'ZPOLY':
+        return eval_genpoly(dndz_param['coeffs'], z_grid)
+    if model == 'ABMODEL':
+        cosmology = dndz_param['cosmology']
+        # SNANA swaps the prompt SFR's z/H0 arguments (snlc_sim.c:18051),
+        # making B nearly inert. Here both terms use the physical redshift.
+        return (dndz_param['A'] * _sfr_integral(z_grid, cosmology)
+                + dndz_param['B'] * _sfr_bg03(z_grid, cosmology.h0))
+    raise SNANAError(_unknown_dndz_model(model),
+                     function_name="compute_rate_on_grid")
 
 
 def _parse_poly_coeffs(tokens: List[str]) -> List[float]:
@@ -351,7 +324,7 @@ def _calculate_sn_integrand(z_array: np.ndarray, dndz_param: Dict,
                             hz_map, rate_mods) -> np.ndarray:
     """SN rate integrand `rate(z) × dV/dz / (1+z)` for any DNDZ model."""
     rate = apply_rate_modifiers(
-        _compute_rate_on_grid(z_array, dndz_param), z_array, rate_mods)
+        compute_rate_on_grid(z_array, dndz_param), z_array, rate_mods)
 
     z_jax = jnp.array(z_array)
     dm = jax.vmap(lambda z: transverse_comoving_distance(
@@ -425,3 +398,134 @@ def calculate_expected_sn_count(dndz_params: List[Dict],
 
     sn_expected = total_sn_sum * solid_angle * t_year * dz
     return sn_expected
+
+
+def resolve_counts(config, hz_map) -> Tuple[int, int, float, float]:
+    """Resolve how many events to generate and the PEC1A share of them.
+
+    SNANA supports three modes (snlc_sim.c:7146-9221): NGENTOT_LC (fixed
+    total), NGEN_LC (generate until N pass cuts), or NGEN_SEASON (rate × time ×
+    area). NGEN_SCALE multiplies whichever is in play. Exactly one of the three
+    must be set. Returns ``(n_simulated, ngen_lc, frac_pec1a, season_count)``,
+    with ``ngen_lc`` already NGEN_SCALE-scaled and ``season_count`` the rate
+    model's events per season (SEASON_COUNT, snlc_sim.c:9178-9179).
+    """
+    # NGEN_SCALE_NON1A scales the count for NON1A/SIMSED models only
+    # (snlc_sim.c:7124).
+    scale = config.run.ngen_scale
+    if MODEL_REGISTRY[config.model.model_type].uses_nonia_rates:
+        scale *= config.run.ngen_scale_non1a
+    ngentot_lc, ngen_lc, ngen_season = (
+        config.run.ngentot_lc, config.run.ngen_lc, config.run.ngen_season)
+
+    # prep_SIMLIB_DUMP forces NGENTOT_LC (snlc_sim.c:32558)
+    if config.survey.simlib_dump >= 0:
+        ngentot_lc, ngen_lc, ngen_season = 150000, 0, 0.0
+
+    n_modes_set = (ngentot_lc > 0) + (ngen_lc > 0) + (ngen_season > 0)
+    if n_modes_set > 1:
+        raise SNANAError(
+            "NGEN_LC, NGENTOT_LC and NGEN_SEASON are mutually exclusive. Set "
+            "exactly one.",
+            function_name="resolve_counts")
+    if n_modes_set == 0 and not config.run.readme_dumpflag:
+        raise SNANAError(
+            "Required: one of NGEN_LC, NGENTOT_LC or NGEN_SEASON must be set.",
+            function_name="resolve_counts")
+
+    # (int)(NGEN_LC*NGEN_SCALE), snlc_sim.c:7146
+    ngen_lc = int(ngen_lc * scale)
+
+    def _expected(entries, rate_mods):
+        c = config.cosmology
+        return calculate_expected_sn_count(
+            config.dndz_params(entries), config.rates.solid_angle,
+            config.rates.redshift_range, config.rates.peakmjd_range,
+            config.rates.peakmjd_exclude,
+            c.omega_matter, c.omega_lambda, c.h0, c.w0, c.wa,
+            hz_map, rate_mods)
+
+    # PEC1Asum: SNcount_model over RATEPAR_PEC1A (snlc_sim.c:9006)
+    sn_sum = _expected(None, config.rates.dndz_rate_mods)
+    pec1a_sum = (_expected(config.rates.dndz_entries_pec1a,
+                           neutral_rate_mods())
+                 if config.rates.dndz_entries_pec1a else 0.0)
+    total = sn_sum + pec1a_sum
+    frac_pec1a = pec1a_sum / total if total else 0.0
+
+    if ngen_season > 0:
+        n_simulated = int(ngen_season * total * scale)
+        logger.info(
+            f"NGEN_SEASON={ngen_season:.3f} × rate={total:.2f}/season × "
+            f"NGEN_SCALE={scale:.3f} → NGENTOT_LC={n_simulated}")
+    elif ngen_lc > 0:
+        n_simulated = ngen_lc
+    else:
+        n_simulated = int(ngentot_lc * scale)
+    return n_simulated, ngen_lc, frac_pec1a, total
+
+
+def _cdf_on_grid(config, hz_map, z_grid, dndz_params, rate_mods) -> jnp.ndarray:
+    """Normalised cumulative dN/dz over `z_grid`."""
+    dndz = dndz_density_on_grid(
+        dndz_params, z_grid, *cosmo_params(config.cosmology), hz_map, rate_mods)
+    cdf = np.cumsum(0.5 * (dndz[:-1] + dndz[1:]) * np.diff(z_grid))
+    cdf = np.concatenate([[0.0], cdf])
+    return jnp.array(cdf / cdf[-1], dtype=jnp.float32)
+
+
+def build_murewgt(config, hz_map):
+    """The DNDZ reweight's CDF against distance modulus, from which a MUSHIFT
+    range is drawn so that a shifted event keeps the reweighted redshift
+    distribution (prep_user_murewgt, snlc_sim.c:7662). The grid runs in
+    steps of 0.001 from the lowest generated redshift to 0.1 past the one
+    whose distance is the highest generated distance plus the top of the
+    MUSHIFT range. None unless there is both a MUSHIFT range and a
+    z-dependent DNDZ_ZPOLY_REWGT or DNDZ_Z1POLY_REWGT (snlc_sim.c:7650)."""
+    lo, hi = config.model.mushift
+    mods = config.rates.dndz_rate_mods
+    zpoly, z1poly = mods['zpoly'], mods['z1poly']
+    if not (hi - lo > 0 and (len(zpoly) > 1 or len(z1poly) > 1)):
+        return None
+    omega_m, _omega_k, omega_l, hubble_distance, w0, wa = cosmo_params(config.cosmology)
+    anisotropy = (ANISOTROPY_V04_PARS
+                  if config.cosmology.anisotropy_modelname else None)
+    # gen_dLmag at galactic (0, 0) on the grid, dLmag for the upper edge
+    cos_sep = float(cos_sep_cmb_apex_galactic(0.0, 0.0))
+
+    def mu_of(z, aniso):
+        return np.asarray(jax.vmap(lambda zi: distance_modulus(
+            zi, zi, omega_m, omega_l, hubble_distance, w0, wa, 0.0, hz_map,
+            anisotropy=aniso, cos_sep=cos_sep))(jnp.asarray(z)))
+
+    z_min, z_max = config.rates.redshift_range
+    mu_max_grid = float(mu_of([z_max], None)[0]) + hi
+    z_max_grid = float(distance_modulus_to_redshift(
+        mu_max_grid, omega_m, omega_l, hubble_distance, w0, wa)) + 0.1
+    z = np.arange(z_min, z_max_grid, 0.001)
+    rewgt = np.ones_like(z)
+    if zpoly:
+        rewgt = rewgt * eval_genpoly(zpoly, z)
+    if z1poly:
+        rewgt = rewgt * eval_genpoly(z1poly, 1.0 + z)
+    return jnp.asarray(mu_of(z, anisotropy)), jnp.asarray(np.cumsum(rewgt))
+
+
+def build_redshift_cdf(config, hz_map):
+    """Numerical CDF for dN/dz including the comoving volume element.
+
+    DNDZ_PEC1A gives the peculiar-Ia population its own rate, hence its own
+    CDF; set_RATEPAR (snlc_sim.c:14525) picks per event by template class,
+    taking none of the DNDZ_* reweights (snlc_sim.c:2722).
+    """
+    z_min, z_max = config.rates.redshift_range
+    z_grid = np.linspace(z_min, z_max, 2000)
+    pec1a_params = config.dndz_params(config.rates.dndz_entries_pec1a)
+    return (
+        jnp.array(z_grid, dtype=jnp.float32),
+        _cdf_on_grid(config, hz_map, z_grid, config.dndz_params(),
+                     config.rates.dndz_rate_mods),
+        _cdf_on_grid(config, hz_map, z_grid, pec1a_params,
+                     neutral_rate_mods())
+        if pec1a_params else None,
+    )

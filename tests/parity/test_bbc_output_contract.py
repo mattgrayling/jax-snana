@@ -17,17 +17,14 @@ References and their exact SALT2mu.exe commands are in the fixture README.
 """
 
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 import pytest
 import yaml
 
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.output import (write_cov, write_fitres, write_m0_csv,
-                                write_m0dif, write_yaml)
+from jax_salt2mu.config import parse_bbc_input
+from jax_salt2mu.output import write_cov, write_fitres, write_m0_csv, write_m0dif, write_yaml
 from jax_salt2mu.run import run_bbc, run_bbc_fit
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 _REF = "tests/fixtures/snana/bbc_output_contract"
 _BC = "tests/fixtures/snana/bbc_des_beams"

@@ -7,10 +7,9 @@ import numpy as np
 import pytest
 
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.derivatives import loss_derivatives
-from jax_salt2mu.fitter import padded
-from jax_salt2mu.run import prepare_cell
-from jax_snlc_core.utils.newton_lm import _grad_and_hess
+from jax_salt2mu.fitter import loss_derivatives, padded
+from _bbc_helpers import prepare_cell
+from jax_snlc_core.optimiser import grad_and_hess
 
 
 @pytest.fixture(scope='module', params=['salt', 'sim_prior', 'h11', 'bayesn'])
@@ -57,7 +56,7 @@ def test_dense_and_structured_derivatives(cell, joint, interpolate):
     @jax.jit
     def compare(point, inputs):
         loss = spec.closed(inputs, .1, inputs.muerrsq_last)
-        return (_grad_and_hess(point, loss),
+        return (grad_and_hess(point, loss),
                 loss_derivatives(point, loss, n_nuisance=nf, nzbin=spec.nzbin,
                                  interpolate=interpolate))
 

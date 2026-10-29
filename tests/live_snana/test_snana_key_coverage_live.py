@@ -4,13 +4,13 @@ WV07 host-AV is drawn from a fixed PDF, so SNANA and jax are compared at the
 distribution level (moments + a coarse histogram), not per-SN.
 """
 
+import glob
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-import glob
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -22,9 +22,10 @@ for extra in ("tests/parity", "."):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from jax_snlc_core.snana_files import open_text, resolve_fits_path  # noqa: E402
 from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_core.io.fits_path import open_text, resolve_fits_path  # noqa: E402
-from jax_snlc_sim.config_parser import parse_snana_input_file  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.inputs import parse_snana_input_file  # noqa: E402
 
 _FIXTURE = "salt3_k21_replay"
 
@@ -262,7 +263,7 @@ def test_snana_fitter_reads_a_jax_simulation_live(tmp_path):
     resources = sim
     results, selection, spectra_cache = sim_run.run_simulation(sim)
     private = tmp_path / "private"
-    sim_run.save_snana_outputs(sim, results, version, selection, spectra_cache=spectra_cache, output_dir=str(private))
+    save_snana_outputs(sim, results, version, selection, spectra_by_sn=spectra_cache, output_dir=str(private))
 
     fit_dir = tmp_path / "fit"
     fit_dir.mkdir()
@@ -278,7 +279,7 @@ def test_snana_fitter_reads_a_jax_simulation_live(tmp_path):
 
 def test_use_simlib_distance_live(tmp_path):
     """USE_SIMLIB_DISTANCE: header DISTANCE -> zCMB matches SNANA (cosmology inversion)."""
-    from jax_snlc_core.physics.cosmology import distance_modulus
+    from jax_snlc_core.cosmology import distance_modulus
     om, ol, hd = 0.315, 0.685, 299792.458 / 70.0
     dl = {0: 10 ** ((float(distance_modulus(0.20, 0.20, om, ol, hd)) - 25) / 5),
           1: 10 ** ((float(distance_modulus(0.35, 0.35, om, ol, hd)) - 25) / 5)}
@@ -372,7 +373,7 @@ def test_applyflag_mwebv_live(tmp_path):
             res, sel, spectra_cache = sim_run.run_simulation(sim)
             dd = tmp_path / f"jmw{flag}"
             dd.mkdir()
-            sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(dd))
+            save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(dd))
             out[flag] = _fluxcal_by_cid(dd / "J" / "J_HEAD.FITS", dd / "J" / "J_PHOT.FITS")
         return _band_ratio(out[0], out[1])
 
@@ -458,7 +459,7 @@ def test_exposure_time_live(tmp_path):
         res, sel, spectra_cache = sim_run.run_simulation(sim)
         dd = tmp_path / f"jout{exp}"
         dd.mkdir()
-        sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(dd))
+        save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(dd))
         return _zpt_sky_by_cid(dd / "J" / "J_HEAD.FITS", dd / "J" / "J_PHOT.FITS")
 
     exp_shift = 2.5 * np.log10(4.0)
@@ -522,7 +523,7 @@ def test_genperfect_live(tmp_path):
         res, sel, spectra_cache = sim_run.run_simulation(sim)
         dd = tmp_path / f"jout{gp}"
         dd.mkdir()
-        sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(dd))
+        save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(dd))
         return _relerr_by_cid(dd / "J" / "J_HEAD.FITS", dd / "J" / "J_PHOT.FITS")
 
     assert snana(0) > 1e-2 and jax(0) > 1e-2          # noisy baseline
@@ -533,7 +534,7 @@ def _raw_explosion_shifts(model_dir):
     """jax's per-template explosion shift (-Tshift) computed on the raw SED-file
     day grid, for direct comparison with SNANA's printed 'Shift X days'."""
     import gzip
-    from jax_snlc_core.models.base import compute_explosion_tshift
+    from jax_snlc_core.models.sed_model import compute_explosion_tshift
     files = sorted(glob.glob(f"{model_dir}/*.SED") + glob.glob(f"{model_dir}/*.SED.gz"))
     out = []
     for fn in files:
@@ -610,7 +611,7 @@ def test_explode_simmagobs_parity_live(tmp_path, fixture, ftag, optmask, mtag):
     peak_mjd, template via SIMGEN_DUMP) through jax and compares per-(SNID, MJD,
     BAND) SIM_MAGOBS: the reanchored SED must flow through generate_sed ->
     photometry to SNANA's mags in both the peak and explosion frames."""
-    from jax_snlc_core.io.snana_dump_reader import load_snana_dump
+    from jax_snlc_core.snana_files import load_snana_dump
     from replay_snana_dump import build_override_parameters
 
     env = os.environ.copy()
@@ -644,7 +645,7 @@ def test_explode_simmagobs_parity_live(tmp_path, fixture, ftag, optmask, mtag):
                                          head_columns=head_cols)
     res, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
     jdir = tmp_path / f"J_{ftag}_{mtag}"
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(jdir))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(jdir))
 
     snana = _simmag_by_key(head, phot)
     jaxp = _simmag_by_key(next((jdir / "J").glob("J*HEAD*")),
@@ -695,7 +696,7 @@ def _snana_jax_head(tmp_path, gv, extra, cols, n_sne=100, seed=99,
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     outdir = tmp_path / f"J_{gv}"
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(outdir))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(outdir))
     with fits.open(resolve_fits_path(next((outdir / "J").glob("J*HEAD*")))) as h:
         j = {c: np.asarray(h[1].data[c]) for c in cols}
     return {c: (s[c], j[c]) for c in cols}
@@ -895,7 +896,7 @@ def test_hostlib_snr_store_live(tmp_path):
     assert len(stored) > 1000 and np.all(stored % 2 == 0)
     res, sel, spectra_cache = sim_run.run_simulation(sim)
     outdir = tmp_path / f"J_{gv}"
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(outdir))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(outdir))
     with fits.open(resolve_fits_path(next((outdir / "J").glob("J*HEAD*")))) as h:
         jax_hosts = np.asarray(h[1].data['HOSTGAL_OBJID'])
     for hosts in (snana_hosts, jax_hosts):
@@ -965,7 +966,7 @@ def test_hostlib_dmucor_live(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path / "J"))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path / "J"))
     with fits.open(resolve_fits_path(next((tmp_path / "J" / "J").glob("J*HEAD*")))) as h:
         j_mag = np.asarray(h[1].data['HOSTGAL_MAG_r'])
 
@@ -1017,7 +1018,7 @@ def test_hostlib_hostgal2_specz_photoz_live(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path / "J"))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path / "J"))
     jh = fits.open(resolve_fits_path(next((tmp_path / "J" / "J").glob("J*HEAD*"))))[1].data
 
     czt = lambda o: np.array([cat[int(x)][0] for x in o])
@@ -1080,7 +1081,7 @@ def test_hostlib_hostgal2_dmucor_live(tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "J", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path / "J"))
+    save_snana_outputs(sim, res, "J", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path / "J"))
     with fits.open(resolve_fits_path(next((tmp_path / "J" / "J").glob("J*HEAD*")))) as h:
         j2 = np.asarray(h[1].data['HOSTGAL2_MAG_r'])
 
@@ -1245,8 +1246,7 @@ def test_hzfun_structured_table_mu_matches_snana_live(tmp_path):
     piecewise smooth, so the distance integral must replicate
     Hzinv_integral's midpoint rule (sntools_cosmology.c:352-397); a fixed
     smooth-integrand quadrature is off at the 1e-3 mag level here."""
-    from jax_snlc_core.physics.cosmology import (distance_modulus,
-                                                 load_hz_map)
+    from jax_snlc_core.cosmology import distance_modulus, load_hz_map
     hz = _hz_map_file(tmp_path / "hz_osc.dat",
                       lambda z: 1.0 + 0.05 * np.sin(300.0 * z))
     gv = "JAX_LIVE_HZOSC"
@@ -1270,9 +1270,8 @@ def test_anisotropy_v04_matches_snana_live(tmp_path):
     dumped (zHEL, RA, DEC) through jax's formula and checks MU event for event —
     isolating dLmag_anisotropic (sntools_cosmology.c:580) from the sampling.
     """
-    import glob
-    from jax_snlc_core.physics.cosmology import (
-        _mu_anisotropic_V04, cos_sep_cmb_apex, ANISOTROPY_V04_PARS)
+    from jax_snlc_core.cosmology import (ANISOTROPY_V04_PARS, _mu_anisotropic_V04,
+                                         cos_sep_cmb_apex)
 
     gv = "JAX_LIVE_ANISO"
     src = re.sub(r"GENVERSION:\s+\S+", f"GENVERSION:  {gv}",
@@ -1337,7 +1336,7 @@ def test_hzfun_expected_count_matches_snana_live(tmp_path):
         return int(m.group(1))
 
     def jax_ngentot(src, name):
-        from jax_snlc_sim.builder import resolve_counts
+        from jax_snlc_sim.rate import resolve_counts
         inp = tmp_path / f"{name}.input"
         inp.write_text(src)
         cfg = parse_snana_input_file(str(inp))

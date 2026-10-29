@@ -13,7 +13,7 @@ import yaml
 
 from jax_pipeline import BBC, Classify, Cosmology, Covariance, Data, Fit, Sim, Train
 from jax_pipeline.pippin import read
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 _PIPPIN = Path(__file__).parent.parent / "fixtures" / "pippin"
 _DATA_FILES = _PIPPIN / "data_files"
@@ -691,7 +691,7 @@ def test_check_validates_science_options_and_writes_nothing(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "FITOPT000_MUOPT000" in output and "mode: binned" in output
     config["BIASCOR"]["B"]["OPTS"] = {"not_a_bbc_option": 4}
-    from jax_pipeline.check import check
+    from jax_pipeline.pippin import check
     with pytest.raises(SNANAError, match="not_a_bbc_option"):
         check(_write(tmp_path, config))
 
@@ -710,7 +710,7 @@ def test_recalibrated_muopt_classifier_columns(tmp_path):
 
 def test_recalibrated_imported_predictions_and_missing_column(tmp_path):
     import pandas as pd
-    from jax_snlc_core.io.fitres_reader import FitresTable
+    from jax_snlc_core.snana_files import FitresTable
     from jax_salt2mu.tablevar import EVENT_TYPE_DATA
     fit = Fit("fit", fitres=tmp_path / "external.FITRES")
     predictions = tmp_path / "predictions.csv"
@@ -730,7 +730,7 @@ def test_recalibrated_imported_predictions_and_missing_column(tmp_path):
 
 
 def test_check_reports_imported_realisations_and_partitions(tmp_path):
-    from jax_pipeline.check import check
+    from jax_pipeline.pippin import check
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
@@ -748,7 +748,7 @@ def test_check_reports_imported_realisations_and_partitions(tmp_path):
 
 
 def test_check_requires_every_imported_fitopt_file(tmp_path):
-    from jax_pipeline.check import check
+    from jax_pipeline.pippin import check
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
@@ -782,7 +782,7 @@ def test_external_sync_metadata_and_disagreement(tmp_path):
     assert stages['B-0001'].event_sync() and stages['B-0002'].event_sync()
     assert submit in stages['D_S-0001'].cache_files()
     plain = Fit('plain', fitres=tmp_path / 'standalone.FITRES')
-    from jax_pipeline.classifiers.perfect import Perfect
+    from jax_pipeline.classify import Perfect
     classified = Classify('classified', Perfect(), fit=stages['D_S-0001'])
     assert classified.event_sync()
     mixed = BBC('mixed', data=[classified, plain])
@@ -812,3 +812,36 @@ def test_sync_cannot_be_changed_by_an_individual_muopt(tmp_path):
     config['BIASCOR']['B']['MUOPTS'] = {'variation': {'OPTS': {'OPT_SNCID_LIST': 0}}}
     with pytest.raises(SNANAError, match='task OPTS, not a MUOPT'):
         read(_write(tmp_path, config))
+
+
+def test_survey_selection_uses_included_simulation_settings(tmp_path):
+    """FITOPT survey selection resolves includes through the simulation parser."""
+    from jax_pipeline.pippin import _survey
+
+    source = tmp_path / "included.input"
+    source.write_text(f"INPUT_FILE_INCLUDE: {_SIM_INPUT}\n")
+    included = Sim("included", source)
+    direct = Sim("direct", _SIM_INPUT)
+    assert _survey(included) == _survey(direct)
+
+
+@pytest.mark.parametrize('kind', ['text', 'fits', 'hats'])
+def test_data_survey_discovery_reads_only_metadata(tmp_path, kind):
+    """Survey selection supports every loader format without reading photometry."""
+    from astropy.io import fits
+    from jax_pipeline.pippin import _survey
+
+    if kind == 'text':
+        (tmp_path / 'VERSION.LIST').write_text('event.DAT\n')
+        (tmp_path / 'event.DAT').write_text(
+            'SURVEY: DES(SHALLOW)\nVARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
+            'OBS: deliberately invalid photometry\n')
+        expected = 'DES'
+    elif kind == 'fits':
+        header = fits.Header({'SURVEY': 'DES'})
+        fits.PrimaryHDU(header=header).writeto(tmp_path / 'VERSION_HEAD.FITS')
+        expected = 'DES'  # No PHOT file is needed for this metadata query.
+    else:
+        (tmp_path / 'hats.properties').write_text('obs_collection=LSST\n')
+        expected = 'LSST'
+    assert _survey(Data('data', tmp_path)) == expected

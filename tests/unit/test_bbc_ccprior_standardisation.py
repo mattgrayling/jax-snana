@@ -9,7 +9,7 @@ import pytest
 
 from jax_salt2mu.ccprior import CCPriorInputs, PIFAC
 from jax_salt2mu.fitter import FitSpec
-from jax_salt2mu.likelihood import _ccprior_dPdmu
+from jax_salt2mu.ccprior import _ccprior_dPdmu
 from jax_snlc_core.models import SALTModel
 
 

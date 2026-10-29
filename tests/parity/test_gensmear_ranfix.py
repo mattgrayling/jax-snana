@@ -20,15 +20,16 @@ catches a 0.6% error in C11 u and cannot constrain G10 r at all. The strong band
 are what this test rests on.
 """
 
-from jax_snlc_core.utils.error_handling import SNANAError
 import numpy as np
 import pytest
+from _replay_helpers import load_jax_phot, load_snana_phot
 from astropy.io import fits
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
 from replay_snana_dump import build_override_parameters
+
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import load_snana_dump
 from jax_snlc_sim import run as sim_run
-from _replay_helpers import load_snana_phot, load_jax_phot
+from jax_snlc_sim.output import save_snana_outputs
 
 _RANFIX = 1.0
 _RMS_TOL = 0.0015     # mag per band; ~2x the 0.2-0.8 mmag floor
@@ -37,11 +38,11 @@ _MAX_TOL = 0.010      # mag, worst single epoch
 
 def _run(simulation, resources, config, sim, override, fill, n_sne, name, out_dir):
     """Simulate with every smear random set to `fill`."""
-    randoms = np.full((n_sne, resources.gensmear_n_randoms), fill,
+    randoms = np.full((n_sne, resources.gensmear.n_randoms), fill,
                       dtype=np.float32)
     params = dict(override, _gensmear_randoms=randoms)
     results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=params)
-    sim_run.save_snana_outputs(sim, results, name, selection, spectra_cache=spectra_cache, output_dir=str(out_dir))
+    save_snana_outputs(sim, results, name, selection, spectra_by_sn=spectra_cache, output_dir=str(out_dir))
     return load_jax_phot(out_dir / name, name)
 
 

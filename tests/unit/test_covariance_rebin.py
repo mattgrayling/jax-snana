@@ -6,8 +6,8 @@ import pytest
 
 from jax_create_cov import build_covariance
 from jax_create_cov.config import Cosmology, resolve_rebin_bins
-from jax_create_cov.config_parser import build_config
-from jax_snlc_core.utils import SNANAError
+from jax_create_cov.config import build_config
+from jax_snlc_core.logging import SNANAError
 
 
 @pytest.mark.parametrize('bins', [{}, {'shape': 2}, {'shape': 2, 'dust': 3, 'velocity': 2}])

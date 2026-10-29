@@ -7,13 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from jax_salt2mu.run import prepare_cells, finish_grid
-from jax_salt2mu.preparation import (read_cells, prepare_biascor_maps, prepare_ccpriors,
-                                   prepare_data, format_data, interpolate_corrections, select_data)
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.precision import require_precision
-
-from .systematics import dirname
+from jax_salt2mu.preparation import (format_data, interpolate_corrections,
+                                     prepare_data, select_data)
+from jax_salt2mu.run import finish_grid, prepare_cells
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import fitopt_muopt_name
+from jax_snlc_core.utils import require_precision
 
 logger = logging.getLogger(__name__)
 
@@ -69,23 +68,13 @@ def synchronised_row_counts(grid, data, fitopts):
     return counts
 
 
-def fit_common_sample(grid, fitopts, muopts, outdir):
-    """Prepare corrections and fit the synchronised sample of one grid."""
-    t_start = time.time()
-    cells = read_cells(grid)
-    maps = prepare_biascor_maps(cells)
-    priors = prepare_ccpriors(cells, maps)
-    return fit_prepared_common_sample(cells, maps, priors, fitopts, muopts, outdir,
-                                      t_start=t_start)
-
-
 def fit_prepared_common_sample(grid, maps, priors, fitopts, muopts, outdir, *, t_start=None,
                                fit_widths=None, cosmology_widths=None):
     """Prepare each cell's acceptance, then fit the common sample once.
 
-    All supported cuts, including chi2max, are decided by prepare_cell.
+    All supported cuts, including chi2max, are decided by prepare_cells.
     Converged-fit cuts (opt_chi2max >= 2) would require fitting this pass;
-    config_parser currently refuses that key.
+    BBC configuration currently refuses that key.
 
     FITOPT NOREJECT variations bypass event selection in both passes. FITOPT
     and MUOPT NOREJECT variations are excluded when finding the common sample,
@@ -121,7 +110,7 @@ def fit_prepared_common_sample(grid, maps, priors, fitopts, muopts, outdir, *, t
         del prepared
     common = set(reference)
     for cell, events in initial.items():
-        cell_dir = initial_dir / dirname(cell)
+        cell_dir = initial_dir / fitopt_muopt_name(cell)
         cell_dir.mkdir()
         _write_selection(cell_dir / "ACCEPT.LIST", events)
         muopt_exempt = cell[1] > 0 and "NOREJECT" in muopts[cell[1] - 1]

@@ -5,10 +5,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.models.salt_model import _make_band_integrator
-from jax_snlc_core.utils.interp import (
-    compute_catmullrom_slopes, hermite_interp_1d_select,
-)
+from jax_snlc_core.interpolation import compute_catmullrom_slopes, hermite_interp_1d_select
+from jax_snlc_core.models.salt import _make_band_integrator
 
 
 @pytest.mark.parametrize('photoz', [False, True])

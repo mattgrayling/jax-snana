@@ -4,19 +4,18 @@
 import numpy as np
 import pytest
 
-from jax_salt2mu.config import (BBCConfig,
-                                MASK_BIASCOR_1DZAVG, MASK_BIASCOR_CELLMAP,
-                                MASK_BIASCOR_DEFAULT, MASK_BIASCOR_MAD,
-                                MASK_BIASCOR_MUCOVADD, MASK_BIASCOR_SAMPLE, resolve)
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import (
+    MASK_BIASCOR_1DZAVG, MASK_BIASCOR_CELLMAP, MASK_BIASCOR_DEFAULT, MASK_BIASCOR_MAD,
+    MASK_BIASCOR_MUCOVADD, MASK_BIASCOR_SAMPLE, BBCConfig, resolve, parse_bbc_input
+)
 from jax_salt2mu.run import floated_and_defaults
-from jax_salt2mu.tablevar import (CUTBIT_SIMPS, EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA,
-                                  accept_zrate_scale, read_tablevar)
-from jax_salt2mu.zbins import make_zbins
-from jax_snlc_core.io.fits_path import open_text
+from jax_salt2mu.tablevar import CUTBIT_SIMPS, EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA, accept_zrate_scale
+from _bbc_helpers import read_tablevar
+from jax_salt2mu.binning import make_zbins
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel, standardised_model
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_core.utils import LIGHT_KM
 
 
 _SALT_FITRES = "tests/fixtures/snana/salt3_fit_dense/FITRES.TEXT"
@@ -58,8 +57,9 @@ def test_cutwin_reduces_passing():
 @pytest.mark.parametrize("event_type", [EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR])
 def test_covariance_quality_cut_survives_cutwin_none(disable, event_type):
     from dataclasses import replace
-    from jax_snlc_core.io.fitres_reader import read_fitres
-    from jax_salt2mu.tablevar import CUTBIT_BADCOV, tablevar_from
+    from jax_snlc_core.snana_files import read_fitres
+    from jax_salt2mu.tablevar import CUTBIT_BADCOV
+    from _bbc_helpers import tablevar_from
 
     table = read_fitres(_BEAMS_BIASCOR)
     # Positive-definite examples isolate each of the three covariance cuts

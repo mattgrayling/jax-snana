@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_salt2mu.derivatives import loss_derivatives
-from jax_snlc_core.utils.newton_lm import _grad_and_hess, newton_lm
+from jax_salt2mu.fitter import loss_derivatives
+from jax_snlc_core.optimiser import grad_and_hess, newton_lm
 
 
 @pytest.mark.parametrize('nzbin', [1, 2, 7])
@@ -44,7 +44,7 @@ def test_full_curvature(nzbin, interpolate, joint, nuisance):
         actual = jax.jit(partial(loss_derivatives, loss=loss, n_nuisance=nuisance,
                                  nzbin=nzbin, interpolate=interpolate,
                                  with_value=with_value))(p)
-        expected = _grad_and_hess(p, loss, with_value)
+        expected = grad_and_hess(p, loss, with_value)
         for a, b in zip(actual, expected):
             if b is None:
                 assert a is None

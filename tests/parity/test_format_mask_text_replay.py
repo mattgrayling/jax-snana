@@ -7,13 +7,14 @@ OBS photometry rows — matches SNANA.
 """
 
 import numpy as np
+from _replay_helpers import select_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from jax_snlc_fit.data_loader import parse_snana_dat  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import select_replay  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_fit.loader import parse_snana_dat
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _hfloat(hdr, key, idx=0):
@@ -38,7 +39,7 @@ def test_format_mask_text_replay(snana_fixture, tmp_path):
     simulation.output.format_mask = 2  # TEXT output
     override = build_override_parameters(dump_cols, simulation, resources, head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "FMT", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "FMT", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     jax_dir = tmp_path / "FMT"
 
     common = [s for s in ref_snids if (jax_dir / f"FMT_SN{s:06d}.DAT").exists()]

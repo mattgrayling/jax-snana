@@ -1,4 +1,4 @@
-"""read_keys/build: YAML and NML produce the same flat key dict and config."""
+"""Fitter configuration parsing and FITS/TEXT photometry loading."""
 
 import dataclasses
 import os
@@ -6,11 +6,13 @@ import os
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.kcor_reader import KcorReader
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.filters import KcorReader
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit import LightCurveFitter
-from jax_snlc_fit.config_parser import build, read_keys
 from jax_snlc_fit.config import FitConfig, Model
+from jax_snlc_fit.config_parser import build, read_keys
+from jax_snlc_fit.loader import (_host_photoz_columns, read_snana_fits,
+                                 read_snana_text)
 
 
 def test_yaml_and_nml_equivalent(tmp_path):
@@ -143,7 +145,7 @@ def test_parse_sntable_list():
 
 def test_write_varnames_table_styles(tmp_path):
     """key/csv/col/none output shapes (sntools_output_text.c:578-732)."""
-    from jax_snlc_core.io.snana_table import write_varnames_table
+    from jax_snlc_core.snana_files import write_varnames_table
 
     cols = {'CID': [1, 2], 'x1': [0.5, -1.25]}
     fmt = {'CID': '%d', 'x1': '%.2f'}
@@ -171,7 +173,7 @@ def test_write_varnames_table_styles(tmp_path):
 def test_write_varnames_table_formats_unlisted_columns_as_snana_does(tmp_path):
     """A caller need only pin the formats it wants; the rest print as SNANA's
     text writer prints them (sntools_output_text.c:445)."""
-    from jax_snlc_core.io.snana_table import write_varnames_table
+    from jax_snlc_core.snana_files import write_varnames_table
 
     cols = {'CID': np.array([7, 8]), 'FIELD': np.array(['X1', 'C3'], dtype=object),
             'x1': np.array([0.5, -1.25]), 'mB': np.array([23.4, 100.0])}
@@ -187,10 +189,9 @@ def test_write_fitres_photoz_columns(tmp_path):
     """A photo-z fit writes OPT_PHOTOZ and keeps its covariances and prior,
     but zPHOT/zPHOTERR reach the table only as zHD (SKIPTABLE_FITPAR,
     snlc_fit.F90:19042; OPT_PHOTOZ always written, :18813)."""
-    import numpy as np
-    from jax_snlc_core.io.snana_table import write_varnames_table as _wvt
-    from jax_snlc_fit.fit_results import BatchFitResult
-    from jax_snlc_fit.sntable import build_fitres_table
+    from jax_snlc_core.snana_files import write_varnames_table as _wvt
+    from jax_snlc_fit.fitter import BatchFitResult
+    from jax_snlc_fit.output import build_fitres_table
 
     class _Model:
         def compute_fitprob(self, chi2, ndof):
@@ -234,10 +235,12 @@ def test_write_fitres_photoz_columns(tmp_path):
                            for n in results.param_names}
     results.minos_status = {n: np.array([[0, 0], [0, 2]])
                            for n in results.param_names}
-    from jax_snlc_fit.minos import reported_errors
+    from jax_snlc_fit.uncertainties import reported_errors
     results.param_errors = {n: reported_errors(results.param_errors[n],
                             results.minos_errors[n], results.minos_status[n])
                             for n in results.param_names}
+    # both sides profiled, then one side failed: what errmax_bad flags
+    results.error_flags = {n: np.array([1, 2]) for n in results.param_names}
     table, fmt, comments = build_fitres_table(results, two, two*36., model=_Model())
     np.testing.assert_allclose(table.df['x0ERR'], [.2, 1.])
     np.testing.assert_array_equal(table.df['ERRFLAG_x0'], [1, 2])
@@ -254,8 +257,7 @@ def test_write_fitres_photoz_columns(tmp_path):
 def test_header_override_reader(tmp_path):
     """read_header_override_file: DOCANA skip, CID/GALID key detection,
     comma-list + dir merge, REDSHIFT_CMB alias, key-mix abort."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.data_loader import read_header_override_file
+    from jax_snlc_fit.loader import read_header_override_file
 
     cdir = tmp_path / "cid"
     cdir.mkdir()
@@ -291,9 +293,8 @@ def test_header_override_apply(tmp_path):
     zHEL->zCMB recompute, and an overridden HOSTGAL_PHOTOZ becoming the
     redshift of an event with no spec-z (rd_override_zphot,
     sntools_data.c:2206-2218)."""
-    import numpy as np
     from astropy.table import Table
-    from jax_snlc_fit.data_loader import apply_header_override
+    from jax_snlc_fit.loader import apply_header_override
 
     # RA=0,DEC=0 so the CMB dipole gives a known nonzero shift
     t = Table({'SNID': ['1', '2', '3'], 'RA': [0.0, 0.0, 0.0],
@@ -307,7 +308,7 @@ def test_header_override_apply(tmp_path):
                'HOSTGAL_SPECZ': [0.2, -9.0, 0.5],
                'MASK_REDSHIFT_SOURCE': [1, 4, 2],
                'VPEC': [0.0, 0.0, 0.0]})
-    from jax_snlc_core.physics.cosmology import zhelio_to_zcmb
+    from jax_snlc_core.cosmology import zhelio_to_zcmb
 
     # override REDSHIFT_HELIO on CID 1 (recompute zCMB) + an absent column
     ov = ('SNID', {'REDSHIFT_HELIO': {'1': 0.35}, 'NOSUCH': {'1': 1.0}})
@@ -332,7 +333,6 @@ def test_header_override_apply(tmp_path):
 
 def _quantile_head(n_hosts=2):
     from astropy.table import Table
-    import numpy as np
     z = np.full((3, 20), -9.0)
     z[:, :3] = [[0.1, 0.2, 0.3]] * 3
     pct = np.full((3, 20), -9.0)
@@ -356,9 +356,7 @@ def test_header_override_quantiles_implicit(tmp_path):
     a sim's zSN/zHOST rescale, and HOSTGAL_PHOTOZ[_ERR] from the grid's mean
     and width (rd_override_qzphot_implicit, rd_override_zphot); the old
     HOSTGAL_ZPHOT_Q* spelling aborts."""
-    import numpy as np
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.data_loader import (apply_header_override,
+    from jax_snlc_fit.loader import (apply_header_override,
                                           read_header_override_file)
 
     f = tmp_path / "qz.dat"
@@ -397,7 +395,7 @@ def test_header_override_logmass_grid_needs_its_errors_and_increasing_z(tmp_path
     """A LOGMASS(z) grid in the override is refused without its error grid,
     which SNANA would read as the -9 fill, and the fit refuses a grid whose
     redshifts do not increase (init_spline, sntools_spline.c)."""
-    from jax_snlc_fit.data_loader import (_set_logmass, apply_header_override,
+    from jax_snlc_fit.loader import (_set_logmass, apply_header_override,
                                           read_header_override_file)
 
     head = _quantile_head()
@@ -426,8 +424,7 @@ def test_header_override_quantiles_by_galid(tmp_path):
     the file keep their quantiles, and every host of an overridden event
     takes the grid's mean and width, an absent second host's grid being
     empty (rd_override_hostgal2z, rd_override_zphot)."""
-    import numpy as np
-    from jax_snlc_fit.data_loader import (apply_header_override,
+    from jax_snlc_fit.loader import (apply_header_override,
                                           read_header_override_file)
 
     f = tmp_path / "galid.dat"
@@ -494,25 +491,25 @@ _BAYESN = ["PKMJD", "THETA", "Ds", "AV"]
 
 @pytest.fixture(scope="module")
 def salt_model(data_root):
-    from jax_snlc_core.models.salt_model import SALTModel
+    from jax_snlc_core.models.salt import SALTModel
     return SALTModel.load(str(data_root / "models" / "SALT3.K21"), {})
 
 
 @pytest.fixture(scope="module")
 def salt_aliases(salt_model):
-    from jax_snlc_fit.fit_spec import snana_parameter_aliases
+    from jax_snlc_fit.parameters import snana_parameter_aliases
     return snana_parameter_aliases(salt_model)
 
 
 @pytest.fixture(scope="module")
 def bayesn_model(data_root):
-    from jax_snlc_core.models.bayesn_model import BayeSNModel
+    from jax_snlc_core.models.bayesn import BayeSNModel
     return BayeSNModel.load(str(data_root / "models" / "BAYESN.W22"), {})
 
 
 @pytest.fixture(scope="module")
 def bayesn_aliases(bayesn_model):
-    from jax_snlc_fit.fit_spec import snana_parameter_aliases
+    from jax_snlc_fit.parameters import snana_parameter_aliases
     return snana_parameter_aliases(bayesn_model)
 
 
@@ -541,7 +538,7 @@ def test_inival_family_splits_settings_from_parameters(tmp_path):
     ("DPEAKMJD", "PKMJD"),               # grid axis is t0 offsets
 ])
 def test_parameter_key_resolution(suffix, expected, salt_aliases):
-    from jax_snlc_fit.config_parser import resolve_parameter_key
+    from jax_snlc_fit.parameters import resolve_parameter_key
     assert resolve_parameter_key(suffix, _SALT, salt_aliases) == expected
 
 
@@ -553,15 +550,14 @@ def test_parameter_key_resolution(suffix, expected, salt_aliases):
 def test_generic_names_resolve_per_model(suffix, expected, bayesn_aliases):
     """SNANA's generic names address one slot whatever model is loaded, so they
     land on the parameter that model declares them on."""
-    from jax_snlc_fit.config_parser import resolve_parameter_key
+    from jax_snlc_fit.parameters import resolve_parameter_key
     assert resolve_parameter_key(suffix, _BAYESN, bayesn_aliases) == expected
 
 
 def test_parameters_resolve_by_name_without_aliases():
     """The generic names are backwards compatibility, not the interface. A
     model declaring none does not answer to them, and says so."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.config_parser import resolve_parameter_key
+    from jax_snlc_fit.parameters import resolve_parameter_key
     names = ["PKMJD", "brightness", "stretch"]
     assert resolve_parameter_key("stretch", names, {}) == "stretch"
     assert resolve_parameter_key("PEAKMJD", names, {}) == "PKMJD"
@@ -577,8 +573,7 @@ def test_parameters_resolve_by_name_without_aliases():
 ])
 def test_unsupported_keys_say_what_they_are(suffix, phrase):
     """Not 'unknown parameter' — these name features jax lacks."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.config_parser import resolve_parameter_key
+    from jax_snlc_fit.parameters import resolve_parameter_key
     with pytest.raises(SNANAError) as exc:
         resolve_parameter_key(suffix, _SALT, {})
     assert phrase in str(exc.value)
@@ -586,8 +581,7 @@ def test_unsupported_keys_say_what_they_are(suffix, phrase):
 
 def test_inival_outside_bounds_aborts():
     """Otherwise the optimiser silently pulls it in, or pins it out of range."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.config_parser import validate_inival_bounds
+    from jax_snlc_fit.parameters import validate_inival_bounds
 
     declared = {"x1": {"bounds": (-5.0, 5.0), "scale": 1.0}}
     validate_inival_bounds(FitConfig(model=Model(inival={"x1": 2.0})), declared)   # in range
@@ -597,7 +591,7 @@ def test_inival_outside_bounds_aborts():
 
 def test_relative_bounds_are_not_range_checked():
     """x0's bounds move with its value, so it cannot be out of range."""
-    from jax_snlc_fit.config_parser import validate_inival_bounds
+    from jax_snlc_fit.parameters import validate_inival_bounds
 
     declared = {"x0": {"bounds_relative_to_init": (0.01, 100.0), "scale": 1e-5}}
     validate_inival_bounds(FitConfig(model=Model(inival={"x0": 1e-3})), declared)
@@ -609,8 +603,6 @@ def test_reference_cosmology_keys_reach_the_distance_modulus(tmp_path):
     Defaults are SNANA's (snana.F90:220-224); jax previously hardcoded four
     different cosmologies, one of them H0=67.4 against SNANA's 70.
     """
-    import numpy as np
-    from jax_snlc_fit.config_parser import build, read_keys
 
     assert FitConfig().fit.h0_ref == (70.0, 7.0)
     assert (FitConfig().fit.omat_ref[0] == 0.315
@@ -636,11 +628,36 @@ def test_reference_cosmology_keys_reach_the_distance_modulus(tmp_path):
     # Omega_m and w0 must also move it, or they are inert
     assert not np.allclose(np.asarray(cfg.fit.distance_modulus(z)), shifted)
 
+def test_mwebv_force_turns_on_above_snanas_threshold(tmp_path):
+    """SNANA forces every event's E(B-V) only where MWEBV_FORCE > -0.001
+    (snana.F90:17209), so its default, -9, and a value just below the
+    threshold leave each event's own E(B-V); zero forces it."""
+
+    forced = {}
+    for value in ("-9", "-0.005", "0", "0.02"):
+        nml = tmp_path / "fit.nml"
+        nml.write_text(f"&SNLCINP\n  MWEBV_FORCE = {value}\n&END\n")
+        forced[value] = build(read_keys(nml)).data.mwebv_force
+    assert forced == {"-9": None, "-0.005": None, "0": 0.0, "0.02": 0.02}
+
+
+def test_an_array_value_may_be_blank_or_comma_separated(tmp_path):
+    """A Fortran namelist separates an array's values by blanks or commas, as
+    SNANA reads them, so both spellings of PRIOR_DMU_RANGE give one window."""
+
+    windows = []
+    for spelling in ("-0.5 0.5", "-0.5, 0.5"):
+        nml = tmp_path / "fit.nml"
+        nml.write_text("&SNLCINP\n  DOFIT_PHOTOZ = T\n  OPT_PHOTOZ = 1\n"
+                       f"  PRIOR_DMU_RANGE = {spelling}\n&END\n")
+        windows.append(build(read_keys(nml)).photoz.prior_dmu_range)
+    assert windows == [(-0.5, 0.5), (-0.5, 0.5)]
+
+
 
 def test_salt2_standardisation_keys(tmp_path):
     """SALT2ALPHA/SALT2BETA are SALT's declared keys: the parser types them
     into model_key_values and build_model sets them on the instance."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&FITINP\n  SALT2ALPHA = 0.15\n  SALT2BETA = 3.1\n&END\n")
@@ -652,8 +669,7 @@ def test_usesim_keys_resolve_to_truth_columns():
     """USESIM_<p> is INIVAL=<sim truth> + INISTP=0 (snlc_fit.F90:8341-8353), so
     it resolves to a parameter and the truth column that parameter declares.
     USESIM_INIVAL seeds every such parameter but pins none (:8305)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.config_parser import resolve_usesim_columns
+    from jax_snlc_fit.parameters import resolve_usesim_columns
 
     declared = {
         'PKMJD': {'bounds': (-1.0, 1.0), 'scale': 1.0, 'sim_truth': 'SIM_PEAKMJD'},
@@ -686,7 +702,6 @@ def test_usesim_keys_resolve_to_truth_columns():
 
 def test_usesim_flags_parse(tmp_path):
     """USESIM_SNIA/NONIA default true (snana.F90:5723); TRUEFLUX false."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     assert (FitConfig().selection.usesim_snia
             and FitConfig().selection.usesim_nonia)
@@ -705,7 +720,7 @@ def test_fitwin_postfit_windows_resolve(tmp_path, salt_model, salt_aliases):
     """FITWIN_<quantity> cuts the finished fit. The base name resolves like any
     generic SNANA parameter name, and the _ERR / _ERRz1 form rides along, so
     FITWIN_SHAPE_ERR becomes x1_ERR under SALT."""
-    from jax_snlc_fit.config_parser import build, read_keys, resolve_fitwin_windows
+    from jax_snlc_fit.parameters import resolve_fitwin_windows
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&FITINP\n"
@@ -726,7 +741,6 @@ def test_fitwin_postfit_windows_resolve(tmp_path, salt_model, salt_aliases):
 
 
 def _fitwin_config(tmp_path, *keys):
-    from jax_snlc_fit.config_parser import build, read_keys
     nml = tmp_path / "fitwin.nml"
     nml.write_text("&FITINP\n" + "".join(f"  {k} = 0, 1\n" for k in keys) + "&END\n")
     return build(read_keys(nml))
@@ -741,7 +755,7 @@ def test_fitwin_suffixes_are_checked_before_the_fit(tmp_path, salt_model,
     owns (SALT's mB) resolves by name, and a generic spelling resolves to the
     column its parameter is written as (BayeSN's DLMAG is Ds, written as
     MU_LCFIT)."""
-    from jax_snlc_fit.config_parser import resolve_fitwin_windows
+    from jax_snlc_fit.parameters import resolve_fitwin_windows
 
     with pytest.raises(SNANAError, match="FITWIN_SHAPPE names no fitted quantity"):
         resolve_fitwin_windows(_fitwin_config(tmp_path, "FITWIN_SHAPPE"),
@@ -757,7 +771,6 @@ def test_fitwin_suffixes_are_checked_before_the_fit(tmp_path, salt_model,
 @pytest.mark.parametrize('cid_list', ["'5', '9'", '5 9'])
 def test_selection_ignore_lists_and_caps(tmp_path, cid_list):
     """The rejection lists, event caps and reproducible simulation prescale."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     assert FitConfig().selection.mxevt_process == 999888777
     assert FitConfig().selection.sim_prescale == 1.0
@@ -783,7 +796,6 @@ def test_selection_ignore_lists_and_caps(tmp_path, cid_list):
 def test_flag_use_same_events_overrides_opt_sncid_list(tmp_path):
     """FLAG_USE_SAME_EVENTS is the newer spelling of OPT_SNCID_LIST and wins
     when positive (snana.F90:6290)."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&SNLCINP\n  OPT_SNCID_LIST = 3\n  FLAG_USE_SAME_EVENTS = 1\n&END\n")
@@ -811,8 +823,7 @@ def test_redshift_shift_systematics():
     while a host shift applies only when that host measurement IS the SN
     redshift — shifting an unused host-z would corrupt the reported column
     without changing the fit."""
-    import numpy as np
-    from jax_snlc_fit.data_loader import apply_redshift_shifts
+    from jax_snlc_fit.loader import apply_redshift_shifts
 
     z = np.array([0.2, 0.3, 0.4])
     extras = {'REDSHIFT_HELIO': z.copy()}
@@ -846,7 +857,6 @@ def test_magobs_shift_zp_parses_as_a_filter_string(tmp_path):
     """MAGOBS_SHIFT_ZP is a SNANA filter string naming the SHORT band, while
     PHOT carries the survey-qualified name — the loader matches on the short
     form, and getting that wrong makes the key silently inert."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&SNLCINP\n  MAGOBS_SHIFT_ZP = 'r 0.1 i -0.05'\n&END\n")
@@ -858,7 +868,6 @@ def test_photflag_bitlist_reject(tmp_path):
     """PHOTFLAG_BITLIST_REJECT is the bit-list spelling of PHOTFLAG_MSKREJ:
     SNANA sets each listed bit and REPLACES the mask (snana.f:60664), with the
     list terminating at a negative value."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&SNLCINP\n  PHOTFLAG_BITLIST_REJECT = 1, 3, 5, -1\n&END\n")
@@ -873,7 +882,6 @@ def test_use_model_magerr_and_shift_setpkmjd(tmp_path):
     """USE_MODEL_MAGERR = F zeroes the model error and forces OPT_COVAR_FLUX = 0
     (snlc_fit.f:464029). SHIFT_SETPKMJD displaces the peak-MJD estimate itself,
     so the fit and the reported PKMJDINI move together rather than diverging."""
-    from jax_snlc_fit.config_parser import build, read_keys
 
     assert (FitConfig().model.use_model_magerr
             and FitConfig().data.shift_setpkmjd == 0.0)
@@ -991,8 +999,7 @@ def test_fits_header_and_survey_def_are_required(tmp_path):
     read_SURVEYDEF aborts on a missing SURVEY.DEF (sntools.c:3586-3588); an
     unmatched survey name is still -9 (:3722)."""
     from astropy.io import fits
-    from jax_snlc_fit.data_loader import read_snana_fits
-    from jax_snlc_fit.survey import survey_id
+    from jax_snlc_fit.output import survey_id
 
     head = tmp_path / "X_HEAD.FITS"
     primary = fits.PrimaryHDU()
@@ -1068,7 +1075,7 @@ def test_mxlc_plot_is_the_lcplot_bin_count(tmp_path):
 def test_photoz_trest_cuts_are_widened_for_the_fit():
     """A photo-z fit cannot cut on rest frame at the input redshift, so SNANA
     widens the window by (1+z) either way (TRESTzCUT, snlc_fit.F90:3661)."""
-    from jax_snlc_fit.config_parser import trest_zcut
+    from jax_snlc_fit.cuts import trest_zcut
     # a negative edge widens by multiplying, a positive one by dividing
     assert trest_zcut(1, 1.0, -15.0) == -30.0
     assert trest_zcut(2, 1.0, 45.0) == 90.0
@@ -1082,7 +1089,6 @@ def test_opt_chi2_sigma_accepts_only_the_bit_that_does_something():
     """Bit 1 is the only value that changes a SNANA fit; 2, 128 and 1|128 give a
     FITRES byte-identical to 0, and 4 aborts snlc_fit.exe. Accepting any of them
     would hand back silence for a request that asked for a term."""
-    from jax_snlc_core.utils.error_handling import SNANAError
     base = {'VERSION_PHOTOMETRY': 'V', 'KCOR_FILE': 'k.fits',
             'FITMODEL_NAME': 'M', 'FILTLIST_FIT': 'griz'}
 
@@ -1128,10 +1134,7 @@ def test_prior_windows_resolve_to_parameter_names(
     (the same table INIVAL_ and FITWIN_ go through). Nothing downstream of the
     parser sees a generic name.
     """
-    import pytest
-    from jax_snlc_fit.config_parser import (build, read_keys,
-                                            resolve_parameter_keys)
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_fit.parameters import resolve_parameter_keys
 
     def load(body, param_names, aliases):
         nml = tmp_path / "fit.nml"
@@ -1292,16 +1295,202 @@ def test_every_recognised_key_reaches_its_field():
 
 def test_photoz_constrained_amplitude(data_root):
     from jax_snlc_core.models import build_model
+    from jax_snlc_fit.config import PhotoZ
+    from jax_snlc_fit.config_parser import build_config
     from jax_snlc_fit.fitter import resolved_config
 
     path = str(data_root / 'models' / 'SALT3.K21')
     model = build_model(path, {})
-    from jax_snlc_fit.config import PhotoZ
     config = FitConfig(model=Model(fitmodel_name=path, inistp={'DLMAG': 0}),
                        photoz=PhotoZ(dofit_photoz=True))
     with pytest.raises(SNANAError, match='cosmology-constrained'):
-        resolved_config(config, model)
+        build_config(config=config)
     # An explicit fixed x0 still means holding that amplitude constant.
     config = dataclasses.replace(config, model=dataclasses.replace(
         config.model, inistp={'x0': 0}))
     assert resolved_config(config, model).model.inistp['x0'] == 0
+
+
+@pytest.mark.parametrize('fixture', ['hostlib_zphot_q', 'hostlib_nbr_zphot_q'])
+def test_text_host_metadata_matches_fits(snana_fixture, fixture):
+    """Error pairs, band magnitudes and quantiles survive normal TEXT loading."""
+    root = snana_fixture(fixture).root
+    text, _, metadata = read_snana_text(sorted((root / 'text_ref').glob('*.DAT')))
+    fits, _, fits_metadata = read_snana_fits(root / 'HEAD.FITS', root / 'PHOT.FITS')
+    rows = {str(cid).strip(): i for i, cid in enumerate(fits['SNID'])}
+    fits = fits[[rows[cid] for cid in text['SNID']]]
+    assert metadata['survey'] == fits_metadata['survey']
+    for column in ('HOSTGAL_OBJID', 'HOSTGAL_NMATCH', 'HOSTGAL_NMATCH2',
+                   'MASK_REDSHIFT_SOURCE'):
+        np.testing.assert_array_equal(text[column], fits[column])
+    for column, tolerance in (
+        ('HOSTGAL_PHOTOZ', 6e-6), ('HOSTGAL_PHOTOZ_ERR', 6e-6),
+        ('HOSTGAL_LOGMASS', 6e-4), ('HOSTGAL_LOGMASS_ERR', 6e-4),
+        ('REDSHIFT_HELIO_ERR', 6e-7), ('VPEC', 0.006), ('VPEC_ERR', 0.006),
+        ('HOSTGAL_MAG_u', 6e-4), ('HOSTGAL_MAG_r', 6e-4),
+        ('HOSTGALz_QUANTILE_ZPHOT', 6e-5),
+        ('HOSTGALz_QUANTILE_PERCENT', 0.006),
+    ):
+        np.testing.assert_allclose(text[column], fits[column], atol=tolerance, rtol=0)
+    # These are the arrays used by the Gaussian and quantile photo-z priors.
+    text_prior = _host_photoz_columns(text, True)
+    fits_prior = _host_photoz_columns(fits, True)
+    for actual, expected in zip(text_prior, fits_prior):
+        np.testing.assert_allclose(actual, expected, atol=6e-5, rtol=0)
+    if fixture == 'hostlib_nbr_zphot_q':
+        for column in ('HOSTGAL2_OBJID', 'HOSTGAL2_PHOTOZ_ERR', 'HOSTGAL2_MAG_r',
+                       'HOSTGAL2z_QUANTILE_ZPHOT'):
+            np.testing.assert_allclose(text[column], fits[column], atol=6e-4, rtol=0)
+
+
+def test_text_preserves_large_ids_and_variable_host_grids(tmp_path):
+    """Large IDs remain integers; shorter or absent host grids get null padding."""
+    first = tmp_path / 'one.DAT'
+    first.write_text('''SURVEY: DES(SHALLOW)
+SNID: event-one
+FILTERS: gr
+FAKE: 0
+REDSHIFT_HELIO: 0.2 +- 0.003
+HOSTGAL_OBJID: 9007199254740993
+HOSTGAL_MAG: 21.1
+    22.2
+HOSTGAL_PHOTOZ: 0.21 +- 0.04
+HOSTGALz_NBIN_LOGMASS_ZGRID: 2
+HOSTGALz_LOGMASS_ZGRID: 0.1 0.3
+HOSTGALz_LOGMASS_VALGRID: 9.1 9.3
+HOSTGALz_LOGMASS_ERRGRID: 0.1 0.2
+VARLIST: MJD BAND FLUXCAL FLUXCALERR
+OBS: 60000 g 10 1
+''')
+    second = tmp_path / 'two.DAT'
+    second.write_text('''SURVEY: DES(DEEP)
+SNID: event-two
+FILTERS: gr
+FAKE: 0
+HOSTGAL_NMATCH: 0
+VARLIST: MJD BAND FLUXCAL FLUXCALERR
+OBS: 60001 r 20 2
+''')
+    head, phot, metadata = read_snana_text([first, second])
+    assert metadata['survey'] == 'DES'
+    assert list(head['SUBSURVEY']) == ['SHALLOW', 'DEEP']
+    assert head['HOSTGAL_OBJID'].dtype.kind in 'iu'
+    assert head['HOSTGAL_OBJID'][0] == 9007199254740993
+    assert head['HOSTGAL_OBJID'][1] == 0
+    np.testing.assert_allclose(head['HOSTGAL_MAG_r'], [22.2, 999.0])
+    np.testing.assert_allclose(head['HOSTGALz_LOGMASS_VALGRID'][0, :2], [9.1, 9.3])
+    assert np.all(head['HOSTGALz_LOGMASS_VALGRID'][0, 2:] == -9)
+    assert np.all(head['HOSTGALz_LOGMASS_VALGRID'][1] == -9)
+    assert head['HOSTGALz_NBIN_LOGMASS_ZGRID'][1] == 0
+    np.testing.assert_array_equal(head['PTROBS_MIN'], [1, 2])
+    np.testing.assert_array_equal(phot['FLUXCAL'], [10, 20])
+
+
+@pytest.mark.parametrize('value', ['invalid', '0.1 +- invalid'])
+@pytest.mark.parametrize('field', ['MWEBV', 'REDSHIFT_HELIO', 'HOSTGAL_PHOTOZ',
+                                   'HOSTGAL_MAG', 'HOSTGALz_LOGMASS_ZGRID'])
+def test_text_rejects_invalid_numeric_metadata(tmp_path, field, value):
+    """Malformed scientific values must not disappear or become defaults."""
+    from jax_snlc_core.logging import SNANAError
+
+    path = tmp_path / 'bad.DAT'
+    path.write_text(f"SURVEY: DES\nSNID: 1\nFILTERS: g\n{field}: {value}\n"
+                    "VARLIST: MJD BAND FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n")
+    with pytest.raises(SNANAError, match=field):
+        read_snana_text([path])
+
+
+def test_text_empty_host_grids_support_overrides(tmp_path):
+    """Zero-bin TEXT grids have the same null arrays as FITS, ready for overrides."""
+    from jax_snlc_fit.loader import apply_header_override
+
+    path = tmp_path / 'empty.DAT'
+    path.write_text("SURVEY: DES\nSNID: 1\nFILTERS: g\n"
+                    "HOSTGAL_OBJID: 10\nHOSTGAL2_OBJID: 20\n"
+                    "HOSTGAL_PHOTOZ: -9 +- -9\nHOSTGAL2_PHOTOZ: -9 +- -9\n"
+                    "HOSTGALz_NBIN_LOGMASS_ZGRID: 0\n"
+                    "HOSTGALz_NBIN_QUANTILE_ZPHOT: 0\n"
+                    "HOSTGAL2z_NBIN_QUANTILE_ZPHOT: 0\n"
+                    "VARLIST: MJD BAND FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n")
+    head, _, _ = read_snana_text([path])
+    for prefix in ('HOSTGALz', 'HOSTGAL2z'):
+        for suffix in ('QUANTILE_ZPHOT', 'QUANTILE_PERCENT'):
+            assert head[f'{prefix}_{suffix}'].shape == (1, 20)
+            assert np.all(head[f'{prefix}_{suffix}'] == -9)
+    values = {f'HOSTGALz_{name}': {'1': row} for name, row in (
+        ('LOGMASS_ZGRID', [0.1, 0.3]), ('LOGMASS_VALGRID', [9., 10.]),
+        ('LOGMASS_ERRGRID', [0.1, 0.1]))}
+    updated = apply_header_override(head, ('SNID', values))
+    assert updated['HOSTGALz_NBIN_LOGMASS_ZGRID'][0] == 2
+    np.testing.assert_allclose(updated['HOSTGALz_LOGMASS_VALGRID'][0, :2], [9., 10.])
+    assert np.all(updated['HOSTGALz_LOGMASS_VALGRID'][0, 2:] == -9)
+
+    quantiles = {'HOSTGALz_QUANTILE_ZPHOT': {'10': [0.1, 0.2], '20': [0.3, 0.4]},
+                 'HOSTGALz_QUANTILE_PERCENT': {'10': [0., 100.], '20': [0., 100.]}}
+    updated = apply_header_override(head, ('HOSTGAL_OBJID', quantiles))
+    for prefix, expected in (('HOSTGALz', [0.1, 0.2]), ('HOSTGAL2z', [0.3, 0.4])):
+        assert updated[f'{prefix}_NBIN_QUANTILE_ZPHOT'][0] == 2
+        np.testing.assert_allclose(updated[f'{prefix}_QUANTILE_ZPHOT'][0, :2], expected)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_text_version_and_optional_epoch_columns(tmp_path, reverse):
+    """Version strings and per-event optional columns retain their meanings."""
+    first = tmp_path / 'one.DAT'
+    second = tmp_path / 'two.DAT'
+    header = 'SURVEY: DES\nFILTERS: g\nSNANA_VERSION: v12_00\n'
+    first.write_text(header + 'SNID: 1\n'
+                     'VARLIST: MJD FLT FLUXCAL FLUXCALERR PHOTFLAG FIELD ZPT\n'
+                     'OBS: 60000 g 10 1 8 C3 27.5\n'
+                     'OBS: 60001 g 11 1 0 C3 27.5\n')
+    second.write_text(header + 'SNID: 2\n'
+                      'VARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
+                      'OBS: 60002 g 20 2\n')
+    paths = [second, first] if reverse else [first, second]
+    head, phot, metadata = read_snana_text(paths)
+    assert metadata['snana_version'] == 'v12_00'
+    assert 'SNANA_VERSION' not in head.colnames
+    expected = [2, 0, 1] if reverse else [0, 1, 2]
+    np.testing.assert_array_equal(phot['MJD'], np.array([60000, 60001, 60002])[expected])
+    np.testing.assert_array_equal(phot['PHOTFLAG'], np.array([8, 0, 0])[expected])
+    np.testing.assert_array_equal(phot['FIELD'], np.array(['C3', 'C3', ''])[expected])
+    np.testing.assert_allclose(phot['ZEROPT'], np.array([27.5, 27.5, np.nan])[expected])
+    np.testing.assert_array_equal(phot['BAND'], ['g', 'g', 'g'])
+    np.testing.assert_array_equal(head['PTROBS_MIN'], [1, 2] if reverse else [1, 3])
+    np.testing.assert_array_equal(head['PTROBS_MAX'], [1, 3] if reverse else [2, 3])
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_missing_header_values_keep_loader_defaults(tmp_path, reverse):
+    """Reading events together preserves redshift fallbacks and trigger defaults."""
+    from jax_snlc_fit.loader import _head_metadata, batch_from_columns
+
+    paths = [tmp_path / 'first.DAT', tmp_path / 'second.DAT']
+    headers = [
+        'REDSHIFT_HELIO: 0.2 +- 0.001\nREDSHIFT_FINAL: 0.21 +- 0.002\n'
+        'MWEBV: 0.05 +- 0.003\nVPEC: 100\nMJD_TRIGGER: 60001\nPRIVATE: 7\n',
+        'REDSHIFT_CMB: 0.25 +- 0.004\n',
+    ]
+    for i, (path, header) in enumerate(zip(paths, headers)):
+        path.write_text(f'SURVEY: DES\nSNID: {i}\nFILTERS: g\nFAKE: 0\n'
+                        + header + 'VARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
+                        'OBS: 60000 g 10 1\n')
+    if reverse:
+        paths.reverse()
+    head, phot, metadata = read_snana_text(paths)
+    combined = _head_metadata(head)
+    for i, path in enumerate(paths):
+        single, _, _ = read_snana_text([path])
+        expected = _head_metadata(single)
+        for name in ('redshifts', 'redshift_errs', 'mwebvs', 'mwebv_errs',
+                     'ras', 'decs', 'peakmjds'):
+            np.testing.assert_allclose(combined[name][i], expected[name][0], equal_nan=True)
+    absent = list(head['SNID']).index('1')
+    assert head['PRIVATE'][absent] == -9
+    assert head['VPEC'][absent] == 0
+    assert head['MJD_TRIGGER'][absent] == -99
+    batch = batch_from_columns(head, phot, **metadata, setpkmjd={
+        'trigger': True, 'fmax_clump': False, 'fluxmax': False,
+        'bazin': False, 'batch_size': 2})
+    expected_peak = [-99., 60001.] if reverse else [60001., -99.]
+    np.testing.assert_array_equal(batch.head_extras['PEAKMJD'], expected_peak)

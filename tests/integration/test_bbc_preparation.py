@@ -1,13 +1,16 @@
 """Shared preparation preserves independent cell selections and source changes."""
+
+from _bbc_helpers import prepare_cell
 from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from jax_salt2mu import preparation, run as driver
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 
 @pytest.mark.parametrize('opt', [112, 4208])
@@ -31,7 +34,7 @@ def test_selection_reuses_numerical_work_with_independent_cuts(tmp_path, opt):
     cfg, sources, text = cells[0]
     selected_cells = {0: (replace(cfg, cid_select_file=[str(selected)], cutwin_disable=True), sources, text)}
     reused = driver.prepare_cells(selected_cells, data, maps, biascor, priors)[0]
-    independent = driver.prepare_cell(replace(config, cid_select_file=[str(selected)], cutwin_disable=True), tables)
+    independent = prepare_cell(replace(config, cid_select_file=[str(selected)], cutwin_disable=True), tables)
     assert reused.maps is nominal.maps
     assert reused.tv is not nominal.tv
     assert reused.tv.covmat_fit is nominal.tv.covmat_fit
@@ -82,7 +85,7 @@ def test_data_and_fit_changes_preserve_map_reuse_and_fresh_results(change):
     preparation.format_data(cells, data)
     nodes = preparation.interpolate_corrections(cells, data, maps)
     prepared = driver.prepare_cells(cells, data, maps, nodes, {0: None, 1: None})[1]
-    independent = driver.prepare_cell(changed, tables)
+    independent = prepare_cell(changed, tables)
     np.testing.assert_array_equal(prepared.accept, independent.accept)
     np.testing.assert_array_equal(prepared.tv.cutbits, independent.tv.cutbits)
     import jax
@@ -138,8 +141,8 @@ def test_supplied_tables_match_file_inputs_without_changing_filenames(prior):
               EVENT_TYPE_BIASCOR: read_fitres(biascor_path)}
     if prior != 'none':
         tables[EVENT_TYPE_CCPRIOR] = read_fitres(ccprior_path)
-    supplied = driver.prepare_cell(config, tables)
-    from_files = driver.prepare_cell(files)
+    supplied = prepare_cell(config, tables)
+    from_files = prepare_cell(files)
     assert supplied.config.datafile == []
     assert supplied.config.simfile_biascor == []
     assert supplied.config.simfile_ccprior == []
@@ -160,7 +163,7 @@ def test_fixed_zero_cc_scale_ignores_supplied_prior_without_biascor():
                        nuisance_float={'scalePCC': False}, nuisance_val={'scalePCC': 0.})
     tables = {EVENT_TYPE_DATA: read_fitres('tests/fixtures/snana/bbc_des_beams/DATA.FITRES'),
               EVENT_TYPE_CCPRIOR: object()}
-    cell = driver.prepare_cell(config, tables)
+    cell = prepare_cell(config, tables)
     assert cell.inputs.ccprior is None
     assert 'scalePCC' not in cell.spec.floated
     assert cell.config.simfile_ccprior == []
@@ -188,10 +191,10 @@ def test_supplied_corrections_are_validated_before_reading_data(
 def test_maps_release_converted_source_arrays():
     import gc
     import weakref
-    from jax_salt2mu.biascor_build import build_biascor_maps
+    from jax_salt2mu.biascor import build_biascor_partitions
     from jax_salt2mu.config import resolve
     from jax_salt2mu.samples import partition_idsamples
-    from jax_salt2mu.tablevar import read_tablevar
+    from _bbc_helpers import read_tablevar
     from jax_snlc_core.models import SALTModel
 
     path = 'tests/fixtures/snana/bbc_des_beams/BIASCOR.FITRES'
@@ -202,7 +205,7 @@ def test_maps_release_converted_source_arrays():
     tv = read_tablevar([path], EVENT_TYPE_BIASCOR, config, SALTModel)
     _, samples = partition_idsamples(tv.idsurvey, tv.field, tv.zhd, tv.is_photoz, config)
     references = [weakref.ref(value) for value in (tv, tv.zhd, tv.covmat_fit)]
-    maps = build_biascor_maps(tv, samples, config, SALTModel, False)
+    maps = build_biascor_partitions(tv, {0: samples}, config, SALTModel, False)[0]
     del tv
     gc.collect()
     assert all(reference() is None for reference in references)

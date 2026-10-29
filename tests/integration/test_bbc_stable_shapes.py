@@ -1,8 +1,6 @@
 """Known BBC grids share numerical capacities without changing their science."""
 from dataclasses import replace
 
-from jax_snlc_core.io.fits_path import open_text
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -10,12 +8,13 @@ import pytest
 
 from jax_salt2mu import map_kernels, preparation
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.fitter import _fit, _fit_derivatives, _chi2_ia, pad_ccprior, padded
-from jax_salt2mu.run import prepare_cells, fit_spec, finish_grid
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_salt2mu.fitter import _chi2_ia, _fit, _fit_derivatives, padded
+from jax_salt2mu.ccprior import pad_ccprior
+from jax_salt2mu.run import finish_grid, fit_spec, prepare_cells
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import standardised_model
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 
 @pytest.mark.parametrize('model,opt', [('SALT2', 112), ('SALT2', 240),
@@ -72,7 +71,7 @@ def test_map_padding_preserves_values_and_compilation(model, opt):
 
 
 def test_fit_padding_preserves_results_and_compilation():
-    from jax_salt2mu.results import _output_parts
+    from jax_salt2mu.output import _output_parts
     data = read_fitres('tests/fixtures/snana/bbc_des_beams/DATA.FITRES')
     cfg = BBCConfig(nzbin=4, zmin=.1, zmax=1., sigint_fix=(.1,))
     tables = [data, replace(data, df=data.df.iloc[::2].reset_index(drop=True))]
@@ -101,7 +100,7 @@ def test_fit_padding_preserves_results_and_compilation():
 
 @pytest.fixture(scope='module')
 def cc_cell():
-    from jax_salt2mu.run import prepare_cell
+    from _bbc_helpers import prepare_cell
     root = 'tests/fixtures/snana/bbc_des_beams'
     return prepare_cell(BBCConfig(
         datafile=[f'{root}/CONTAM_DATA.FITRES'], simfile_biascor=[f'{root}/BIASCOR.FITRES'],
@@ -141,7 +140,7 @@ def test_cc_prior_padding_preserves_value_gradient_and_hessian(cc_cell, empty, j
 
 
 def test_numeric_preparation_and_cosmology_padding():
-    from jax_snlc_core.physics.cosmology import distance_modulus
+    from jax_snlc_core.cosmology import distance_modulus
     data = read_fitres('tests/fixtures/snana/bbc_des_beams/DATA.FITRES')
     cfg = BBCConfig(nzbin=4, zmin=.1, zmax=1.)
     inputs = [data, replace(data, df=data.df.iloc[::2].reset_index(drop=True))]
@@ -185,7 +184,7 @@ def test_sync_row_bound_includes_duplicate_rows_and_independent_fitopts():
     from jax_pipeline.synchronise import synchronised_row_counts
     data = read_fitres('tests/fixtures/snana/bbc_des_beams/DATA.FITRES')
     data = replace(data, df=data.df.iloc[:100].reset_index(drop=True))
-    from jax_snlc_core.io.fitres_reader import concat_tables
+    from jax_snlc_core.snana_files import concat_tables
     data = concat_tables([data, replace(data, df=data.df.iloc[:1].copy())])
     config = BBCConfig(nzbin=4, zmin=.1, zmax=1., force_realdata=True,
                        blindflag=0, iflag_duplicate=2)

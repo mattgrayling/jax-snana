@@ -1,6 +1,6 @@
 """Unit tests for the SNANA MAGLIMIT_calculator port."""
 
-from jax_snlc_sim.photometry.maglimit import maglimit_calculator
+from jax_snlc_sim.diagnostics import maglimit_calculator
 
 
 def test_returns_zero_for_crazy_args():

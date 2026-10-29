@@ -19,9 +19,10 @@ from _fit_helpers import (build_fit_model, build_fitter, fit_config,
                           load_batch, override, run_fit)
 
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_core.models import build_model
+from jax_snlc_core.snana_files import resolve_fits_path
 from jax_snlc_fit.config_parser import build, read_keys
-from jax_snlc_fit.io import discover_fits_files
 
 _F = "$JAX_TEST_FIXTURE_ROOT"
 _MODEL = "REDBACK.arnett_bolometric"
@@ -96,9 +97,10 @@ def roundtrip(tmp_path_factory):
                               random_seed=12345)
     sim = sim_run.prepare(str(inp), **cfg)
     results, selection, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, _GENVERSION, selection, spectra_cache=spectra_cache, output_dir=str(tmp))
+    save_snana_outputs(sim, results, _GENVERSION, selection, spectra_by_sn=spectra_cache, output_dir=str(tmp))
 
-    [(head_path, phot_path)] = discover_fits_files(str(tmp / _GENVERSION))
+    head_path = resolve_fits_path(tmp / _GENVERSION / f'{_GENVERSION}_HEAD.FITS')
+    phot_path = resolve_fits_path(tmp / _GENVERSION / f'{_GENVERSION}_PHOT.FITS')
     return tmp, head_path, phot_path
 
 

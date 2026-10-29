@@ -17,10 +17,11 @@ than on the noise draw or the efficiency roll.
 import re
 
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 # Events whose epochs sit within a fraction of a day of the Trest window edge
 # land differently in each code (zHEL/zCMB, float32 PEAKMJD), which can move
@@ -63,7 +64,7 @@ def test_cutwin_opt3_replay(snana_fixture, tmp_path):
 
     override = build_override_parameters(dump.columns, simulation, resources, head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "OPT3", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "OPT3", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     out = tmp_path / "OPT3"
     jax_dumped = _dump_cids(out / "OPT3.DUMP")

@@ -8,11 +8,8 @@ from typing import Mapping
 
 import jax.numpy as jnp
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import (
-    distance_modulus,
-    flat_cpl_e2,
-)
+from jax_snlc_core.cosmology import distance_modulus, flat_cpl_e2
+from jax_snlc_core.utils import LIGHT_KM
 
 from .config import WFITConfig
 from .priors import bao_prior_chi2, cmb_prior_chi2, omega_m_prior_chi2

@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_sim.random_streams import root_key
-from jax_snlc_sim.sampler import simlib_job_start, simlib_field_index
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.inputs import parse_snana_input_file
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.simlib import simlib_field_index, simlib_job_start
 
 
 _A_FIXTURE_INPUT = str(Path(__file__).parent.parent / "fixtures" / "snana"

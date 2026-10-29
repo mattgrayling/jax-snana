@@ -1,12 +1,14 @@
 """Changed coordinates, partitions or maps must not share interpolation."""
 from dataclasses import replace
+
 import numpy as np
 import pytest
+
 from jax_salt2mu import preparation
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 
 @pytest.mark.parametrize('change', ['coordinates', 'assignment', 'minimum', 'maps'])

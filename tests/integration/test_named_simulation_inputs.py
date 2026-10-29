@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 
 from jax_snlc_sim import run, simulate
-from jax_snlc_sim.config_parser import build, validate
+from jax_snlc_sim.inputs import build, validate
 
 
 def test_named_and_snana_simulations_match(data_root):

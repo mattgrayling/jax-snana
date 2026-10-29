@@ -6,12 +6,10 @@ import numpy as np
 import pytest
 import yaml
 
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
 from jax_wfit.blinding import parameter_offsets, parameter_random_integers
-from jax_wfit.config import WFITConfig
-from jax_wfit.config_parser import (build, build_parser, cli_keys,
-                                    load_config, read_keys)
-from jax_wfit.data import load_hubble_diagrams, stack_arrays
+from jax_wfit.config import WFITConfig, build, build_parser, cli_keys, load_config, read_keys
+from jax_wfit.hubble import load_hubble_diagrams, stack_arrays
 from jax_wfit.likelihood import evaluate_likelihood
 from jax_wfit.priors import load_bao_data, prepare_priors
 from jax_wfit.run import run_wfit
@@ -505,7 +503,6 @@ def test_blinding_refuses_a_parameter_without_an_offset():
 
 def test_prior_perturbation_only_moves_an_informative_prior():
     """SNANA perturbs the Omega_m prior only when dompri < 1 (wfit.c:2408)."""
-    from jax_wfit.priors import prepare_priors
 
     def centre(dompri, **kwargs):
         config = WFITConfig()
@@ -521,7 +518,6 @@ def test_prior_perturbation_only_moves_an_informative_prior():
 
 def test_rcmb_perturbation_requires_a_simulation_centred_prior():
     """SNANA shifts Rcmb only in the use_cmb == 2 branch (wfit.c:2489)."""
-    from jax_wfit.priors import prepare_priors
 
     truth = {"omega_m": 0.3, "w0": -1.0, "wa": 0.0}
 
@@ -877,7 +873,7 @@ def test_an_impossible_correlation_aborts_rather_than_clamping(
 
 
 def test_truth_files_keep_diagram_order_and_require_matching_count(tmp_path):
-    from jax_wfit.data import load_simulation_truths
+    from jax_wfit.hubble import load_simulation_truths
 
     paths = []
     for omega_m in (0.25, 0.35):

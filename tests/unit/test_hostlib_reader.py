@@ -2,22 +2,17 @@
 
 from pathlib import Path
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 import pytest
 
-from jax_snlc_core.io import is_ignorefile
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_sim.hostlib.hostlib_reader import _apply_read_selection, _canonical_properties
-from jax_snlc_sim.hostlib.hostlib_reader import (
-    build_sersic_profiles,
-    discover_output_only_columns,
-    essential_columns,
-    zphot_columns,
-    zphot_quantile_columns,
-    read_hostlib,
-)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import is_ignorefile, open_text
+from jax_snlc_sim.hostlib.catalogue import (_apply_read_selection, _canonical_properties,
+                                                 _remap_nbr_array_to_sorted,
+                                                 discover_output_only_columns,
+                                                 essential_columns, read_hostlib)
+from jax_snlc_sim.hostlib.sersic import build_sersic_profiles
+from jax_snlc_sim.hostlib.photoz import zphot_columns, zphot_quantile_columns
 
 
 def test_is_ignorefile_none_and_empty():
@@ -144,8 +139,6 @@ def test_indexed_quantile_columns_imply_uniform_percentiles():
 # ----------------------------------------------------------------------------
 # _remap_nbr_array_to_sorted: row reorder + value remap on the same call
 # ----------------------------------------------------------------------------
-
-from jax_snlc_sim.hostlib.hostlib_reader import _remap_nbr_array_to_sorted  # noqa: E402
 
 
 def test_remap_nbr_array_translates_indices_when_sorted():
@@ -369,3 +362,27 @@ def test_snr_store_keeps_galaxies_whose_brightest_bands_reach_the_ladder():
         _apply_read_selection(
             columns, np.arange(5), nbr, columns["ZTRUE"], *window,
             ([20.0, 10.0, 5.0], 'gri'))
+
+
+def test_shared_table_read_preserves_ids_neighbours_and_embedded_weights(tmp_path):
+    """HOSTLIB reads keep int64 IDs and neighbour links, ignoring WGTMAP rows."""
+    source = tmp_path / 'embedded.HOSTLIB'
+    source.write_text(
+        'VARNAMES: GALID ZTRUE LOGMASS NBR_LIST\n'
+        'GAL: 9007199254740993 0.3 10.0 1,2\n'
+        'GAL: 9007199254740994 0.1 9.0 -1\n'
+        'GAL: 9007199254740995 0.2 11.0 0\n'
+        'SN: 123 0.15 8.0 -1\n'
+        'ROW: 124 0.25 8.0 -1\n'
+        'OBS: ignored even without enough columns\n'
+        'VARNAMES_WGTMAP: LOGMASS WGT SNMAGSHIFT\n'
+        'WGT: 9.0 1.0 0.0\n'
+        'WGT: 11.0 2.0 0.1\n')
+    for cached in (False, True, True):
+        table = read_hostlib(source, ['GALID', 'ZTRUE', 'LOGMASS'],
+                             use_cache=cached, cache_dir=tmp_path / 'cache')
+        np.testing.assert_array_equal(table.columns['GALID'],
+                                      [9007199254740994, 9007199254740995, 9007199254740993])
+        assert table.columns['GALID'].dtype == np.int64
+        np.testing.assert_allclose(table.columns['ZTRUE'], [0.1, 0.2, 0.3])
+        np.testing.assert_array_equal(table.neighbours, [[-1, -1], [2, -1], [0, 1]])

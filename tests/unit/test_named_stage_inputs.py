@@ -1,9 +1,10 @@
 """Input routes agree before executing the scientific stages."""
 from dataclasses import asdict
+
 import pytest
 import yaml
 
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_sim.inputs import build_config as simulation_config
 
 
@@ -15,7 +16,7 @@ def simulation_settings():
 
 
 def test_simulation_named_and_legacy_settings_agree():
-    from jax_snlc_sim.config_parser import build, validate
+    from jax_snlc_sim.inputs import build, validate
     raw = dict(GENMODEL='SALT3.K21', GENFILTERS='griz', SIMLIB_FILE='survey.simlib',
                KCOR_FILE='survey.fits', RANSEED=42, GENRANGE_REDSHIFT=[.1,.2],
                GENRANGE_TREST=[-10,40], GENRANGE_PEAKMJD=[60000,60010],
@@ -62,8 +63,8 @@ def test_simulation_cli_generated_and_numerical_controls():
 
 
 def test_bbc_named_parameters_match_snana_slots(tmp_path):
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
     legacy = parse_bbc_input(None, ['model_lcfit=SALT2', 'p1=0.14', 'u1=1'])
     named = build_config({'model_lcfit':'SALT2', 'nuisance_val':{'alpha0':.14},
                            'nuisance_float':{'alpha0':True}, 'nuisance_onebin':{'alpha0':False}})
@@ -76,7 +77,7 @@ def test_bbc_named_parameters_match_snana_slots(tmp_path):
 
 
 def test_covariance_named_selectors_and_cli(tmp_path):
-    from jax_create_cov.config_parser import build_config, apply_filter
+    from jax_create_cov.config import build_config, apply_filter
     from create_covariance import config_from_args
     named = build_config({'covopts':[{'label':'calibration', 'fitopt_filter':{'include':'zpt', 'exclude':'u'}, 'scale':2.}], 'subtract_vpec':True})
     assert named.mode == 'unbinned'
@@ -91,7 +92,7 @@ def test_covariance_named_selectors_and_cli(tmp_path):
 
 
 def test_wfit_generated_options_preserve_false_and_precision(tmp_path):
-    from jax_wfit.config_parser import parse_command
+    from jax_wfit.config import parse_command
     path=tmp_path/'wfit.yaml'
     path.write_text('hubble_diagram: data.txt\nmarg: true\ndouble_precision: true\n')
     cfg, _ = parse_command(['--config',str(path),'--no-marg','--grid-chunk-size','12'])
@@ -102,17 +103,16 @@ def test_wfit_generated_options_preserve_false_and_precision(tmp_path):
     assert asdict(legacy) == asdict(named)
 
 
-def test_simulation_cli_reads_named_options(tmp_path, monkeypatch):
-    import snlc_sim
+def test_simulation_cli_reads_named_options(tmp_path):
+    """Named CLI options override the file through real configuration parsing."""
+    from jax_snlc_sim.inputs import parse_cli_args, command_line_config
     values = simulation_settings()
     path = tmp_path / 'sim.yaml'
     path.write_text(yaml.safe_dump(values))
-    seen = []
-    monkeypatch.setattr(snlc_sim, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_sim.sim_run, 'prepare', lambda cfg: seen.append(cfg))
-    snlc_sim.main([str(path), '--ngentot-lc', '5', '--batch-size', '3'])
-    assert seen[0].run.ngentot_lc == 5
-    assert seen[0].numerical.batch_size == 3
+    config = command_line_config(parse_cli_args(
+        [str(path), '--ngentot-lc', '5', '--batch-size', '3']))
+    assert config.run.ngentot_lc == 5
+    assert config.numerical.batch_size == 3
 
 
 def test_simulation_linked_settings_resolve_after_named_overrides(tmp_path):
@@ -171,8 +171,8 @@ def test_named_dust_and_subpopulation_offsets_match_shared_values():
     ({'fixpar_all': True}, ['fixpar_all=1']),
 ])
 def test_bbc_linked_settings_agree(settings, tokens):
-    from jax_salt2mu.inputs import build_config
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import build_config
+    from jax_salt2mu.config import parse_bbc_input
     assert asdict(build_config(settings)) == asdict(parse_bbc_input(None, tokens))
 
 
@@ -181,13 +181,13 @@ def test_bbc_linked_settings_agree(settings, tokens):
     {'sigint_mode': 'unknown'}, {'cutmask_write': 42},
 ])
 def test_bbc_invalid_input_combinations_fail(settings):
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import build_config
     with pytest.raises(SNANAError):
         build_config(settings)
 
 
 def test_bbc_named_overrides_precede_validation(tmp_path):
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
     path = tmp_path / 'bbc.input'
     path.write_text('uM0=42 model_lcfit=BAYESN\n')
     assert parse_bbc_input(path, ['--uM0', '1']).uM0 == 1
@@ -234,8 +234,8 @@ def test_bbc_pipeline_typed_muopt_retains_stage_dependencies():
 
 
 def test_bbc_supplied_translation_preserves_defaults_and_modes():
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
 
     raw = parse_bbc_input(None, {'u13': 2, 'idsurvey_select': '1,2'},
                           settings={'prefix': 'out'})
@@ -251,7 +251,7 @@ def test_bbc_supplied_translation_preserves_defaults_and_modes():
 
 def test_bbc_muopt_can_disable_true_ia_selection_before_rules(tmp_path):
     from jax_pipeline import BBC
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path / 'bbc.input'
     path.write_text('select_trueIa=1\nprescale_simcc=2\n'
@@ -272,8 +272,8 @@ def test_bbc_muopt_can_disable_true_ia_selection_before_rules(tmp_path):
 
 def test_bbc_releasing_snana_held_parameter_restores_coefficient_bins(tmp_path):
     from jax_pipeline import BBC
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
 
     path = tmp_path / 'bbc.input'
     path.write_text('u1=0\nu13=2\n')
@@ -293,7 +293,7 @@ def test_bbc_releasing_snana_held_parameter_restores_coefficient_bins(tmp_path):
 
 def test_bbc_powzbin_override_replaces_the_complete_snana_option(tmp_path):
     from jax_pipeline import BBC
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path / 'bbc.input'
     path.write_text('powzbin=3,0.4\n')
@@ -305,7 +305,7 @@ def test_bbc_powzbin_override_replaces_the_complete_snana_option(tmp_path):
 
 
 def test_bbc_yaml_cannot_supply_internal_slot_flags(tmp_path):
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path / 'bbc.yaml'
     path.write_text('model_lcfit: SALT2\n_u_flags: {u13: 2}\n')
@@ -315,8 +315,8 @@ def test_bbc_yaml_cannot_supply_internal_slot_flags(tmp_path):
 
 def test_bbc_mapping_settings_preserve_defaults_and_explicit_resets(tmp_path):
     from jax_salt2mu.config import BBCConfig
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
 
     supplied = {'blindpar': {9: (.1, 4522.)}}
     named = build_config(supplied)
@@ -332,7 +332,7 @@ def test_bbc_mapping_settings_preserve_defaults_and_explicit_resets(tmp_path):
 
 def test_bbc_snana_global_cut_preserves_order_across_input_layers(tmp_path):
     from jax_pipeline import BBC
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path / 'bbc.input'
     path.write_text('chi2max(DES)=12\n')
@@ -347,7 +347,7 @@ def test_bbc_snana_global_cut_preserves_order_across_input_layers(tmp_path):
 
 
 def test_genperfect_override_uses_the_same_preparation_as_file_input(tmp_path):
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     text = ('GENMODEL: SALT3.K21\nGENFILTERS: griz\nSIMLIB_FILE: survey.simlib\n'
             'KCOR_FILE: survey.fits\nRANSEED: 42\nGENRANGE_REDSHIFT: .1 .2\n'
             'GENRANGE_TREST: -10 40\nGENRANGE_PEAKMJD: 60000 60010\n'
@@ -363,9 +363,9 @@ def test_genperfect_override_uses_the_same_preparation_as_file_input(tmp_path):
     assert a == b
 
 
-def test_simulation_cli_aliases_share_configuration(tmp_path, data_root, monkeypatch):
-    import snlc_sim
-    from dataclasses import asdict
+def test_simulation_cli_aliases_share_configuration(tmp_path, data_root):
+    """CLI aliases resolve the same seeded configuration as named settings."""
+    from jax_snlc_sim.inputs import parse_cli_args, command_line_config
     settings = simulation_settings()
     settings.update(genmodel=str(data_root / 'models/SALT3.K21'),
                     kcor_file=str(data_root / 'kcor/JAX_TEST_LSST.fits'),
@@ -373,48 +373,38 @@ def test_simulation_cli_aliases_share_configuration(tmp_path, data_root, monkeyp
                     ransystpar={'SIGSCALE_MWEBV': .1})
     path = tmp_path / 'sim.yaml'
     path.write_text(yaml.safe_dump(settings))
-    prepared = []
-    def prepare(simulation):
-        prepared.append(asdict(simulation))
-        return None
-    monkeypatch.setattr(snlc_sim.sim_run, 'prepare', prepare)
-    monkeypatch.setattr(snlc_sim, 'configure_precision', lambda value: None)
-    snlc_sim.main([str(path), '--seed', '7', '--chunk-size', '3', '--output', 'test'])
-    snlc_sim.main([str(path), '--random-seed', '7', '--batch-size', '3', '--genversion', 'test'])
-    assert prepared[0] == prepared[1]
-    assert prepared[0]['run']['random_seed'] == 7
+    aliased = command_line_config(parse_cli_args(
+        [str(path), '--seed', '7', '--chunk-size', '3', '--output', 'test']))
+    named = command_line_config(parse_cli_args(
+        [str(path), '--random-seed', '7', '--batch-size', '3', '--genversion', 'test']))
+    assert asdict(aliased) == asdict(named)
+    assert aliased.run.random_seed == 7
 
 
 @pytest.mark.parametrize('systematic_seed,generation_seed', [(0, 0), (7, 0), (7, 91)])
 def test_prepare_seed_is_resolved_before_random_systematics(
-        tmp_path, data_root, monkeypatch, systematic_seed, generation_seed):
-    from dataclasses import asdict
+        tmp_path, data_root, systematic_seed, generation_seed):
+    """All prepare input forms resolve seeds before loading the real simulator."""
     from jax_snlc_sim import run
     settings = simulation_settings()
     settings.update(genmodel=str(data_root / 'models/SALT3.K21'),
                     kcor_file=str(data_root / 'kcor/JAX_TEST_LSST.fits'),
                     simlib_file=str(data_root / 'simlib/JAX_TEST_DES.SIMLIB'),
-                    simlib_dump=0,
+                    opt_mwebv=0,
+                    dndz_entries=[['POWERLAW', 2.5e-5, 1.5]],
                     ransystpar={'SIGSHIFT_OMEGA_MATTER': .01,
                                 'RANSEED_SYST': systematic_seed,
                                 'RANSEED_GEN': generation_seed})
-    prepared_configs = []
-    monkeypatch.setattr(run, 'run_simlib_dump',
-                        lambda config: prepared_configs.append(config) or [])
-    assert run.prepare({**settings, 'random_seed': 123}) is None
-    expected = prepared_configs[-1]
-    assert run.prepare(settings, random_seed=123) is None
-    supplied = prepared_configs[-1]
+    expected = run.prepare({**settings, 'random_seed': 123}).config
+    supplied = run.prepare(settings, random_seed=123).config
     assert asdict(supplied) == asdict(expected)
     path = tmp_path / 'simulation.yaml'
     path.write_text(yaml.safe_dump(settings))
-    assert run.prepare(path, random_seed=123) is None
-    from_file = prepared_configs[-1]
+    from_file = run.prepare(path, random_seed=123).config
     assert asdict(from_file.cosmology) == asdict(expected.cosmology)
     assert from_file.run.random_seed == expected.run.random_seed == (generation_seed or 123)
     assert settings['random_seed'] == 42
-    assert run.prepare(supplied) is None
-    assert asdict(prepared_configs[-1]) == asdict(supplied)
+    assert asdict(run.prepare(supplied).config) == asdict(supplied)
     with pytest.raises(SNANAError, match='Apply simulation settings'):
         run.prepare(supplied, random_seed=456)
 
@@ -521,7 +511,7 @@ def test_spectrum_polynomial_agrees_across_input_formats(tmp_path):
 def test_simulation_readmes_round_trip_individually_and_combined(tmp_path, input_format):
     from types import SimpleNamespace
     from jax_snlc_sim.inputs import parse_input
-    from jax_snlc_sim.output.driver import _write_readme_file, write_combined_readme
+    from jax_snlc_sim.output.write import _write_readme_file, write_combined_readme
 
     settings = {**simulation_settings(),
         'genprefix': 'SN: INPUT_KEYS and GENTYPE_TO_NAME # provenance',

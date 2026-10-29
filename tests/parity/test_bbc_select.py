@@ -4,21 +4,20 @@ Each reference is SALT2mu.exe on an existing fixture with one selection key set;
 see tests/fixtures/snana/bbc_des_beams/README.md.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import logging
 
 import numpy as np
 import pytest
 
 from jax_salt2mu.config import resolve
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.run import prepare_cell, run_bbc_fit
-from jax_salt2mu.tablevar import (CUTBIT_BIASCOR, CUTBIT_CHI2, EVENT_TYPE_DATA,
-                                  read_tablevar)
+from jax_salt2mu.config import parse_bbc_input
+from jax_salt2mu.run import run_bbc_fit
+from _bbc_helpers import prepare_cell
+from jax_salt2mu.tablevar import CUTBIT_BIASCOR, CUTBIT_CHI2, EVENT_TYPE_DATA
+from _bbc_helpers import read_tablevar
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"

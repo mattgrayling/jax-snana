@@ -9,11 +9,11 @@ one fixture and compares the nuisance parameters and the binned distances.
 import numpy as np
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit
 from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA
-from jax_snlc_core.io.fitres_reader import read_fitres_multi
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres_multi
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"
 _DATA = f"{_DIR}/DATA.FITRES"

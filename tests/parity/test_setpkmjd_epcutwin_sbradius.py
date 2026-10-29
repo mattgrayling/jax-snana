@@ -16,13 +16,12 @@ see the same noiseless photometry and the quantity under test deterministic.
 """
 
 import numpy as np
-from astropy.io import fits
-
-from jax_snlc_core.io.fits_path import resolve_fits_path
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
-from jax_snlc_sim import run as sim_run
-from replay_snana_dump import build_override_parameters
 from _replay_helpers import select_replay
+from astropy.io import fits
+from replay_snana_dump import build_override_parameters
+
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
 
 
 def _replay(fx):

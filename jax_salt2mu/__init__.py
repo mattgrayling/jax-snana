@@ -5,19 +5,16 @@ corrections, and fits the global nuisance parameters (alpha, beta, gamma
 mass-step, sigma_int) plus a distance offset per redshift bin.
 
 The input key `double_precision` chooses the frame and defaults to single
-(`jax_snlc_core.utils.precision`); importing this package fixes nothing.
+(`jax_snlc_core.utils`); importing this package fixes nothing.
 """
 
 __version__ = "0.1.0"
 __author__ = "Matthew Grayling"
 
-from .config import BBCConfig
-from .config_parser import parse_bbc_input
-from .results import BBCOutput
-from .run import run_bbc, run_bbc_fit, run_bbc_grid
-from .zbins import ZBinGrid
-from .inputs import build_config
-from .api import DistanceFitResult, fit_distances
+from .config import BBCConfig, build_config, parse_bbc_input
+from .output import BBCOutput
+from .run import DistanceFitResult, fit_distances, run_bbc, run_bbc_fit, run_bbc_grid
+from .binning import ZBinGrid
 
 __all__ = ["BBCConfig", "BBCOutput", "ZBinGrid", "parse_bbc_input",
            "fit_distances", "DistanceFitResult", "run_bbc", "run_bbc_fit", "run_bbc_grid", "build_config"]

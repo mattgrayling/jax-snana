@@ -6,13 +6,11 @@ Reads $SNDATA_ROOT/SURVEY.DEF (bundled fixture on CI) for survey name->id.
 import numpy as np
 import pytest
 
-from jax_salt2mu.config import BBCConfig, MASK_BIASCOR_SAMPLE
-from jax_salt2mu.samples import (
-    FieldGroup, field_groups, partition_idsamples, assign_to_samples,
-    sample_binsize, match_field_group,
-)
+from jax_salt2mu.config import MASK_BIASCOR_SAMPLE, BBCConfig
+from jax_salt2mu.samples import (FieldGroup, assign_to_samples, field_groups,
+                                 match_field_group, partition_idsamples, sample_binsize)
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.utils.error_handling import SNANAError
 
 
 # SURVEY.DEF ids
@@ -217,3 +215,13 @@ def test_auto_partition_orders_by_idsurvey_not_surveydef():
     by_index = {s.idsample: s.surveygroup for s in samples}
     assert by_index[0] == "YSE_ZTF" and by_index[1] == "CNIa"
     assert list(idsample[:2]) == [1, 0]     # the 20 event -> IDSAMPLE 1
+
+
+def test_survey_selection_can_reject_every_event():
+    """An empty partition retains rejected IDs instead of indexing with floats."""
+    config = _config()
+    config.idsurvey_select = (SDSS,)
+    ids, samples = partition_idsamples(
+        np.array([DES]), None, np.array([0.3]), np.array([False]), config)
+    np.testing.assert_array_equal(ids, [-9])
+    assert samples == []

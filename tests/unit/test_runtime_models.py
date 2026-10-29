@@ -1,20 +1,21 @@
 """Models registered after consumer imports reach parsers and output tables."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated, Literal
 
 import numpy as np
 import pytest
 
 # Import consumers before registering anything, as in an active notebook.
-import jax_pipeline
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import (MODEL_REGISTRY, FittedModel, SimulatedModel, SNModel,
+                                  infer_model_type_from_path, register_model)
 from jax_snlc_fit.config_parser import parse_fit_input_file
-from jax_snlc_fit.sntable import snana_sim_block
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_core.models import (
-    FittedModel, MODEL_REGISTRY, SNModel, SimulatedModel,
-    infer_model_type_from_path, register_model,
-)
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_fit.output import snana_sim_block
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 class RuntimeModel(SNModel, SimulatedModel, FittedModel):
@@ -109,3 +110,71 @@ def test_documented_model_simulates_from_its_declaration_alone(tmp_path):
     assert np.all((width >= 5.0) & (width <= 25.0)) and np.std(width) > 0.0
     header = simulation.model.get_snana_header_params({'width': width})
     assert list(header) == ['SIM_WIDTH']
+
+
+
+def test_postponed_annotations_preserve_input_markers():
+    """Resolving annotations retains consumer restrictions and allowed values."""
+    from jax_snlc_core.models.input_keys import model_input_keys
+
+    class ExtendedRuntime(RuntimeModel):
+        runtime_option: int = 3
+        fit_choice: Annotated[Literal['a', 'b'], 'FIT_ONLY'] = 'a'
+        sim_scale: Annotated[float | None, 'SIM_ONLY'] = None
+        bbc_scale: Annotated[float, 'BBC_ONLY'] = 1.
+
+    fit = model_input_keys(ExtendedRuntime, 'fit')
+    sim = model_input_keys(ExtendedRuntime, 'sim')
+    bbc = model_input_keys(ExtendedRuntime, 'bbc')
+    assert fit['RUNTIME_OPTION'].kind is int
+    assert fit['FIT_CHOICE'].allowed == ('a', 'b')
+    assert 'SIM_SCALE' not in fit and 'BBC_SCALE' not in fit
+    assert sim['SIM_SCALE'].kind is float
+    assert 'FIT_CHOICE' not in sim and 'BBC_SCALE' not in sim
+    assert set(bbc) == {'BBC_SCALE'}
+
+
+
+def test_postponed_dataclass_model_annotations():
+    """A dataclass extension exposes its new option without exposing model state."""
+    from jax_snlc_core.models import SALTModel, model_input_keys
+
+    @dataclass(eq=False)
+    class ExtendedSALT(SALTModel):
+        extra_setting: float = 1.
+
+    keys = model_input_keys(ExtendedSALT)
+    assert keys['EXTRA_SETTING'].kind is float
+    assert set(keys) == set(model_input_keys(SALTModel)) | {'EXTRA_SETTING'}
+
+
+def test_subclass_input_markers_replace_inherited_markers():
+    """Consumer restrictions apply to the most-derived declaration of a key."""
+    from jax_snlc_core.models.input_keys import model_input_keys
+
+    class Parent(RuntimeModel):
+        option: Annotated[float, 'FIT_ONLY'] = 1.
+
+    class Child(Parent):
+        option: Annotated[int, 'SIM_ONLY'] = 2
+
+    assert 'OPTION' in model_input_keys(Parent, 'fit')
+    assert 'OPTION' not in model_input_keys(Child, 'fit')
+    assert model_input_keys(Child, 'sim')['OPTION'].kind is int
+    assert 'OPTION' not in model_input_keys(Child, 'bbc')
+
+
+def test_subclass_dataclass_field_replaces_inherited_input_exclusion():
+    """A subclass can expose a field that its parent excluded from input."""
+    from jax_snlc_core.models.input_keys import model_input_keys
+
+    @dataclass
+    class Parent:
+        option: float = field(default=1., metadata={'input': False})
+
+    @dataclass
+    class Child(Parent):
+        option: float = 2.
+
+    assert 'OPTION' not in model_input_keys(Parent)
+    assert 'OPTION' in model_input_keys(Child)

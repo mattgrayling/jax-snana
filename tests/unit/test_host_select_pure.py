@@ -3,12 +3,8 @@
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_sim.hostlib.hostlib_selection import (
-    _build_marginal_cdf,
-    _searchsorted_rows,
-    empty_host_windows,
-    select_hosts,
-)
+from jax_snlc_sim.hostlib.selection import (
+    _build_marginal_cdf, _searchsorted_rows, draw_host_indices, empty_host_windows)
 
 
 def _draw_window(weights, n_draws=20000):
@@ -17,9 +13,9 @@ def _draw_window(weights, n_draws=20000):
     galaxy_z = jnp.array([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
     cumsum = jnp.cumsum(jnp.asarray(weights, dtype=jnp.float32))[None, :]
     uniforms = (jnp.arange(n_draws, dtype=jnp.float32) + 0.5) / n_draws
-    chosen = select_hosts(jnp.full(n_draws, 0.25, dtype=jnp.float32),
-                          uniforms, jnp.zeros(n_draws, dtype=jnp.int32),
-                          galaxy_z, cumsum, jnp.array([0.06]))
+    chosen = draw_host_indices(jnp.full(n_draws, 0.25, dtype=jnp.float32),
+                               uniforms, jnp.zeros(n_draws, dtype=jnp.int32),
+                               galaxy_z, cumsum, jnp.array([0.06]))
     return np.bincount(np.asarray(chosen), minlength=4) / n_draws
 
 
@@ -89,7 +85,7 @@ def test_select_hosts_distributes_across_bins():
     bin_idx = jnp.array([0] * 20 + [1] * 20 + [2] * 20, dtype=jnp.int32)
     dztol = jnp.array([0.0, 1.0])  # huge tol so the whole library is candidate
 
-    selections = np.asarray(select_hosts(
+    selections = np.asarray(draw_host_indices(
         sn_z, randoms, bin_idx, galaxy_z, cumsum, dztol,
     ))
     # Bin 0 should choose lower-index galaxies on average than bin 2.
@@ -117,14 +113,14 @@ def test_select_hosts_mixed_bins_match_per_bin_batches():
     randoms = jnp.asarray(rng.uniform(size=n_sne), dtype=jnp.float32)
     bin_idx = jnp.asarray(rng.integers(0, 3, size=n_sne), dtype=jnp.int32)
 
-    mixed = np.asarray(select_hosts(
+    mixed = np.asarray(draw_host_indices(
         sn_z, randoms, bin_idx, galaxy_z, cumsum, dztol))
 
     per_bin = np.empty(n_sne, dtype=np.int32)
     bin_idx_np = np.asarray(bin_idx)
     for ibin in range(3):
         sel = np.where(bin_idx_np == ibin)[0]
-        per_bin[sel] = np.asarray(select_hosts(
+        per_bin[sel] = np.asarray(draw_host_indices(
             sn_z[sel], randoms[sel],
             jnp.full(len(sel), ibin, dtype=jnp.int32),
             galaxy_z, cumsum, dztol))

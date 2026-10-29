@@ -52,7 +52,7 @@ In Python, `data` is a `Sim` or `Data` stage and `data_fit` its corresponding
 
 ```python
 from jax_pipeline import Classify, run
-from jax_pipeline.classifiers.supernnova import SuperNNova
+from jax_pipeline.supernnova import SuperNNova
 
 supernnova = SuperNNova(filters=("DES-g", "DES-r", "DES-i", "DES-z"))
 classified = Classify("classified", supernnova, fit=data_fit, photometry=data,
@@ -105,7 +105,7 @@ In Python, the following trains a classifier and applies it to `data`:
 
 ```python
 from jax_pipeline import Classify, Sim, Train, run
-from jax_pipeline.classifiers.supernnova import SuperNNova
+from jax_pipeline.supernnova import SuperNNova
 
 supernnova = SuperNNova(filters=("DES-g", "DES-r", "DES-i", "DES-z"))
 training = Sim("train_sim", ["train_ia.input", "train_cc.input"])
@@ -129,7 +129,7 @@ walkthrough](https://supernnova.readthedocs.io/latest/training/index.html)
 and [settings
 documentation](https://supernnova.readthedocs.io/latest/configuration/index.html)
 for their meaning. The {py:class}`SuperNNova API
-<jax_pipeline.classifiers.supernnova.SuperNNova>` lists the arguments
+<jax_pipeline.supernnova.SuperNNova>` lists the arguments
 accepted by jax-SNANA and their defaults.
 
 ## Importing existing probabilities

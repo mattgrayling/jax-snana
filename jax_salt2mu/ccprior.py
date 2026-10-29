@@ -6,23 +6,23 @@ residuals in redshift and named model coordinates. Its per-cell Gaussian
 (DMUAVG, DMURMS) is rebuilt every fit iteration from the current nuisance parameters
 (so it is autodiff-clean). The data likelihood becomes BEAMS: ``-2 ln[P_Ia + P_CC]``.
 
-The per-cell reduction and the BEAMS chi2 live in likelihood.py (they run inside
-the jitted loss); this module builds the fixed init inputs: cell assignments,
-per-node CC biasCor, mumodel, and pIa.
+This module builds the fixed inputs and evaluates the contaminant prior and
+BEAMS probabilities used by the likelihood.
 """
 
 from typing import Dict, NamedTuple, Tuple
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 
-from .cellgrid import BinInfo
+from .biascor import precompute_fitparbias_nodes
+from .binning import BinInfo, coeff_weights
 from .config import lcpar_windows, map_bins, parval
-from .distances import mu_coef, mu_variance_scaled
-from .tablevar import force_probcc0
-from .biascor_apply import precompute_fitparbias_nodes
-from .tablevar import CUTBIT_BIASCOR
+from .distances import bias_coef, mu_coef, mu_lcpar_coef, mu_variance_scaled
+from .tablevar import CUTBIT_BIASCOR, force_probcc0
 
 DMUMIN, DMUMAX = -3.0, 4.0        # SALT2mu.c:17288
 MINEVT_PER_CELL = 5               # SALT2mu.c:17377 (strict >, so needs >=6)
@@ -104,7 +104,7 @@ def build_ccprior_bins(config, model) -> Tuple[BinInfo, ...]:
     cuts = lcpar_windows(model, config)
     return (_ccprior_bininfo(config.zmin, config.zmax, config.nzbin_ccprior),
             *(_ccprior_bininfo(*cuts[name], count)
-              for name, count in map_bins(model, config, "ccprior_bins").items()))
+              for name, count in map_bins(model.ccprior_bins, config.ccprior_bins).items()))
 
 
 def cell_index(bins, values) -> np.ndarray:
@@ -127,12 +127,12 @@ def build_ccprior(ccprior_tv, cc_idsample, maps, model, config
     share these."""
 
     bins = build_ccprior_bins(config, model)
-    names = tuple(map_bins(model, config, "ccprior_bins"))
+    names = tuple(map_bins(model.ccprior_bins, config.ccprior_bins))
     cells_per_sample = _cells_per_sample(bins)
     ncell = cells_per_sample * max(len(maps.samples), 1)
 
     cc_fval, _, _, cc_ok = precompute_fitparbias_nodes(
-        ccprior_tv, maps, model, config.min_per_cell_biascor,
+        ccprior_tv, maps, config.min_per_cell_biascor,
         idsample=cc_idsample)
     # SNANA records this on the CC sample's CUTMASK too, so it reaches NEVT_CCPRIOR
     ccprior_tv.cutbits[~cc_ok] |= 1 << CUTBIT_BIASCOR
@@ -162,11 +162,38 @@ def build_ccprior(ccprior_tv, cc_idsample, maps, model, config
         dmu_max=dmu_window_max(config.dmubin_ccprior)), ncell
 
 
-def ccprior_data(prior, data_tv, data_accept, maps, model, config) -> CCPriorInputs:
+def pad_ccprior(prior, n_pad, template=None):
+    """Pad a simulation prior with finite, zero-weight rows."""
+    n = len(prior.cc_z)
+    if n_pad < n:
+        raise SNANAError(f"CC-prior capacity {n_pad} is smaller than {n} rows",
+                         function_name="pad_ccprior")
+    if n == n_pad:
+        return prior
+    source = prior if n else template
+    if source is None or not len(source.cc_z):
+        raise SNANAError("an empty prior needs a compatible finite row for padding",
+                         function_name="pad_ccprior")
+    def pad(values, source_values):
+        row = jnp.asarray(source_values[-1:])
+        return jnp.concatenate((jnp.asarray(values), jnp.repeat(row, n_pad - n, axis=0)))
+
+    return prior._replace(
+        cc_z=pad(prior.cc_z, source.cc_z),
+        cc_logmass=pad(prior.cc_logmass, source.cc_logmass),
+        cc_mumodel=pad(prior.cc_mumodel, source.cc_mumodel),
+        cc_fitparbias_nodes=pad(prior.cc_fitparbias_nodes, source.cc_fitparbias_nodes),
+        cc_cell=pad(prior.cc_cell, source.cc_cell),
+        cc_lcpar={name: pad(values, source.cc_lcpar[name])
+                  for name, values in prior.cc_lcpar.items()},
+        cc_valid=jnp.concatenate((jnp.asarray(prior.cc_valid), jnp.zeros(n_pad - n))))
+
+
+def ccprior_data(prior, data_tv, data_accept, model, config) -> CCPriorInputs:
     """``prior`` (from :func:`build_ccprior`) with the accepted data events'
     CC cells and P(Ia)."""
     bins = build_ccprior_bins(config, model)
-    names = tuple(map_bins(model, config, "ccprior_bins"))
+    names = tuple(map_bins(model.ccprior_bins, config.ccprior_bins))
     data_cell = (cell_index(bins, (data_tv.zhd[data_accept],
                                  *(data_tv.lcpar[n][data_accept] for n in names)))
                  + np.clip(data_tv.idsample[data_accept], 0, None)
@@ -196,3 +223,100 @@ def _pIa(data_tv, config) -> np.ndarray:
     if config.varname_pia:                       # EXIST_pIa -> REQUIRE_pIa (SALT2mu.c:22175)
         pia = np.where(force_probcc0(data_tv, config), 1.0, pia)
     return pia
+
+
+def _ccprior_dPdmu(spec, cc, nuis, mures):
+    """Per data event dPdmu_CC: rebuild the CC-simulation cell Gaussian map at
+    the current nuisance parameters (fcn_ccprior_muzmap + prob_CCprior_sim),
+    then evaluate at each data event's residual. Autodiff-clean: cell ids are fixed."""
+    model = spec.model
+    nuis = {**nuis, **model.ccprior_fixed_nuisance}
+    u_flags = dict(spec.u_flags)
+    names = model.lcpar_names
+    lcdict = {n: cc.cc_lcpar[n] for n in names}
+    # SNANA evaluates the CC-simulation bias correction at gammaDM=0,
+    # independently of the data's fitted mass step and the map's midpoint.
+    host = {"z": cc.cc_z, "gamma_var": cc.cc_logmass,
+            "gammadm_offset": 0.0, "use_gamma0": False}
+    mu_cc = model.compute_mu(lcdict, nuis, host, u_flags, apply_mass_step=False)
+    v = mu_lcpar_coef(model, names, nuis, cc.cc_z, cc.cc_logmass, u_flags)
+    coeff_vals = model.biascor_coeff_values(nuis, host, u_flags)
+    wgt = coeff_weights(coeff_vals, cc.coeff_avg, cc.coeff_binsize,
+                        mu_cc.shape[0])
+    proj = jnp.einsum("ni,nNi->nN", bias_coef(v, spec.cc_bias_names, jnp),
+                      cc.cc_fitparbias_nodes)
+    muBias = jnp.einsum("nN,nN->n", proj, wgt)
+    dmu = mu_cc - cc.m0_default - cc.cc_mumodel - muBias
+
+    w = cc.cc_valid * ((dmu >= DMUMIN) & (dmu < cc.dmu_max))
+    ncc = jax.ops.segment_sum(w, cc.cc_cell, spec.cc_ncell)
+    savg = jax.ops.segment_sum(w * dmu, cc.cc_cell, spec.cc_ncell)
+    ssq = jax.ops.segment_sum(w * dmu * dmu, cc.cc_cell, spec.cc_ncell)
+    denom = jnp.where(ncc > 0, ncc, 1.0)
+    avg = savg / denom
+    var = ssq / denom - avg * avg
+    real = ncc > MINEVT_PER_CELL                       # >=6 events, else flat
+    # keep the sqrt argument strictly positive so empty/flat cells (discarded by
+    # the where below) don't feed a sqrt(0) NaN into the gradient.
+    std = jnp.sqrt(jnp.where(real, jnp.maximum(var, 1e-12), 1.0))
+    dmuavg = jnp.where(real, avg, 0.0)
+    dmurms = jnp.where(real, std, 9999.0)
+
+    drms = dmurms[cc.data_cell]
+    resid = (mures - dmuavg[cc.data_cell]) / drms
+    return jnp.where(drms > 1e-7, (PIFAC / drms) * jnp.exp(-0.5 * resid * resid), 0.0)
+
+
+def h11_dPdmu(h11, nuis, mures):
+    """Per data event dPdmu_CC from the H11 polynomial prior (prob_CCprior_H11,
+    SALT2mu.c:18353): mu-offset and sigintCC are 2nd-order poly(z); the CC width is
+    muerrsq_raw + sigintCC^2 (always positive, so no sqrt guard)."""
+    z = h11.z
+    ccpoly = nuis["H11mucc0"] + nuis["H11mucc1"] * z + nuis["H11mucc2"] * z * z
+    sigcc = nuis["H11sigcc0"] + nuis["H11sigcc1"] * z + nuis["H11sigcc2"] * z * z
+    sqsig = h11.muerrsq_raw + sigcc * sigcc
+    dmu = mures - ccpoly
+    return (PIFAC / jnp.sqrt(sqsig)) * jnp.exp(-0.5 * dmu * dmu / sqsig)
+
+
+def beams_probs(nuis, mures, muerrsq, dPdmu_CC, pIa, fitflag2, muerrsq_last,
+                bayes=False):
+    """BEAMS per-event ``(PROBCC_BEAMS, chi2)`` (MNCHI2FUN, SALT2mu.c:5518-5617).
+
+    The Ia term is a Gaussian in the fitted residual scaled by ``PIFAC/muerr_update``,
+    where ``muerr_update`` is the current mu-error under fitflag_sigmb=2 and the frozen
+    ``muerrsq_last`` otherwise (:5537). ``bayes`` applies scalePCC as the H11
+    Eq. 4 Bayes factor instead of the class-weight rescale (u13=2,
+    :5530-5535). ``chi2`` is ``-2ln`` of the class-weighted probability sum;
+    SNANA substitutes a large penalty where that sum vanishes (:5616).
+    The single source for the fit loss, the output columns and the chi2 grid.
+    """
+
+    muerrsq_update = muerrsq if fitflag2 else muerrsq_last
+    dPdmu_Ia = (jnp.exp(-0.5 * mures * mures / muerrsq)
+                * PIFAC / jnp.sqrt(muerrsq_update))
+    scale = nuis["scalePCC"]
+    if bayes:
+        ptot_ia = pIa * scale / (1.0 + (scale - 1.0) * pIa)
+        prob_cc = (1.0 - ptot_ia) * dPdmu_CC
+        prob_sum = ptot_ia * dPdmu_Ia + prob_cc
+    else:
+        psum = pIa + scale * (1.0 - pIa)
+        prob_cc = (scale * (1.0 - pIa) / psum) * dPdmu_CC
+        prob_sum = (pIa / psum) * dPdmu_Ia + prob_cc
+    arg = prob_sum * (BEAMS_PROB_NORM / PIFAC)
+    chi2 = jnp.where(arg > 0.0,
+                     -2.0 * jnp.log(jnp.maximum(arg, _BEAMS_ARG_FLOOR)),
+                     CHI2_BEAMS_NOPROB)
+    # A zero-density event retains the likelihood penalty, but contributes
+    # neither Ia nor CC posterior weight. Callers identify it by that penalty.
+    denominator = jnp.where(prob_sum > 0.0, prob_sum, 1.0)
+    return jnp.where(prob_sum > 0.0, prob_cc / denominator, 0.0), chi2
+
+
+def beams_dPdmu_CC(spec, inputs, nuis, mures):
+    """dPdmu_CC from whichever CC prior is configured: the binned sim map or H11."""
+    if inputs.h11prior is not None:
+        return h11_dPdmu(inputs.h11prior, nuis, mures), inputs.h11prior.pIa
+    return (_ccprior_dPdmu(spec, inputs.ccprior, nuis, mures),
+            inputs.ccprior.pIa)

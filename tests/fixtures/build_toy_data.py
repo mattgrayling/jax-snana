@@ -649,6 +649,8 @@ def write_dust_maps() -> None:
         gal_l = np.arctan2(-nsgp * v, u)
         ebv = 0.015 + 1.5 * rho ** 8 * (1.0 + 0.6 * np.sin(3.0 * gal_l))
         hdu = fits.PrimaryHDU(ebv.astype(np.float32))
+        hdu.header["CTYPE1"] = "LAMBERT--X"
+        hdu.header["CTYPE2"] = "LAMBERT--Y"
         hdu.header["LAM_NSGP"] = nsgp
         hdu.header["LAM_SCAL"] = scale
         hdu.header["CRPIX1"] = crpix

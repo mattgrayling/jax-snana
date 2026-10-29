@@ -28,8 +28,8 @@ order:
 3. Either way, each path listed in `$SNDATA_ROOT/SIM/PATH_SNDATA_SIM.LIST`,
    then `$SNDATA_ROOT/SIM` itself.
 
-The command-line fitter reads SNANA FITS data versions and Rubin HATS
-catalogues. For Python fits, photometry and metadata can be supplied as
+The command-line fitter reads SNANA FITS and TEXT data versions and Rubin
+HATS catalogues. For Python fits, photometry and metadata can be supplied as
 arrays or tables to {ref}`LightCurveFitter <fit-from-python>`.
 
 (preparing-text-data)=
@@ -53,7 +53,13 @@ DOCUMENTATION_END:
 For custom transmission curves, {ref}`format-kcor` gives a calibration-file
 example.
 
-Convert this dataset with SNANA's `snana.exe`, using its full data tree.
+Fit the TEXT version directly by setting `VERSION_PHOTOMETRY = 'MY_DATA_TEXT'`
+and `PRIVATE_DATA_PATH = '/path/to/MY_DATA_TEXT'` in the fitter input, along
+with the appropriate `KCOR_FILE`. TEXT and FITS use the same fitting and
+selection path.
+
+If you need a FITS copy, convert it with SNANA's `snana.exe`, using its full
+data tree.
 Use a separate output directory that does not contain the TEXT version, so
 SNANA cannot discover the same dataset through both the working directory
 and `PRIVATE_DATA_PATH`. From that output directory, run:

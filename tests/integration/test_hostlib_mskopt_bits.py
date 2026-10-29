@@ -14,18 +14,17 @@ Targets the bits that lacked any dedicated test coverage:
 import os
 from pathlib import Path
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 import pytest
 from astropy.io import fits
 from scipy.special import gammaincinv
 
-
-from jax_snlc_core.models.salt_model import compute_expected_x0_scale
-from jax_snlc_core.physics.cosmology import zcmb_to_zhelio, zhelio_to_zcmb
+from jax_snlc_core.cosmology import zcmb_to_zhelio, zhelio_to_zcmb
+from jax_snlc_core.models.salt import compute_expected_x0_scale
+from jax_snlc_core.snana_files import open_text
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_core.random import root_key
 
 
 _HOSTLIB = "$JAX_TEST_FIXTURE_ROOT/hostlib/JAX_TEST.HOSTLIB"
@@ -270,7 +269,7 @@ def test_usesnpar_override(tmp_path):
 def test_usesnpar_without_snpar_columns_aborts(tmp_path):
     """Bit 64 with a HOSTLIB carrying no SN-param column is fatal
     (sntools_host.c:2616-2624)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     inp = tmp_path / "input.input"
     _write_input(inp, mskopt=322)
     with pytest.raises(SNANAError, match="zero SN params"):
@@ -282,7 +281,7 @@ def test_hostlib_must_span_the_generation_redshift_range(tmp_path):
     (check_redshift_HOSTLIB, sntools_host.c:3322). Without the check jax
     assigned the nearest galaxy instead, breaching HOSTLIB_DZTOL for most
     of the sample: verified against snlc_sim.exe, which aborts here."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     inp = tmp_path / "input.input"
     # JAX_TEST.HOSTLIB spans z 0.02-0.50; ask for SNe out to z=0.70.
     _write_input(inp, mskopt=258, redshift_max=0.70)
@@ -339,7 +338,7 @@ def _heads(snana_fixture, name, tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     results, selection, spectra = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, name.upper(), selection, spectra_cache=spectra, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, name.upper(), selection, spectra_by_sn=spectra, output_dir=str(tmp_path))
     heads = {}
     for side, path in (("snana", fx.head_fits),
                        ("jax", next(tmp_path.rglob("*HEAD.FITS*")))):

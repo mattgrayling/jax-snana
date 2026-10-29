@@ -54,7 +54,7 @@ version written there.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Run
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
    :omit-sections: Set by the program rather than by an input key
 ```
 
@@ -132,7 +132,7 @@ velocities and the Sun's motion towards the CMB apex.
 .. configtable:: jax_snlc_sim.simulation.Rates
    :omit-sections: Fixed, with no input key of its own
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 ## Survey observations and detection
@@ -162,7 +162,7 @@ they were observed with.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Survey
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
    :omit-sections: Fixed, with no input key of its own
 ```
 
@@ -280,7 +280,7 @@ and polynomial convention. `ZVARIATION` and `SUBPOP` are described there too.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Model
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
    :omit-sections: Resolved from GENMODEL, Set by the model's own keys
 ```
 
@@ -320,7 +320,7 @@ and Gaussian components are listed under {ref}`sim-population-settings`;
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Host
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
    :omit-sections: Turned on by naming any host-dust key
 ```
 
@@ -387,7 +387,7 @@ does not change the flux.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Instrument
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
    :omit-sections: Fixed, with no input key of its own
 ```
 
@@ -428,7 +428,7 @@ signal-to-noise is too low.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Cuts
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 (sim-cut-options)=
@@ -474,7 +474,7 @@ from the range the `CIDRAN` keys define.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Output
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 (sim-output-options)=
@@ -505,7 +505,7 @@ one.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Cosmology
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 ## Milky Way extinction
@@ -521,7 +521,7 @@ so the output and the cuts use corrected magnitudes.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.MWDust
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 (sim-mwebv-options)=
@@ -575,7 +575,7 @@ redshift.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Lensing
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 ## Spectra
@@ -595,7 +595,7 @@ with its broadband magnitude.
 ```{eval-rst}
 .. configtable:: jax_snlc_sim.simulation.Spectra
    :field-keys:
-   :keys-from: jax_snlc_sim.config_parser
+   :keys-from: jax_snlc_sim.inputs
 ```
 
 (sim-spectrograph-options)=

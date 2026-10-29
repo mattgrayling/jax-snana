@@ -7,13 +7,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import (
-    flat_cpl_comoving_integral,
-    flat_cpl_e2,
-)
-from jax_snlc_core.utils import SNANAError, sndata_root
-from jax_snlc_core.utils.precision import float_dtype
+from jax_snlc_core.cosmology import flat_cpl_comoving_integral, flat_cpl_e2
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import sndata_root
+from jax_snlc_core.utils import LIGHT_KM, float_dtype
 
 from .config import WFITConfig
 
@@ -58,13 +55,7 @@ def load_bao_data(config: WFITConfig,
             mean.append(float(words[1]))
             observable.append(_BAO_TYPES[words[2]])
 
-    covariance_rows: list[list[float]] = []
-    with open(cov_path, "rt") as stream:
-        for line in stream:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                covariance_rows.append([float(value) for value in stripped.split()])
-    covariance = np.asarray(covariance_rows, dtype=np.float64)
+    covariance = np.loadtxt(cov_path, dtype=np.float64, ndmin=2)
     ndata = len(mean)
     if covariance.shape != (ndata, ndata):
         raise SNANAError(

@@ -5,11 +5,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from jax_pipeline.synchronise import fit_prepared_common_sample
+from jax_salt2mu.preparation import read_cells, prepare_biascor_maps, prepare_ccpriors
 from jax_salt2mu.config import BBCConfig
 from jax_salt2mu.tablevar import EVENT_TYPE_DATA, match_cid_selection, read_cid_selection
-from jax_pipeline.synchronise import fit_common_sample
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 
 def test_selection_distinguishes_surveys_and_fields_and_preserves_bins(tmp_path):
@@ -49,7 +50,10 @@ def test_two_pass_rules_and_noreject_exceptions(tmp_path):
         (2, 0): (replace(config, cutwin=[('SYNCCUT', 2., 2.)]), {EVENT_TYPE_DATA: data}),
         (0, 2): (replace(config, cutwin=[('SYNCCUT', 0., 0.)]), {EVENT_TYPE_DATA: data}),
     }
-    result = fit_common_sample(grid, ['CAL', 'NOREJECT_CAL'], ['CUT', 'NOREJECT_CUT'], tmp_path)
+    cells = read_cells(grid)
+    maps = prepare_biascor_maps(cells)
+    priors = prepare_ccpriors(cells, maps)
+    result = fit_prepared_common_sample(cells, maps, priors, ['CAL', 'NOREJECT_CAL'], ['CUT', 'NOREJECT_CUT'], tmp_path)
     accepted = {(0, 0): [str(i) for i in range(1, 10)],
                 (1, 0): [str(i) for i in range(1, 7)],
                 (0, 1): [str(i) for i in range(4, 10)],
@@ -77,8 +81,11 @@ def test_empty_common_sample_fails_before_fitting(tmp_path):
     config = BBCConfig(nzbin=1, zmin=.1, zmax=1., fitflag_sigmb=0)
     grid = {cell: (config, {EVENT_TYPE_DATA: replace(data, df=data.df.iloc[[row]])})
             for cell, row in (((0, 0), 0), ((0, 1), 1))}
+    cells = read_cells(grid)
+    maps = prepare_biascor_maps(cells)
+    priors = prepare_ccpriors(cells, maps)
     with pytest.raises(SNANAError, match='no events survive'):
-        fit_common_sample(grid, [], ['CUT'], tmp_path)
+        fit_prepared_common_sample(cells, maps, priors, [], ['CUT'], tmp_path)
     assert (tmp_path / 'initial/FITOPT000_MUOPT000/ACCEPT.LIST').is_file()
     assert (tmp_path / 'initial/FITOPT000_MUOPT001/ACCEPT.LIST').is_file()
     assert not (tmp_path / 'BBC_ACCEPT_SUMMARY.LIST').exists()

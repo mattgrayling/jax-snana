@@ -4,16 +4,16 @@
 flat-cosmology fitter for binned or unbinned Hubble diagrams, with one common
 likelihood and three inference backends:
 
-- `laplace` (default): NumPyro `AutoLaplaceApproximation`;
+- `laplace` (default): a Newton-LM minimum with Gaussian errors from the Hessian;
 - `nuts`: NumPyro NUTS with convergence diagnostics;
 - `grid`: chunked JAX evaluation using SNANA's default parameter axes.
 
 WFIT does not perform SALT2mu/BBC binning. It consumes the resulting M0DIF, or
 an unbinned FITRES containing redshift, distance modulus, and uncertainty.
 
-The other stages read the frame from an input key; wfit, having no input file,
-takes `-double_precision`, defaulting to 0. `-double_precision 1` runs the
-cosmology chain in double precision.
+Precision is selected by `double_precision` in YAML or Python settings, or
+`-double_precision 1` on the command line. The CLI defaults to single
+precision; Python calls retain the active precision when the setting is omitted.
 
 `run_wfit` returns one result dict per realisation, keyed by `method`,
 `point_estimate`, `summaries`, `covariance`, `correlation`, `likelihood`,
@@ -55,8 +55,8 @@ divergences; with those settings it reached maximum R-hat 1.0017, minimum ESS
 1528, and posterior means within 0.005 grid standard deviations. The faster
 defaults correctly marked that difficult case as unconverged.
 
-The default summary is `<HD>.wfit.yaml`. Residual, cospar, grid, marginalized
-probability, sample, covariance, and precision files are opt-in.
+The default outputs are `<HD>.wfit.yaml` and `<HD>.cospar`. Residual, grid,
+marginalized probability, sample, covariance, and precision files are opt-in.
 
 ## Multiple realisations
 
@@ -80,15 +80,16 @@ hubble_diagram:
 
 All internal arrays retain a leading realisation axis, including the
 one-realisation case. The grid evaluates all realisations natively, while
-AutoLaplace and NUTS are vectorized over the axis with `jax.vmap`: each
+Laplace and NUTS are vectorized over the axis with `jax.vmap`. In NUTS, each
 realisation runs its own NumPyro `MCMC` with `chain_method="vectorized"`, so
 every realisation and chain has its own random key, step-size adaptation and
 dense mass matrix. Likelihoods are not combined into a joint posterior.
 
 Realisations may retain different numbers of rows: shorter ones are padded to
 the longest and masked out of every likelihood, so degrees of freedom stay
-per-realisation. Every realisation must share one covariance representation,
-and covariance matrices must be supplied for all realisations or none. An
+per-realisation. Supplied Python diagrams may use different covariance
+representations; the driver groups compatible diagrams for fitting and preserves
+the original result order. File inputs share the configured representation. An
 external covariance path may be shared, or YAML may provide one covariance
 path per Hubble diagram. The summary YAML contains a `realisations` list.
 Per-realisation residual, COSPAR, grid, probability, and sample outputs
@@ -149,10 +150,12 @@ Covariance meaning must be declared; it is never inferred from a filename:
 - `total`: WFIT uses the supplied covariance instead of adding `MUERR²`.
   SALT2mu's directly written `.COV` is this kind.
 - `total_inverse`: WFIT uses an already-inverted total covariance.
+- `factorized`: WFIT uses compact diagonal-plus-systematic-vector factors.
 
 Row-removing cuts and error changes cannot be applied safely to a total inverse
 covariance and are rejected. Text covariance format is the SNANA dimension
-followed by row-major values. NPZ accepts a `cov` array or a single array.
+followed by row-major values. Dense NPZ files contain a `cov` matrix, or its
+upper triangle with an `nsn` row count.
 
 ## Blinding
 

@@ -1,11 +1,11 @@
 """``apply_fluxcal_fudges``: SNANA EXEC_FUDGE_FLUXCAL (snana.F90:18700-18948),
-and ``_flux_baselines``, the jax key FLUXCAL_BASELINE_CORRECT."""
+and ``flux_baselines``, the jax key FLUXCAL_BASELINE_CORRECT."""
 
 import numpy as np
 import pytest
 
-from jax_snlc_core.photometry.noise import apply_fluxcal_fudges
-from jax_snlc_fit.data_loader import _flux_baselines
+from jax_snlc_core.noise import apply_fluxcal_fudges
+from jax_snlc_fit.calibration import flux_baselines
 
 _NEA = 9.0
 _ARGS = dict(fluxcal=np.array([100.0]), fluxcal_err=np.array([4.0]),
@@ -64,7 +64,7 @@ def test_grouped_flux_baselines():
     group = rng.integers(0, n_groups, 3000)
     err = rng.uniform(20.0, 80.0, group.size)
     flux = rng.normal(-300.0 * (group % 3), err)
-    base, base_err = _flux_baselines(flux, err, group, n_groups)
+    base, base_err = flux_baselines(flux, err, group, n_groups)
     measured = 0
     for k in range(n_groups):
         s = (group == k) & (flux < -3.0 * err)
@@ -80,5 +80,5 @@ def test_grouped_flux_baselines():
 
 def test_a_lone_extreme_epoch_barely_moves_the_baseline():
     flux = np.array([-2100.0, -1950.0, -2050.0, -145000.0])
-    base, _ = _flux_baselines(flux, np.full(4, 100.0), np.zeros(4, int), 1)
+    base, _ = flux_baselines(flux, np.full(4, 100.0), np.zeros(4, int), 1)
     assert base[0] == -2075.0

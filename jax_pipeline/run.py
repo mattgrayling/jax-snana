@@ -11,15 +11,15 @@ from pathlib import Path
 from typing import Any
 
 import jax
+import pandas as pd
 import yaml
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.snana_log import version_string
+from jax_salt2mu.preparation import preparation_step
+from jax_snlc_core.logging import SNANAError, version_string
 
 from .classify import Classify, Train
-from .stages import BBC, Cosmology, Covariance, Data, Fit, FitVersion, Sim, Stage
-from .stages import prepare_bbc_stages, run_bbc_stages
-from jax_salt2mu.preparation import preparation_step
+from .stages import (BBC, Cosmology, Covariance, Data, Fit, FitVersion, Sim, Stage,
+                     prepare_bbc_stages, run_bbc_stages)
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def file_digest(path: Path, *, include_dir: Path | None = None) -> dict:
     except UnicodeDecodeError:
         return digest
     # a SNANA input line ends at its first '#', as the parser reads it
-    # (jax_snlc_sim/config_parser.py, _strip_comment)
+    # (jax_snlc_sim/inputs.py, _strip_comment)
     words = [line.split("#", 1)[0].split() for line in text.splitlines()]
     included = [os.path.expandvars(token)
                 for w in words if w[:1] and w[0] in _INCLUDE_KEYS
@@ -395,7 +395,6 @@ def run(*stages: Stage, outdir: os.PathLike | str = ".", refresh=()) -> dict[str
         manifest["status"] = "reporting"
         _write_manifest(manifest_path, manifest)
         results = {stage.name: produced[stage] for stage in ordered}
-        from .report import cosmology_summary
         summary = cosmology_summary(ordered, results)
         summary_path = root / "COSMOLOGY_SUMMARY.csv"
         if not summary.empty:
@@ -465,3 +464,35 @@ def _finished(stage_dir: Path) -> dict:
     if not done.is_file():
         return {}
     return yaml.safe_load(done.read_text())
+
+
+def cosmology_summary(stages: Sequence[Stage], results: Mapping[str, Any]) -> pd.DataFrame:
+    """One row per cosmology fit and COVOPT, preserving any applied blinding.
+
+    Supply the stages and the results returned by ``run``. Results from separate
+    realisations, sample partitions and cosmology configurations remain separate.
+    The full posterior summaries and diagnostics remain in each WFIT YAML file.
+    """
+    rows = []
+    for stage in stages:
+        if not isinstance(stage, Cosmology):
+            continue
+        covariance = stage.covariance
+        distances = getattr(covariance, "distances", None)
+        for covopt, result in results[stage.name].items():
+            row = dict(cosmology=stage.name, covariance=covariance.name,
+                       distances=getattr(distances, "name", None), covopt=covopt,
+                       realisation=getattr(distances, "realisation", None),
+                       split_index=getattr(distances, "split_index", None),
+                       split_count=getattr(distances, "split_count", None))
+            row.update({name: result.get(name) for name in
+                        ("success", "blinded", "method", "point_estimate_kind")})
+            row.update({name: result.get("fit", {}).get(name) for name in
+                        ("chi2_total", "ndof_hd", "n_rows")})
+            for parameter in result["parameter_order"]:
+                row[parameter] = result["point_estimate"][parameter]
+                summary = result["parameters"][parameter]
+                for field in ("sigma", "q16", "q84"):
+                    row[f"{parameter}_{field}"] = summary.get(field)
+            rows.append(row)
+    return pd.DataFrame(rows)

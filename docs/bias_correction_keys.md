@@ -206,8 +206,8 @@ unsupported keys are listed under {ref}`unsupported-distance-keys`.
 .. configtable:: jax_salt2mu.config.BBCConfig
    :field-keys:
    :field-key-case: preserve
-   :keys-from: jax_salt2mu.config_parser
-   :aliases-from: jax_salt2mu.config_parser
+   :keys-from: jax_salt2mu.config
+   :aliases-from: jax_salt2mu.config
    :omit-sections: Set by the keys the model declares, Not set by an input key
 ```
 

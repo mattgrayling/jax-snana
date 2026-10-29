@@ -28,7 +28,7 @@ The eight input files it expects under `inputs`:
 
 from jax_pipeline import (BBC, Classify, Cosmology, Covariance, Fit,
                           Sim, Train, configure_precision, run)
-from jax_pipeline.classifiers.supernnova import SuperNNova
+from jax_pipeline.supernnova import SuperNNova
 
 configure_precision(True)
 inputs = "inputs"

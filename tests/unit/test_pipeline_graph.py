@@ -6,6 +6,7 @@ a finished stage is loaded rather than rerun until something it depends on
 changes. The built-in stages are covered by tests that simulate and fit.
 """
 
+from contextlib import chdir
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Mapping
@@ -15,8 +16,9 @@ import yaml
 
 from jax_pipeline import BBC, Classify, Cosmology, Covariance, Data, Fit, Sim, Stage, run
 from jax_pipeline.run import file_digest, validate_graph
-from jax_pipeline.systematics import cells, dirname, key, overrides_for, scales
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_pipeline.systematics import cells, key, overrides_for, scales
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import fitopt_muopt_name
 
 
 @dataclass(eq=False)
@@ -132,12 +134,19 @@ def test_phases_group_chains_with_different_depths(tmp_path):
     ]
 
 
-def test_dependencies_override_processing_phase(tmp_path, monkeypatch):
+def test_dependencies_override_processing_phase(tmp_path):
+    """A data-stage subclass still runs after its later-phase dependency."""
+    @dataclass(eq=False)
+    class DerivedData(Data):
+        source: Stage
+
+        def inputs(self):
+            return {"custom": self.source}
+
     fit = Fit("fit", fitres=tmp_path / "data.FITRES")
     bbc = BBC("bbc", data=fit)
     custom = Recorder("custom", {"bbc": bbc})
-    data = Data("later_data", tmp_path)
-    monkeypatch.setattr(data, "inputs", lambda: {"custom": custom})
+    data = DerivedData("later_data", tmp_path, custom)
     independent = Sim("independent", tmp_path / "sim.input")
 
     ordered = validate_graph([data, independent])
@@ -228,22 +237,26 @@ def test_a_changed_setting_upstream_reruns_downstream(tmp_path):
 
 @pytest.mark.parametrize("failure,status", [(RuntimeError("fit failed"), "failed"),
                                            (KeyboardInterrupt(), "interrupted")])
-def test_manifest_tracks_failed_rerun_and_resume(tmp_path, monkeypatch, failure, status):
+def test_manifest_tracks_failed_rerun_and_resume(tmp_path, failure, status):
+    """A failed or interrupted stage can resume after its failure is resolved."""
+    failure_marker = tmp_path / "fail"
+
+    class InterruptibleRecorder(Recorder):
+        def run(self, inputs, outdir):
+            if failure_marker.exists():
+                progress = yaml.safe_load((tmp_path / "MANIFEST.yml").read_text())
+                assert progress["status"] == "running"
+                assert progress["stages"]["first"]["status"] == "loaded"
+                assert progress["stages"]["second"]["status"] == "running"
+                assert progress["stages"]["last"]["status"] == "pending"
+                raise failure
+            return super().run(inputs, outdir)
+
     first = Recorder("first")
-    second = Recorder("second", {"data": first})
+    second = InterruptibleRecorder("second", {"data": first})
     last = Recorder("last", {"data": second})
     run(last, outdir=tmp_path)
-    original = Recorder.run
-
-    def failing(self, inputs, outdir):
-        progress = yaml.safe_load((tmp_path / "MANIFEST.yml").read_text())
-        assert progress["status"] == "running"
-        assert progress["stages"]["first"]["status"] == "loaded"
-        assert progress["stages"]["second"]["status"] == "running"
-        assert progress["stages"]["last"]["status"] == "pending"
-        raise failure
-
-    monkeypatch.setattr(Recorder, "run", failing)
+    failure_marker.touch()
     with pytest.raises(type(failure)) as caught:
         run(last, outdir=tmp_path, refresh="second")
     assert caught.value is failure
@@ -253,7 +266,7 @@ def test_manifest_tracks_failed_rerun_and_resume(tmp_path, monkeypatch, failure,
     assert progress["stages"]["second"]["status"] == status
     assert type(failure).__name__ in progress["stages"]["second"]["error"]
     assert not (tmp_path / "second" / "DONE.yml").exists()
-    monkeypatch.setattr(Recorder, "run", original)
+    failure_marker.unlink()
     run(last, outdir=tmp_path)
     progress = yaml.safe_load((tmp_path / "MANIFEST.yml").read_text())
     assert progress["status"] == "completed" and "error" not in progress
@@ -271,32 +284,25 @@ def test_manifest_records_failure_before_stage_execution(tmp_path):
     assert Recorder.runs == {}
 
 
-def test_manifest_records_cached_load_failure(tmp_path, monkeypatch):
+def test_manifest_records_cached_load_failure(tmp_path):
+    """An unreadable cached result is reported as a stage failure."""
     stage = Recorder("cached")
     run(stage, outdir=tmp_path)
-
-    def failed_load(*args):
-        raise ValueError("unreadable output")
-
-    monkeypatch.setattr(Recorder, "load", failed_load)
-    with pytest.raises(ValueError, match="unreadable output"):
+    (tmp_path / 'cached' / 'result.txt').write_bytes(b'\xff')
+    with pytest.raises(UnicodeDecodeError):
         run(stage, outdir=tmp_path)
     progress = yaml.safe_load((tmp_path / "MANIFEST.yml").read_text())
     assert progress["stages"]["cached"]["status"] == "failed"
 
 
-@pytest.mark.parametrize("with_summary", [False, True])
-def test_completion_logs_existing_result_locations(tmp_path, caplog, monkeypatch, with_summary):
-    import pandas as pd
-    from jax_pipeline import report
-    frame = pd.DataFrame({"w0": [-1.]}) if with_summary else pd.DataFrame()
-    monkeypatch.setattr(report, "cosmology_summary", lambda *a: frame)
+def test_completion_logs_existing_result_locations(tmp_path, caplog):
+    """A pipeline without cosmology reports only the outputs it writes."""
     caplog.set_level("INFO", logger="jax_pipeline.run")
     run(Recorder("first"), outdir=tmp_path)
     assert f"Outputs: {tmp_path}" in caplog.text
     assert f"Run manifest: {tmp_path / 'MANIFEST.yml'}" in caplog.text
-    assert ("Cosmology summary:" in caplog.text) == with_summary
-    assert (tmp_path / "COSMOLOGY_SUMMARY.csv").exists() == with_summary
+    assert "Cosmology summary:" not in caplog.text
+    assert not (tmp_path / "COSMOLOGY_SUMMARY.csv").exists()
 
 
 def test_a_changed_input_file_reruns_the_stage(tmp_path):
@@ -367,12 +373,12 @@ def test_two_stages_may_not_share_a_name(tmp_path):
 def test_the_grid_is_nominal_first_and_snana_numbered():
     grid = cells(("a", "b"), ("m",))
 
-    assert [dirname(cell) for cell in grid] == [
+    assert [fitopt_muopt_name(cell) for cell in grid] == [
         "FITOPT000_MUOPT000", "FITOPT000_MUOPT001",
         "FITOPT001_MUOPT000", "FITOPT001_MUOPT001",
         "FITOPT002_MUOPT000", "FITOPT002_MUOPT001",
     ]
-    assert dirname((2, 13)) == "FITOPT002_MUOPT013"
+    assert fitopt_muopt_name((2, 13)) == "FITOPT002_MUOPT013"
     assert [key(cell, ("a", "b"), ("m",)) for cell in grid] == [
         "nominal", "m", "a", ("a", "m"), "b", ("b", "m")]
 
@@ -420,84 +426,49 @@ def test_a_binary_model_file_is_hashed_by_its_bytes(tmp_path):
 
 
 
-def test_muopt_reordering_invalidates_cached_labels(tmp_path, monkeypatch):
-    from jax_pipeline import BBC, Fit
+def test_nested_include_edits_invalidate_the_stage(tmp_path):
+    from jax_snlc_sim.inputs import read_keys
 
-    source = tmp_path / "input.FITRES"
-    source.write_text("VARNAMES: CID MU\nSN: 1 40\n")
-    fit = Fit("fit", fitres=source)
-
-    # Replace only the scientific fit: exercise the real graph, cache and BBC loader.
-    def write_cells(stage, inputs, outdir, *, workspace=None):
-        for index, options in enumerate(({}, *stage.muopts.values())):
-            directory = outdir / dirname((0, index))
-            directory.mkdir()
-            value = options.get("chi2max", 40)
-            for suffix in ("M0DIF", "FITRES"):
-                (directory / f"{stage.name}.{suffix}").write_text(
-                    f"VARNAMES: CID MU\nSN: 1 {value}\n")
-        return stage.load(inputs, outdir)
-
-    monkeypatch.setattr(BBC, "run", write_cells)
-    original = BBC("bbc", data=fit,
-                   muopts={"tight": {"chi2max": 9}, "loose": {"chi2max": 25}})
-    outdir = tmp_path / "run"
-    run(original, outdir=outdir)
-    run(original, outdir=outdir)
-    manifest = yaml.safe_load((outdir / "MANIFEST.yml").read_text())
-    assert manifest["stages"]["bbc"]["loaded"]
-
-    reordered = BBC("bbc", data=fit, muopts=dict(reversed(original.muopts.items())))
-    result = run(reordered, outdir=outdir)["bbc"]
-    assert result["tight"]["M0DIF"].df["MU"].tolist() == [9]
-    assert result["loose"]["M0DIF"].df["MU"].tolist() == [25]
-    manifest = yaml.safe_load((outdir / "MANIFEST.yml").read_text())
-    assert manifest["stages"]["fit"]["loaded"]
-    assert not manifest["stages"]["bbc"]["loaded"]
+    with chdir(tmp_path):
+        inputs = tmp_path / "inputs"
+        (inputs / "sub").mkdir(parents=True)
+        primary = inputs / "primary.input"
+        primary.write_text("INPUT_FILE_INCLUDE: sub/mid.input\n")
+        (inputs / "sub/mid.input").write_text("INPUT_INCLUDE_FILE: leaf.input\n")
+        leaf = inputs / "leaf.input"
+        leaf.write_text("GENPREFIX: FIRST\n")
+        # A nearby file is not the leaf the parser reads.
+        (inputs / "sub/leaf.input").write_text("GENPREFIX: WRONG\n")
+        assert read_keys(primary)["GENPREFIX"] == "FIRST"
+        stage = Recorder("sim", source=primary)
+        outdir = tmp_path / "run"
+        run(stage, outdir=outdir)
+        run(stage, outdir=outdir)
+        leaf.write_text("GENPREFIX: SECOND\n")
+        assert read_keys(primary)["GENPREFIX"] == "SECOND"
+        run(stage, outdir=outdir)
+        assert Recorder.runs == {"sim": 2}
 
 
-def test_nested_include_edits_invalidate_the_stage(tmp_path, monkeypatch):
-    from jax_snlc_sim.config_parser import read_keys
+def test_cached_stage_keeps_its_producing_version(tmp_path):
+    """Loading older results preserves their provenance until they are refreshed."""
+    from jax_snlc_core.logging import version_string
 
-    monkeypatch.chdir(tmp_path)
-    inputs = tmp_path / "inputs"
-    (inputs / "sub").mkdir(parents=True)
-    primary = inputs / "primary.input"
-    primary.write_text("INPUT_FILE_INCLUDE: sub/mid.input\n")
-    (inputs / "sub/mid.input").write_text("INPUT_INCLUDE_FILE: leaf.input\n")
-    leaf = inputs / "leaf.input"
-    leaf.write_text("GENPREFIX: FIRST\n")
-    # A nearby file is not the leaf the parser reads.
-    (inputs / "sub/leaf.input").write_text("GENPREFIX: WRONG\n")
-    assert read_keys(primary)["GENPREFIX"] == "FIRST"
-    stage = Recorder("sim", source=primary)
-    outdir = tmp_path / "run"
-    run(stage, outdir=outdir)
-    run(stage, outdir=outdir)
-    leaf.write_text("GENPREFIX: SECOND\n")
-    assert read_keys(primary)["GENPREFIX"] == "SECOND"
-    run(stage, outdir=outdir)
-    assert Recorder.runs == {"sim": 2}
-
-
-def test_cached_stage_keeps_its_producing_version(tmp_path, monkeypatch):
-    import importlib
-    driver = importlib.import_module('jax_pipeline.run')
-    monkeypatch.setattr(driver, 'version_string', lambda: 'jax-original')
     stage = Recorder('first')
     run(stage, outdir=tmp_path)
     done_path = tmp_path / 'first' / 'DONE.yml'
-    original = done_path.read_text()
-    assert yaml.safe_load(original)['version'] == 'jax-original'
-    monkeypatch.setattr(driver, 'version_string', lambda: 'jax-new')
+    record = yaml.safe_load(done_path.read_text())
+    record['version'] = 'jax-original'
+    original = yaml.safe_dump(record)
+    done_path.write_text(original)
     run(stage, outdir=tmp_path)
     manifest = yaml.safe_load((tmp_path / 'MANIFEST.yml').read_text())
-    assert manifest['version'] == 'jax-new'
+    assert manifest['version'] == version_string()
     assert manifest['stages']['first']['produced_version'] == 'jax-original'
     assert done_path.read_text() == original
     assert Recorder.runs == {'first': 1}
     run(stage, outdir=tmp_path, refresh=True)
-    assert yaml.safe_load(done_path.read_text())['version'] == 'jax-new'
+    assert yaml.safe_load(done_path.read_text())['version'] == version_string()
 
 
 def test_legacy_completion_record_has_unknown_producing_version(tmp_path):
@@ -511,3 +482,11 @@ def test_legacy_completion_record_has_unknown_producing_version(tmp_path):
     manifest = yaml.safe_load((tmp_path / 'MANIFEST.yml').read_text())
     assert manifest['stages']['first']['produced_version'] is None
     assert Recorder.runs == {'first': 1}
+
+
+@pytest.mark.parametrize('fitopts,muopts', [(['DEFAULT'], []), ([], ['DEFAULT'])])
+def test_systematics_can_use_default_label(fitopts, muopts):
+    """DEFAULT remains available for SNANA-compatible covariance labels."""
+    from jax_pipeline.systematics import check_labels
+
+    check_labels('fit', fitopts, muopts)

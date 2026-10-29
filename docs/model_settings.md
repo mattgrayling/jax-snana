@@ -68,7 +68,7 @@ shape and colour, to start a fit and to evaluate a photometric-redshift grid.
 They have defaults, 0.14 and 3.2, and do not affect the standardisation.
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.salt_model.SALTModel
+.. modeltable:: jax_snlc_core.models.salt.SALTModel
 ```
 
 ### SALT distances
@@ -82,7 +82,7 @@ SALT has three keys of its own in the bias-correction stage, which reject
 fits with unusable errors:
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.salt_model.SALTModel
+.. modeltable:: jax_snlc_core.models.salt.SALTModel
    :context: bbc
 ```
 
@@ -301,7 +301,7 @@ fractions of the speed of light. The two kilonova models are available for
 simulation only.
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.redback_model.RedbackModel
+.. modeltable:: jax_snlc_core.models.redback.RedbackModel
    :context: simulation
 ```
 
@@ -316,18 +316,18 @@ The simulator and fitter both accept these shared settings. Their
 applicability is specified in each description:
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.base.SNModel
+.. modeltable:: jax_snlc_core.models.sed_model.SNModel
 ```
 
 The following settings apply only to simulation:
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.simulated.SimulatedModel
+.. modeltable:: jax_snlc_core.models.roles.SimulatedModel
    :context: simulation
 ```
 
 The following settings apply only to fitting:
 
 ```{eval-rst}
-.. modeltable:: jax_snlc_core.models.fitted.FittedModel
+.. modeltable:: jax_snlc_core.models.roles.FittedModel
 ```

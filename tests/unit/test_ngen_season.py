@@ -6,9 +6,9 @@ Matches SNANA's `init_DNDZ_Rate` semantics (snlc_sim.c:9201-9221):
 
 import pytest
 
-from jax_snlc_sim.builder import resolve_counts
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.rate import resolve_counts
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 def _n_simulated(cfg):

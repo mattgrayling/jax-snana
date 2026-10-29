@@ -9,13 +9,13 @@ which produced a ~0.03 mag systematic in MW-extincted bands.
 from pathlib import Path
 
 import numpy as np
+from _replay_helpers import slice_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import slice_replay  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _load_phot(head_path: Path, phot_path: Path):
@@ -61,7 +61,7 @@ def _simmagobs_parity(fx, tmp_path, min_epochs=600, min_snr=5.0):
                                          head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "MW", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "MW", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = _load_phot(fx.head_fits, fx.phot_fits)
     jax_dir = tmp_path / "MW"
@@ -158,7 +158,7 @@ def test_opt_mwcolorlaw_zero_simulates_no_extinction(snana_fixture, tmp_path):
         simulation = None if sim is None else sim.config
         resources = sim
         results, sel, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, results, name, sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+        save_snana_outputs(sim, results, name, sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
         with fits.open(next((tmp_path / name).glob("*HEAD*"))) as h, \
                 fits.open(next((tmp_path / name).glob("*PHOT*"))) as p:
             return (h[0].header['SIMOPT_MWCOLORLAW'],
@@ -209,7 +209,7 @@ def test_peakmag_null_filters_match_snana(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "PK", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "PK", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     with fits.open(next((tmp_path / "PK").glob("PK*HEAD*"))) as hdul:
         jax_cols = {n: np.asarray(hdul[1].data[n]) for n in hdul[1].data.names}

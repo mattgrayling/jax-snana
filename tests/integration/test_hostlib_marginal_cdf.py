@@ -3,16 +3,15 @@
 import re
 from pathlib import Path
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 import pytest
 from scipy import integrate, stats
 
-from jax_snlc_core.physics.cosmology import zcmb_to_zhelio
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.cosmology import zcmb_to_zhelio
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import open_text
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.hostlib.hostlib_selection import refuse_empty_windows
+from jax_snlc_sim.hostlib.selection import refuse_empty_windows
 
 
 _HOSTLIB = "$JAX_TEST_FIXTURE_ROOT/hostlib/JAX_TEST.HOSTLIB"

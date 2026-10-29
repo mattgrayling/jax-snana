@@ -24,16 +24,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from _replay_helpers import select_replay
 from astropy.io import fits
-
-from jax_snlc_core.io.fits_path import open_text, resolve_fits_path
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
-from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_sim.output.tables import mw_option_keys
 from replay_snana_dump import build_override_parameters
 
-from _replay_helpers import select_replay
+from jax_snlc_core.snana_files import load_snana_dump, open_text, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.inputs import parse_snana_input_file
+from jax_snlc_sim.output.tables import mw_option_keys
 
 _FIXTURES = Path("tests/fixtures/snana")
 
@@ -94,7 +93,7 @@ def _simulate(mode, n_sne):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         results, selection, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, results, "J", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "J", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
     return out / "J"
 
 
@@ -322,7 +321,7 @@ def text_written():
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 results, selection, spectra_cache = sim_run.run_simulation(sim)
-                sim_run.save_snana_outputs(sim, results, "T", selection, spectra_cache=spectra_cache, output_dir=str(out))
+                save_snana_outputs(sim, results, "T", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
             cache[mode] = out / "T"
         return cache[mode]
 
@@ -567,7 +566,7 @@ def test_text_keys_match_snana_per_event(mode):
         override = build_override_parameters(dump_cols, simulation, resources,
                                              head_columns=head)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, "P", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "P", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
 
     compared = 0
     for snid in snids:
@@ -611,7 +610,7 @@ def test_text_mwxt_mag_values_match_snana():
         override = build_override_parameters(dump_cols, simulation, resources,
                                              head_columns=head)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, "X", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "X", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
 
     def mwxt(path):
         for line in open_text(path):
@@ -706,7 +705,7 @@ def _replay_written_events(fx, tag):
         override = build_override_parameters(dump_cols, simulation, resources,
                                              head_columns=head)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, "V", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "V", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
     return out / "V", snana, resources
 
 
@@ -844,7 +843,7 @@ def test_hostgal2_values_by_match_state_match_snana():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         results, selection, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, results, "N", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "N", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
     with fits.open(resolve_fits_path(next((out / "N").glob("N*HEAD*")))) as hdul:
         jax = {n: np.asarray(hdul[1].data[n]) for n in hdul[1].data.names}
 
@@ -902,7 +901,7 @@ def test_phot_simlib_values_match_snana():
         override = build_override_parameters(dump_cols, simulation, resources,
                                              head_columns=head)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, "Q", selection, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "Q", selection, spectra_by_sn=spectra_cache, output_dir=str(out))
 
     with fits.open(resolve_fits_path(next((out / "Q").glob("Q*HEAD*")))) as h:
         jh = {n: np.asarray(h[1].data[n]) for n in h[1].data.names}

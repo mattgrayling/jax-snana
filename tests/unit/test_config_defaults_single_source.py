@@ -12,7 +12,7 @@ import pickle
 from pathlib import Path
 
 import jax_snlc_sim.simulation as config_module
-from jax_snlc_sim import config_parser
+from jax_snlc_sim import inputs as config_parser
 from jax_snlc_sim.builder import build_simulation
 
 

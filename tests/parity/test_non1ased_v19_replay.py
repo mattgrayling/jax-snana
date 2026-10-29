@@ -5,13 +5,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _replay_helpers import slice_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import slice_replay  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _load_phot(head_path: Path, phot_path: Path):
@@ -54,7 +54,7 @@ def test_non1ased_v19_simmagobs_parity(snana_fixture, tmp_path):
                                          head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "N19", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "N19", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = _load_phot(fx.head_fits, fx.phot_fits)
     jax_dir = tmp_path / "N19"
@@ -286,7 +286,7 @@ def test_non1ased_sim_av_rv_are_the_drawn_dust(snana_fixture, tmp_path):
     override = build_override_parameters(dump_cols, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "NAV", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "NAV", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana = fits.getdata(fx.head_fits, 1)
     jax = fits.getdata(next((tmp_path / "NAV").glob("NAV*HEAD*")), 1)

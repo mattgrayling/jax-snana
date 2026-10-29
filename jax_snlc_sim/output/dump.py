@@ -3,24 +3,22 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.io.host_properties import (HOSTGAL_PROPERTY_BASENAMES,
-                                              canonical_property_name)
-from jax_snlc_core.photometry.filter_system import filter_band
-from jax_snlc_core.physics.dust_laws import load_dust_law
-from jax_snlc_core.physics.cosmology import _eq_to_gal
-from jax_snlc_core.utils import SNANA_NULLFLOAT, snana_log as slog
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim import cutmask
-from jax_snlc_sim.photometry.noise import _base_noise_components_pe
-from jax_snlc_sim.rate import _compute_rate_on_grid, apply_rate_modifiers
-
-from jax_snlc_sim.output.tables import (
-    model_dump_columns, model_header_params, per_event_types)
+from jax_snlc_core import logging as log
+from jax_snlc_core.cosmology import eq_to_gal
+from jax_snlc_core.dust import load_dust_law
+from jax_snlc_core.filters import filter_band
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.noise import noise_components_pe
+from jax_snlc_core.snana_files import (HOSTGAL_PROPERTY_BASENAMES, SNANA_NULLFLOAT,
+                                       canonical_property_name)
+from jax_snlc_sim.cutwin import CUTMASK_ALL_PASS
+from jax_snlc_sim.output.tables import model_dump_columns, model_header_params, per_event_types
+from jax_snlc_sim.rate import compute_rate_on_grid, apply_rate_modifiers
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +109,6 @@ def canonical_dump_columns(columns, model):
     return out
 
 
-def should_include_all_events(dumpall_requested, full_results, selection_result) -> bool:
-    """Return True if a SIMGEN_DUMPALL-style file is to be written."""
-    return bool(dumpall_requested and full_results and selection_result)
-
-
 def cutwin_reject_rows(config, full_results, selection_result):
     """Rows for APPLY_CUTWIN_OPT=3: the accepted events plus the ones CUTWIN
     rejected (doReject_SIMGEN_DUMP, snlc_sim.c:16927). None when unset."""
@@ -193,7 +186,7 @@ def write_dump_rate(config, version_name, output_dir):
         in_range = (zarr >= p['zmin']) & (zarr <= p['zmax'])
         if np.any(in_range):
             rate[in_range] += np.asarray(
-                _compute_rate_on_grid(zarr[in_range], p))
+                compute_rate_on_grid(zarr[in_range], p))
     rate = apply_rate_modifiers(rate, zarr, config.rates.dndz_rate_mods)
     path = Path(output_dir) / f'{version_name}.RATE'
     with open(path, 'w') as fp:
@@ -201,7 +194,7 @@ def write_dump_rate(config, version_name, output_dir):
         fp.write("VARNAMES: ROW REDSHIFT RATE \n")
         for nrow, (zv, rv) in enumerate(zip(zs, rate), start=1):
             fp.write(f"ROW: {nrow:3d}  {zv:.3f}  {rv:.4e} \n")
-    slog.line(logger, f"wrote {path}", indent=2)
+    log.line(logger, f"wrote {path}", indent=2)
     return path
 
 
@@ -236,7 +229,7 @@ def write_dump_mwcl(version_name, output_dir):
                 vals = " ".join(f"{mags[j][k]:7.3f}" for j in range(len(laws)))
                 fp.write(f"ROW: {row:6d} {rv:.2f} {w:7.1f}    {vals} \n")
             rv += RV_BIN
-    slog.line(logger, f"wrote {path}", indent=2)
+    log.line(logger, f"wrote {path}", indent=2)
     return path
 
 
@@ -254,11 +247,11 @@ def write_dump_trainsalt(columnar_data, version_name, output_dir, to_written_cid
         fp.write("#SNID  PKMJD  PKMJD_TRUE\n")
         for i in range(len(cid)):
             fp.write(f"{int(cid[i]):8d}  {pkmjd[i]:.4f}  {pkmjd_true[i]:.4f}\n")
-    slog.line(logger, f"wrote {path}", indent=2)
+    log.line(logger, f"wrote {path}", indent=2)
     return path
 
 
-def noise_dump_rows(config, resources, results, selection, global_start_idx):
+def noise_dump_rows(config, results, selection, global_start_idx):
     """One batch's rows of the SIMGEN_DUMP_NOISE table, before the batch
     trims its epochs: the Npe noise breakdown of every kept observation
     (mode 1 the epoch nearest peak per band, mode 2 every one), with the
@@ -289,7 +282,7 @@ def noise_dump_rows(config, resources, results, selection, global_start_idx):
         mag_gal = np.full(len(sn_idx), 666.0)
     galsnsep = np.asarray(params.get('host_SNSEP', np.zeros(n_sne)),
                           dtype=np.float64)[sn_idx]
-    flux_pe, sqerr_sky, sqerr_ccd, _ = _base_noise_components_pe(
+    flux_pe, sqerr_sky, sqerr_ccd, _ = noise_components_pe(
         np.asarray(sched['zptavgs'], dtype=np.float64)[sn_idx, obs_idx],
         np.asarray(sched['gains'])[sn_idx, obs_idx],
         np.asarray(results['fluxcals'])[sn_idx, obs_idx],
@@ -355,7 +348,7 @@ def write_dump_noise(full_results, config, resources, version_name,
                 f"{band[i]} {zcmb[i]:.3f}   {mag_sn[i]:.3f} {mag_gal[i]:.3f} {galsnsep[i]:.2f} {zp_pe[i]:.3f} "
                 f"{nea[i]:.1f}  {cov_tot[i]:9.2f} {cov_sn[i]:9.2f} {cov_gal[i]:9.2f} "
                 f"{cov_sky[i]:9.2f} {cov_read[i]:9.2f} \n")
-    slog.line(logger, f"wrote {path}", indent=2)
+    log.line(logger, f"wrote {path}", indent=2)
     return path
 
 
@@ -373,18 +366,12 @@ def _nearest_peak_per_band(keep, fi_2d, mjds_2d, peak):
     return out
 
 
-def _get_dump_filter_names(kcor_filter_names, peak_magnitudes) -> List[str]:
-    """Return the ordered list of canonical filter names for the dump."""
-    if peak_magnitudes:
-        return sorted(peak_magnitudes.keys())
-    return list(kcor_filter_names)
-
-
 def _build_peak_magnitude_dict(kcor_filter_names, peak_magnitudes,
                                selection_result,
                                include_all: bool) -> Dict[str, np.ndarray]:
     """Return peak magnitude arrays for each filter."""
-    filter_names = _get_dump_filter_names(kcor_filter_names, peak_magnitudes)
+    filter_names = (sorted(peak_magnitudes) if peak_magnitudes
+                    else list(kcor_filter_names))
     peak_mags = {}
     if include_all:
         peakmags_all = np.asarray(selection_result['peakmags_masked'])
@@ -436,22 +423,20 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
                 "SIMGEN_DUMPALL requested but full simulation results are "
                 "unavailable.", function_name='_prepare_dump_data')
         params_raw = full_results['parameters']
-        params = {k: np.array(np.asarray(v)) for k, v in params_raw.items()}
+        params = {k: np.asarray(v) for k, v in params_raw.items()}
         n_events = len(params['sim_redshift_cmb'])
         obs_schedule = full_results['observation_schedule']
 
-        def _schedule_array(key: str, dtype):
-            arr = np.array(np.asarray(obs_schedule[key]))
-            if arr.shape[0] != n_events:
-                raise SNANAError(
-                    f"observation schedule '{key}' has {arr.shape[0]} entries "
-                    f"for {n_events} events", function_name='_prepare_dump_data')
-            return arr.astype(dtype, copy=False)
+        libids = np.asarray(obs_schedule['libid'], dtype=np.int32)
+        if len(libids) != n_events:
+            raise SNANAError(
+                f"observation schedule 'libid' has {len(libids)} entries "
+                f"for {n_events} events", function_name='_prepare_dump_data')
 
         metadata = {
             'ra': params['ra'].astype(np.float64),
             'dec': params['dec'].astype(np.float64),
-            'field_id': _schedule_array('libid', np.int32)
+            'field_id': libids
         }
         keep_events = slice(None)
         specid_pass_dump = np.asarray(selection_result['specid_pass'],
@@ -524,7 +509,7 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
     if include_all:
         cutmask_array = np.array(selection_result['cutmask'], dtype=np.int32)
     else:
-        cutmask_array = np.full(n_events, cutmask.CUTMASK_ALL_PASS, dtype=np.int32)
+        cutmask_array = np.full(n_events, CUTMASK_ALL_PASS, dtype=np.int32)
 
     # selection outputs are per generated event; subset them unless DUMPALL
     params = dict(params)
@@ -602,7 +587,7 @@ def _build_dump_column_pool(dump_data):
         pool[f'SNRMAX{rank + 1}'] = (
             snrmax_sorted[:, rank] if rank < snrmax_sorted.shape[1]
             else np.full(len(pool['CID']), SNANA_NULLFLOAT))
-    glon, glat = _eq_to_gal(pool['RA'], pool['DEC'])
+    glon, glat = eq_to_gal(pool['RA'], pool['DEC'])
     pool['GLON'], pool['GLAT'] = np.asarray(glon), np.asarray(glat)
     params = dump_data['params']
     for snana_name, jax_key in _DUMP_PARAM_COLUMNS:
@@ -782,7 +767,7 @@ def write_dump_file(dump: Dict[str, Any], version_name, output_dir: str) -> str:
             f.write(''.join('SN:  ' + ' '.join(row) + '\n'
                             for row in zip(*columns)))
 
-    slog.line(logger, f"wrote {output_file}", indent=2)
+    log.line(logger, f"wrote {output_file}", indent=2)
     return output_file
 
 

@@ -8,18 +8,16 @@ own assigned primary, not a globally-hardcoded AB.
 import gzip
 import os
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.io.kcor_reader import KcorReader
-from jax_snlc_core.photometry.resources import (load_photometry_resources,
-                                                resolve_filtlist)
-from jax_snlc_core.photometry.filter_system import (
-    band_window_width, compute_single_restframe_filter, fluxcal_from_sed,
-)
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.filters import (KcorReader, band_window_width,
+                                   compute_single_restframe_filter, fluxcal_from_sed,
+                                   load_photometry_resources)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_fit.calibration import resolve_filtlist
 
 # AB is flat in f_nu at 3631 Jy, so its f_lambda is closed form.
 _AB_FNU_CGS = 3631.0e-23          # erg s-1 cm-2 Hz-1
@@ -146,7 +144,7 @@ def test_catalogue_and_kcor_share_filter_preparation(tmp_path, bands):
     """The input file format must not change photometry or its derivatives."""
     import jax
     import yaml
-    from jax_snlc_core.photometry.filter_system import band_weights_at_z
+    from jax_snlc_core.filters import band_weights_at_z
 
     observed = np.linspace(3000., 10000., 4001)
     names = ['test-g', 'test-r']

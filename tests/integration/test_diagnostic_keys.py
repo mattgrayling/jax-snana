@@ -13,8 +13,9 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
+from jax_snlc_core.snana_files import resolve_fits_path
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 _NON1A_INPUT = "tests/fixtures/snana/non1ased_v19_replay/input.input"
 _SALT3_INPUT = "tests/fixtures/snana/salt3_k21_replay/input.input"
@@ -30,7 +31,7 @@ def _run(input_file, extra, outdir, version="DIAG", n_sne=30, seed=321):
     simulation = None if sim is None else sim.config
     resources = sim
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, version, sel, spectra_cache=spectra_cache, output_dir=outdir)
+    save_snana_outputs(sim, results, version, sel, spectra_by_sn=spectra_cache, output_dir=outdir)
     return os.path.join(outdir, version)
 
 
@@ -130,8 +131,8 @@ def test_photflag_snrmax_nearpeak(tmp_path):
 def test_simlib_dump(tmp_path):
     """SIMLIB_DUMP: cadence-stats mode writes AVG (per-LIBID) + OBS (per-obs)
     TEXT files off the SIMLIB alone (no generation)."""
-    from jax_snlc_sim.config_parser import parse_snana_input_file
-    from jax_snlc_sim.simlib_dump import run_simlib_dump
+    from jax_snlc_sim.inputs import parse_snana_input_file
+    from jax_snlc_sim.diagnostics import run_simlib_dump
     inp = tmp_path / "sd.input"
     inp.write_text(Path(_SALT3_INPUT).read_text() + "\nSIMLIB_DUMP: 3\n")
     cfg = parse_snana_input_file(str(inp))
@@ -170,7 +171,7 @@ def test_dashboard(tmp_path, caplog):
     import logging
     inp = tmp_path / "db.input"
     inp.write_text(Path(_SALT3_INPUT).read_text() + "\nDASHBOARD:\n")
-    with caplog.at_level(logging.INFO, logger="jax_snlc_sim.dashboard"):
+    with caplog.at_level(logging.INFO, logger="jax_snlc_sim.diagnostics"):
         sim = sim_run.prepare(str(inp), n_sne=2)
     assert sim is None
     out = caplog.text
@@ -267,7 +268,6 @@ def test_smearflag_flux_zero_leaves_the_flux_unsmeared(tmp_path):
     SNANA zeroes GAURAN_SZ/T/F so fluxObs == fluxTrue (snlc_sim.c:28466),
     confirmed against snlc_sim.exe, whose FLUXCAL then reproduces SIM_MAGOBS
     to float32 precision. jax used to add noise regardless."""
-    import numpy as np
     base = Path(_SALT3_INPUT).read_text().splitlines()
     body = [l for l in base if not l.startswith('SMEARFLAG_FLUX')]
 

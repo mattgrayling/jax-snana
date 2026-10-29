@@ -1,6 +1,6 @@
 """Unit tests for UsedTrackingDict — the shared config key-usage tracker."""
 
-from jax_snlc_core.utils.config_tracking import UsedTrackingDict
+from jax_snlc_core.input_settings import UsedTrackingDict
 
 
 def test_getitem_records_use():

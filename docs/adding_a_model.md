@@ -132,22 +132,22 @@ For example, SALT declares `('salt2', 'salt3')`, so a path ending in
 ## The SED
 
 Implement the following four methods inherited from
-{py:class}`SNModel <jax_snlc_core.models.base.SNModel>`:
+{py:class}`SNModel <jax_snlc_core.models.sed_model.SNModel>`:
 
-{py:meth}`get_wavelength_range() <jax_snlc_core.models.base.SNModel.get_wavelength_range>`
+{py:meth}`get_wavelength_range() <jax_snlc_core.models.sed_model.SNModel.get_wavelength_range>`
 : The model's own rest-frame wavelength support, as `(minimum, maximum)` in
   Angstroms, including any wavelength extension implemented by the model.
 
-{py:meth}`phase_range() <jax_snlc_core.models.base.SNModel.phase_range>`
+{py:meth}`phase_range() <jax_snlc_core.models.sed_model.SNModel.phase_range>`
 : The rest-frame phase support, as `(first, last)` in days, used when
   selecting phases for simulated spectra. It does not restrict
   `generate_sed` evaluation, so define any extrapolation within that method.
 
-{py:meth}`sed_param_names() <jax_snlc_core.models.base.SNModel.sed_param_names>`
+{py:meth}`sed_param_names() <jax_snlc_core.models.sed_model.SNModel.sed_param_names>`
 : The per-event parameter names read by `generate_sed`. Optional parameters
   may be included; they are supplied when present in the event.
 
-{py:meth}`generate_sed(phase, params, static_data) <jax_snlc_core.models.base.SNModel.generate_sed>`
+{py:meth}`generate_sed(phase, params, static_data) <jax_snlc_core.models.sed_model.SNModel.generate_sed>`
 : The rest-frame spectrum at one phase, in erg per second per square
   centimetre per Angstrom, before host and Milky Way extinction. `phase` is
   a scalar and the return has shape `(n_wavelengths,)`, the length of the
@@ -190,21 +190,21 @@ cubic Hermite interpolation to obtain continuous first derivatives.
 The following helpers support tabulated spectra:
 
 - A `SED.INFO` index, read by
-  {py:func}`read_sed_info <jax_snlc_core.models.simsed_model.read_sed_info>`,
+  {py:func}`read_sed_info <jax_snlc_core.models.simsed.read_sed_info>`,
   names the parameters the grid spans and lists one SED file per line with
   that SED's parameter values. This is the SIMSED grid format.
 - Each SED file has three columns: phase in days, wavelength in Angstroms
-  and flux density. {py:func}`read_sed_file <jax_snlc_core.io.sed_ascii.read_sed_file>`
+  and flux density. {py:func}`read_sed_file <jax_snlc_core.models.sed_model.read_sed_file>`
   reads one, and
-  {py:func}`read_sed_binary <jax_snlc_core.models.simsed_model.read_sed_binary>`
+  {py:func}`read_sed_binary <jax_snlc_core.models.simsed.read_sed_binary>`
   reads the whole set at once from SNANA's `SED.BINARY` cache.
-- {py:func}`resample_surfaces <jax_snlc_core.models.base.resample_surfaces>`
+- {py:func}`resample_surfaces <jax_snlc_core.models.sed_model.resample_surfaces>`
   moves a stack of SED tables from their native wavelengths onto the working
   grid. Call it from `resample_to_grid`.
-- {py:func}`uvlam_extrapflux_sedmodel <jax_snlc_core.models.base.uvlam_extrapflux_sedmodel>`
+- {py:func}`uvlam_extrapflux_sedmodel <jax_snlc_core.models.sed_model.uvlam_extrapflux_sedmodel>`
   extends a tabulated SED below its blue edge, as set by the shared
   `UVLAM_EXTRAPFLUX` key.
-- {py:func}`late_time_tables <jax_snlc_core.models.base.late_time_tables>`
+- {py:func}`late_time_tables <jax_snlc_core.models.sed_model.late_time_tables>`
   fits the per-wavelength decay the simulator uses to continue a tabulated SED
   past its last phase.
 
@@ -265,7 +265,7 @@ it to a particular stage. For example, SALT declares:
 ```python
 from typing import Annotated, Literal
 
-from jax_snlc_core.models.base import FIT_ONLY
+from jax_snlc_core.models import FIT_ONLY
 
 #: Fit x0 itself (0) or its base-10 logarithm (1).
 opt_salt2fit: Annotated[Literal[0, 1], FIT_ONLY] = 0
@@ -285,12 +285,12 @@ Inherit `SimulatedModel` and declare `population_parameters` for simulation.
 Override `derived_parameters` for additional quantities calculated or
 drawn by the model, and `get_snana_header_params` to customise truth output.
 
-{py:attr}`population_parameters <jax_snlc_core.models.simulated.SimulatedModel.population_parameters>`
+{py:attr}`population_parameters <jax_snlc_core.models.roles.SimulatedModel.population_parameters>`
 : A tuple of parameter names whose distributions can be specified in the
   simulation input. The simulator draws these parameters and stores them
   under the declared names for `generate_sed`.
 
-{py:meth}`derived_parameters(params, keys_for, **kwargs) <jax_snlc_core.models.simulated.SimulatedModel.derived_parameters>`
+{py:meth}`derived_parameters(params, keys_for, **kwargs) <jax_snlc_core.models.roles.SimulatedModel.derived_parameters>`
 : Additional per-event parameters, returned as `{name: array}`. Override
   this when the model needs quantities beyond its population draws: SALT
   calculates `x0`, BayeSN draws residual scatter, and NON1ASED selects a
@@ -302,7 +302,7 @@ drawn by the model, and `get_snana_header_params` to customise truth output.
   of batch size. Models with per-template quotas also receive
   `template_budget` as a keyword argument.
 
-{py:meth}`get_snana_header_params(parameters) <jax_snlc_core.models.simulated.SimulatedModel.get_snana_header_params>`
+{py:meth}`get_snana_header_params(parameters) <jax_snlc_core.models.roles.SimulatedModel.get_snana_header_params>`
 : Simulation truth columns as `{column: array}`. By default, each
   population parameter is written as `SIM_<NAME>` in upper case. Override
   this for additional truth columns or different column names.
@@ -324,12 +324,12 @@ distribution, the model must provide the parameter through
 
 Two optional dictionaries provide aliases and default distribution settings:
 
-{py:attr}`population_aliases <jax_snlc_core.models.simulated.SimulatedModel.population_aliases>`
+{py:attr}`population_aliases <jax_snlc_core.models.roles.SimulatedModel.population_aliases>`
 : Alternative input names, as `{name: (alias, ...)}`. For example, SALT
   declares `{"x1": ("SALT2x1",)}`, allowing `GENPEAK_SALT2x1` to configure
   `params["x1"]`.
 
-{py:attr}`population_defaults <jax_snlc_core.models.simulated.SimulatedModel.population_defaults>`
+{py:attr}`population_defaults <jax_snlc_core.models.roles.SimulatedModel.population_defaults>`
 : Default distribution settings, as
   `{name: {"peak": ..., "sigma": (lo, hi), "range": (lo, hi)}}`.
   Omitted settings are zero unless the model supplies a default.
@@ -348,15 +348,15 @@ handle correlated and grid-only parameters in its own sampling method.
 Optional class attributes control rate scaling, explosion epochs and the
 maximum permitted flux:
 
-{py:attr}`crazyflux_factor <jax_snlc_core.models.simulated.SimulatedModel.crazyflux_factor>` (`float`, default `1.0`)
+{py:attr}`crazyflux_factor <jax_snlc_core.models.roles.SimulatedModel.crazyflux_factor>` (`float`, default `1.0`)
 : Multiplies the maximum permitted generated flux. SIMSED and Redback
   use `10.0` to accommodate transients brighter than type Ia supernovae.
 
-{py:attr}`uses_nonia_rates <jax_snlc_core.models.simulated.SimulatedModel.uses_nonia_rates>` (`bool`, default `False`)
+{py:attr}`uses_nonia_rates <jax_snlc_core.models.roles.SimulatedModel.uses_nonia_rates>` (`bool`, default `False`)
 : Set to `True` to apply the non-Ia rate scalings: the second value of
   `DNDZ_SCALE` and `NGEN_SCALE_NON1A`. NON1ASED and SIMSED use this setting.
 
-{py:attr}`mjd_explode_anchor <jax_snlc_core.models.simulated.SimulatedModel.mjd_explode_anchor>` (`str`, default `'none'`)
+{py:attr}`mjd_explode_anchor <jax_snlc_core.models.roles.SimulatedModel.mjd_explode_anchor>` (`str`, default `'none'`)
 : Defines support for `MJD_EXPLODE`, which specifies an explosion epoch
   rather than a peak epoch:
   - `'none'`, the default: the model does not support `MJD_EXPLODE`.
@@ -371,7 +371,7 @@ Inherit `FittedModel` and implement `get_fit_parameters`.
 
 ### Fit parameters
 
-{py:meth}`get_fit_parameters <jax_snlc_core.models.fitted.FittedModel.get_fit_parameters>`
+{py:meth}`get_fit_parameters <jax_snlc_core.models.roles.FittedModel.get_fit_parameters>`
 returns `{name: spec}` in fit-vector order. Call
 `super().get_fit_parameters()` first to include `PKMJD`, its bounds and
 peak-time prior, then add the model's parameters as in the toy example.
@@ -437,7 +437,7 @@ preparation, before fitting.
 Override `compute_raw_fracerr` to supply a model uncertainty for each
 observation. Its arguments include the SED parameters, observation times
 and bands; the {py:meth}`API description
-<jax_snlc_core.models.fitted.FittedModel.compute_raw_fracerr>` gives the
+<jax_snlc_core.models.roles.FittedModel.compute_raw_fracerr>` gives the
 full signature. The default returns zero.
 
 Return uncertainties in natural-log flux units. For a returned value `s`,
@@ -482,7 +482,7 @@ as described in {doc}`model_settings`.
 
 Inherit `StandardisedModel` to make the model's fit results available to
 BBC for standardisation and bias corrections. SALT and BayeSN
-implement this interface in `salt_model.py` and `bayesn_model.py`.
+implement this interface in `salt.py` and `bayesn.py`.
 
 Declare the following unannotated class attributes:
 
@@ -495,14 +495,14 @@ Declare the following unannotated class attributes:
 
 Implement these two methods with `@classmethod`:
 
-{py:meth}`compute_mu(lcpar, nuis, host, u_flags, apply_mass_step=True) <jax_snlc_core.models.standardised.StandardisedModel.compute_mu>`
+{py:meth}`compute_mu(lcpar, nuis, host, u_flags, apply_mass_step=True) <jax_snlc_core.models.roles.StandardisedModel.compute_mu>`
 : Calculates distances from fitted parameters and global coefficients.
   `lcpar` and `nuis` are dictionaries of these quantities. `host` contains
   per-event redshift and host-mass information; `u_flags` contains the
   SNANA parameter flags. Honour `apply_mass_step=False` if the model
   applies a host-mass step.
 
-{py:meth}`sim_lcpar(tv) <jax_snlc_core.models.standardised.StandardisedModel.sim_lcpar>`
+{py:meth}`sim_lcpar(tv) <jax_snlc_core.models.roles.StandardisedModel.sim_lcpar>`
 : Returns the simulated true values as `{name: array}` for each name in
   `lcpar_names`. `tv` is the BIASCOR sample, represented by
   {py:class}`TableVar <jax_salt2mu.tablevar.TableVar>`. Its `sim_truth`
@@ -544,7 +544,7 @@ Both use `{name: bin_count}`; coordinate ranges come from
 `default_cuts = {name: (lower, upper)}` and can be changed by the BBC
 parameter windows. For example, BayeSN
 uses `{"AV": 3}` for its error map. The
-{py:class}`StandardisedModel <jax_snlc_core.models.standardised.StandardisedModel>`
+{py:class}`StandardisedModel <jax_snlc_core.models.roles.StandardisedModel>`
 API describes the remaining optional declarations.
 
 ## Sharing compilation between model variants
@@ -560,8 +560,8 @@ the fields and loading method. SALT, BayeSN and Redback provide examples.
 
 ## Contributing a model to the package
 
-Import the base and role classes from `.base`, `.simulated`, `.fitted` and
-`.standardised` within the package, rather than from `jax_snlc_core.models`,
-to avoid circular imports. Add the model to the registry in
-`jax_snlc_core/models/__init__.py` and add a `modeltable` directive for its
-class to {doc}`model_settings`.
+Import `SNModel` from `.sed_model`, the role classes from `.roles` and the
+input-key markers from `.input_keys` within the package, rather than from
+`jax_snlc_core.models`, to avoid circular imports. Add the model to the
+registry in `jax_snlc_core/models/registry.py` and add a `modeltable`
+directive for its class to {doc}`model_settings`.

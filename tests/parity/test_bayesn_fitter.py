@@ -7,22 +7,21 @@ prior widths.
 """
 
 import gzip
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots, fit_config,
+                          fitter_photometry, load_batch, parse_fitres, rebuild_lcplot,
+                          regenerate_lcplot, run_fit)
+from test_salt3_fitter import assert_analytic_derivatives, one_sn_flux
 
-from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots,
-                          fit_config, fitter_photometry, load_batch,
-                          parse_fitres, rebuild_lcplot, regenerate_lcplot,
-                          run_fit)
-from test_salt3_fitter import (assert_analytic_derivatives,
-                               one_sn_flux)
-
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SNModel
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_fit.fit_spec import init_params
-from jax_snlc_fit.photoz import coarse_grid_axes
 from jax_snlc_fit.config import FitConfig, Model, PhotoZ
+from jax_snlc_fit.fitter import band_weights, restlambda_mask
+from jax_snlc_fit.parameters import init_params
+from jax_snlc_fit.photoz import coarse_grid_axes
 
 
 # Two SNe per fit call keeps the vmapped batch CPU-sized (CI is 2-core).
@@ -317,7 +316,7 @@ def test_host_dust_flux(bayesn_setup, host_law):
     """
     fx, batch, model, fitter, config = bayesn_setup
     photometry = fitter_photometry(fitter, batch)
-    from jax_snlc_core.physics.dust_laws import load_dust_law
+    from jax_snlc_core.dust import load_dust_law
     law = load_dust_law(host_law)
     law.prepare_wavelength_grid(np.asarray(model.wavelength_grid))
     static_data = {**fitter.static_data, **photometry, 'host_dust_law': law}
@@ -341,8 +340,7 @@ def test_host_dust_flux(bayesn_setup, host_law):
                     phases.shape)
     mask = jnp.ones(phases.shape, dtype=bool)
 
-    bw = fitter.band_weights(
-        photometry, z[0],
+    bw = band_weights(fitter._compiled_settings, photometry, z[0],
         jnp.ones(len(photometry['common_filter_wave_grid'])))[0]
     sed_params = model.sed_params_from_fit(params, z[0])
     flux_fast = model.evaluate(sed_params, mjds, fi, mask, bw, static_data)
@@ -399,5 +397,5 @@ def test_fit_band_support(bayesn_setup):
     # 9000 A is allowed by W22 but outside this fit's requested window.
     assert model.get_wavelength_range()[0] < 3500.
     photometry = {'filter_mean_wavelengths': jnp.array([3500., 4500., 9000.]) * 1.1}
-    mask = fitter.restlambda_mask(photometry, jnp.array([[0, 1, 2]]), jnp.array([.1]))
+    mask = restlambda_mask(fitter._compiled_settings, photometry, jnp.array([[0, 1, 2]]), jnp.array([.1]))
     np.testing.assert_array_equal(mask, [[False, True, False]])

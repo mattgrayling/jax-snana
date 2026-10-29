@@ -17,27 +17,24 @@ What the SNANA run must have dumped for the replay to be exact:
 - ``MU`` is optional; the HEAD's ``SIM_DLMU`` is used where it is absent.
 """
 
-from jax_snlc_core.utils.error_handling import SNANAError
 import argparse
-from dataclasses import replace
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict
 
 import numpy as np
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_sim.host_association import (compute_host_dmucor,
-                                           load_hostlib_zphot_quantiles)
-from jax_snlc_sim.output.dump import canonical_dump_columns
-from jax_snlc_sim.sampler import (PREFILTER_REASON_CODES, draw_grey_offset,
-                                  field_coords)
-from jax_snlc_core.utils import SNANA_NULLFLOAT
-
 from astropy.io import fits
+
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SNANA_NULLFLOAT, load_snana_dump
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.inputs import parse_snana_input_file
+from jax_snlc_sim.hostlib.association import compute_host_dmucor, load_hostlib_zphot_quantiles
+from jax_snlc_sim.output.dump import canonical_dump_columns
+from jax_snlc_sim.sampler import PREFILTER_REASON_CODES, draw_grey_offset, field_coords
 
 logger = logging.getLogger(__name__)
 
@@ -365,8 +362,8 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
                 else np.where(has_position, np.hypot(ra_off, dec_off), -9.0))
             # GALFRAC is evaluated at the SN's position in the galaxy's own
             # frame; without it the SN sits at the centre and the surface
-            # brightness peaks (engine.py:1138). Invert the sky-offset
-            # rotation (sersic_sampling.py:506) to recover it.
+            # brightness peaks. Invert the sky-offset rotation from
+            # hostlib.sersic to recover it.
             a_rot = np.radians(np.asarray(params.get(
                 'host_a_rot', np.zeros(len(gal_idx)))))
             cos_r, sin_r = np.cos(a_rot), np.sin(a_rot)
@@ -424,7 +421,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
     if resources.gensmear is not None and drop_node_smear:
         params['_gensmear_randoms'] = np.zeros(
             (len(dump_columns['CID']),
-             resources.gensmear_n_randoms), dtype=np.float32)
+             resources.gensmear.n_randoms), dtype=np.float32)
     elif resources.gensmear is not None and \
             simulation.model.gensmear_rangauss_fix <= -99.0:
         raise SNANAError(
@@ -549,8 +546,8 @@ def main():
     if missing:
         logger.warning(f"Missing SIM_PEAKMJD for {len(missing)} SNe; kept dump PEAKMJD for those.")
 
-    results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override_params)
-    sim_run.save_snana_outputs(sim, results, args.output, selection, spectra_cache=spectra_cache)
+    results, selection, spectra = sim_run.run_simulation(sim, override_parameters=override_params)
+    save_snana_outputs(sim, results, args.output, selection, spectra_by_sn=spectra)
 
 
 if __name__ == "__main__":

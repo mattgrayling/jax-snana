@@ -5,13 +5,14 @@ import logging
 import pytest
 
 from jax_pipeline import BBC, Fit
-from jax_salt2mu.config import BBCConfig, H11_PARAMS
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.run import floated_and_defaults, prepare_cell
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_salt2mu.config import H11_PARAMS, BBCConfig
+from jax_salt2mu.config import parse_bbc_input
+from jax_salt2mu.run import floated_and_defaults
+from _bbc_helpers import prepare_cell
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 
 @pytest.mark.parametrize('layer', ['muopts', 'muopt_settings'])

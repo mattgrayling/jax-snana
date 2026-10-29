@@ -1,16 +1,16 @@
-"""Unit tests for jax_snlc_core/photometry/fluxerr_model.py.
+"""Unit tests for jax_snlc_core/noise.py.
 
 Covers:
 - File parser on a synthetic 1-D / 2-D / ERRADD file (and the real DES file
   if present, otherwise skipped).
 - Uniform VARNAMES + uniform grid_axes validators.
 - parse_redcov_string in all its forms.
-- interp_1d / interp_2d / interp_3d against numpy/scipy reference.
+- The map interpolation in one, two and three dimensions against numpy
+  and hand-computed references.
 - Edge clipping of out-of-range queries.
 - REDCOV factor-decomposition statistical tests.
 """
 
-from jax_snlc_core.utils.error_handling import SNANAError
 import os
 import tempfile
 from types import SimpleNamespace
@@ -20,19 +20,22 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.hostlib.sersic_sampling import APERTURE_PSFSIG
-from jax_snlc_sim.photometry.noise import (
-    _build_fluxerr_query_per_obs, _draw_redcov_fudge_factored,
-    _gather_galmag_nea_per_obs, _interp_galmag,
-)
-from jax_snlc_core.photometry.fluxerr_model import (
-    ALL_GROUP,
-    interp_1d,
-    interp_2d,
-    interp_3d,
-    parse_redcov_string,
-    read_fluxerr_model_file,
-)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.noise import (ALL_GROUP, check_redcov_entries, evaluate_fluxerrmodel_data,
+                                 interpolate_fluxerr_maps, parse_redcov_string,
+                                 read_fluxerr_model_file)
+from jax_snlc_sim.photometry import _compile_fluxerr_model
+from jax_snlc_sim.hostlib.sersic import APERTURE_PSFSIG
+from jax_snlc_sim.photometry import (_build_fluxerr_query_per_obs,
+                                           _draw_redcov_fudge_factored,
+                                           _gather_galmag_nea_per_obs, _interp_galmag)
+
+
+def _interpolate(grid, query, origins, steps):
+    """One map's values at ``query``, whose last axis is the coordinates."""
+    return interpolate_fluxerr_maps(jnp.asarray(grid)[None],
+                                    jnp.zeros(query.shape[:-1], dtype=jnp.int32),
+                                    query, origins, steps)
 
 
 def _write(text):
@@ -67,11 +70,10 @@ def test_map_axis_order(tmp_path, names):
     query = _build_fluxerr_query_per_obs(
         SimpleNamespace(fluxerr_active_vars=model.varnames[:-1]),
         27.5, {}, obs, None, None, None)
-    result = interp_2d(
-        jnp.asarray(model.grid_values)[None, None], query,
+    result = _interpolate(
+        model.grid_values, query,
         origins=tuple(axis[0] for axis in model.grid_axes),
-        steps=tuple(axis[1] - axis[0] for axis in model.grid_axes),
-        n_grid=(2, 2))
+        steps=tuple(axis[1] - axis[0] for axis in model.grid_axes))
     np.testing.assert_allclose(result, [[8.]])
 
 
@@ -102,7 +104,6 @@ ENDMAP:
         assert len(data.maps) == 1
         m = data.maps[0]
         assert m.varnames == ["PSF", "SBMAG", "ERRSCALE"]
-        assert m.n_dims == 2
         assert m.grid_values.shape == (2, 3)
         assert np.allclose(m.grid_axes[0], [0.8, 1.2])
         assert np.allclose(m.grid_axes[1], [20.0, 21.0, 22.0])
@@ -191,22 +192,16 @@ def test_parse_redcov_string():
 # ============================================================
 
 
-def test_interp_1d_vs_numpy():
-    """interp_1d must match np.interp at all in-range points and clip OOR."""
+def test_fluxerr_map_interpolation_1d_matches_numpy():
+    """One dimension matches np.interp in range and holds to the ends."""
     grid = np.array(
         [2.967, 2.967, 1.738, 1.324, 1.257, 1.219, 1.174, 1.174], dtype=np.float32
     )
     axis = np.arange(20.5, 28.5, 1.0, dtype=np.float32)
-
-    grid_per_obs = jnp.broadcast_to(jnp.asarray(grid), (1, 7, 8))
     queries = jnp.array([[20.5, 21.0, 22.5, 23.7, 27.5, 19.0, 30.0]])
-    query = queries[..., None]
 
-    @jax.jit
-    def go(g, q):
-        return interp_1d(g, q, origin=20.5, step=1.0, n_grid=8)
-
-    got = np.asarray(go(grid_per_obs, query))[0]
+    got = np.asarray(jax.jit(lambda q: _interpolate(grid, q, (20.5,), (1.0,)))(
+        queries[..., None]))[0]
     expected = np.array(
         [np.interp(np.clip(float(q), 20.5, 27.5), axis, grid) for q in queries[0]],
         dtype=np.float32,
@@ -214,92 +209,50 @@ def test_interp_1d_vs_numpy():
     assert np.allclose(got, expected, atol=1e-6)
 
 
-def test_interp_2d_vs_manual():
-    """interp_2d bilinear vs hand-computed reference."""
+def test_fluxerr_map_interpolation_2d_is_bilinear():
+    """Bilinear interpolation against hand-computed values."""
     grid_2d = np.array([[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]], dtype=np.float32)
-    grid_per_obs = jnp.broadcast_to(jnp.asarray(grid_2d), (1, 4, 2, 3))
-    queries = jnp.array(
-        [
-            [
-                [0.0, 0.0],
-                [10.0, 2.0],
-                [5.0, 1.0],
-                [5.0, 0.5],
-            ]
-        ]
-    )
+    queries = jnp.array([[[0.0, 0.0], [10.0, 2.0], [5.0, 1.0], [5.0, 0.5]]])
 
-    @jax.jit
-    def go(g, q):
-        return interp_2d(g, q, origins=(0.0, 0.0), steps=(10.0, 1.0), n_grid=(2, 3))
-
-    got = np.asarray(go(grid_per_obs, queries))[0]
-    expected = np.array([1.0, 7.0, 4.0, 3.5], dtype=np.float32)
-    assert np.allclose(got, expected, atol=1e-5)
+    got = np.asarray(jax.jit(lambda q: _interpolate(grid_2d, q, (0.0, 0.0), (10.0, 1.0)))(
+        queries))[0]
+    assert np.allclose(got, [1.0, 7.0, 4.0, 3.5], atol=1e-5)
 
 
-def test_interp_3d_vs_manual():
-    """interp_3d trilinear at the cell midpoint = mean of the 8 corners."""
-    n0, n1, n2 = 2, 2, 2
-    grid_3d = np.arange(8, dtype=np.float32).reshape(n0, n1, n2)
-    grid_per_obs = jnp.broadcast_to(jnp.asarray(grid_3d), (1, 3, n0, n1, n2))
-    queries = jnp.array(
-        [
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 1.0, 1.0],
-                [0.5, 0.5, 0.5],
-            ]
-        ]
-    )
+def test_fluxerr_map_interpolation_3d_is_trilinear():
+    """Trilinear interpolation at the cell midpoint is the mean of the corners."""
+    grid_3d = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    queries = jnp.array([[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.5, 0.5]]])
 
-    @jax.jit
-    def go(g, q):
-        return interp_3d(
-            g, q, origins=(0.0, 0.0, 0.0), steps=(1.0, 1.0, 1.0), n_grid=(n0, n1, n2)
-        )
+    got = np.asarray(jax.jit(lambda q: _interpolate(grid_3d, q, (0.0,) * 3, (1.0,) * 3))(
+        queries))[0]
+    assert np.allclose(got, [0.0, 7.0, 3.5], atol=1e-5)
 
-    got = np.asarray(go(grid_per_obs, queries))[0]
-    expected = np.array([0.0, 7.0, 3.5], dtype=np.float32)
-    assert np.allclose(got, expected, atol=1e-5)
+
+@pytest.mark.parametrize('dtype', [jnp.float32, jnp.float64])
+def test_fluxerr_map_selection_with_singleton_axis(dtype):
+    """Each epoch uses its own map, with clipping and a constant single-knot axis."""
+    grids = jnp.array([[[1., 3., 5.]], [[101., 103., 105.]]], dtype=jnp.float32)
+    rows = jnp.array([[0, 1], [1, 0]], dtype=jnp.int32)
+    query = jnp.array([[[9., 19.], [10., 21.]],
+                       [[10., 24.], [11., 25.]]], dtype=dtype)
+    actual = jax.jit(lambda g, r, q: interpolate_fluxerr_maps(
+        g, r, q, (10., 20.), (1., 2.)))(grids, rows, query)
+    np.testing.assert_allclose(actual, [[1., 102.], [105., 5.]])
+    assert actual.dtype == dtype
 
 
 def test_interp_oor_clips_to_edge():
-    """All three interpolators must clip out-of-range queries to grid corners."""
-    grid_1d = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    g1 = jnp.broadcast_to(jnp.asarray(grid_1d), (1, 2, 3))
-    q1 = jnp.array([[[-100.0], [+100.0]]])
-
-    @jax.jit
-    def go1(g, q):
-        return interp_1d(g, q, origin=0.0, step=1.0, n_grid=3)
-
-    got1 = np.asarray(go1(g1, q1))[0]
-    assert np.allclose(got1, [1.0, 3.0])
-
-    grid_2d = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    g2 = jnp.broadcast_to(jnp.asarray(grid_2d), (1, 2, 2, 2))
-    q2 = jnp.array([[[-100.0, -100.0], [100.0, 100.0]]])
-
-    @jax.jit
-    def go2(g, q):
-        return interp_2d(g, q, origins=(0.0, 0.0), steps=(1.0, 1.0), n_grid=(2, 2))
-
-    got2 = np.asarray(go2(g2, q2))[0]
-    assert np.allclose(got2, [1.0, 4.0])
-
-    grid_3d = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
-    g3 = jnp.broadcast_to(jnp.asarray(grid_3d), (1, 2, 2, 2, 2))
-    q3 = jnp.array([[[-100.0, -100.0, -100.0], [100.0, 100.0, 100.0]]])
-
-    @jax.jit
-    def go3(g, q):
-        return interp_3d(
-            g, q, origins=(0.0, 0.0, 0.0), steps=(1.0, 1.0, 1.0), n_grid=(2, 2, 2)
-        )
-
-    got3 = np.asarray(go3(g3, q3))[0]
-    assert np.allclose(got3, [0.0, 7.0])
+    """A query outside the grid takes the grid's edge value in every dimension."""
+    got1 = _interpolate(np.array([1.0, 2.0, 3.0]), jnp.array([[[-100.0], [100.0]]]),
+                        (0.0,), (1.0,))
+    assert np.allclose(got1[0], [1.0, 3.0])
+    got2 = _interpolate(np.array([[1.0, 2.0], [3.0, 4.0]]),
+                        jnp.array([[[-100.0, -100.0], [100.0, 100.0]]]), (0.0, 0.0), (1.0, 1.0))
+    assert np.allclose(got2[0], [1.0, 4.0])
+    got3 = _interpolate(np.arange(8.0).reshape(2, 2, 2),
+                        jnp.array([[[-100.0] * 3, [100.0] * 3]]), (0.0,) * 3, (1.0,) * 3)
+    assert np.allclose(got3[0], [0.0, 7.0])
 
 
 # ============================================================
@@ -423,3 +376,149 @@ def test_gather_galmag_nea_uses_pixsize():
     large = np.asarray(_gather_galmag_nea_per_obs(
         table, obs, jnp.full(2, 0.4)))
     assert np.all(np.abs(small - large) > 1e-6)
+
+
+def test_galmag_without_a_host_is_snanas_undefined_magnitude():
+    """With no host, every epoch's GALMAG is the value SNANA initialises it
+    to, MAG_UNDEFINED = 666 (sntools_host.c:6559, sntools.h:126), not the
+    99 of zero flux."""
+    obs = {'filter_indices': jnp.zeros((2, 5), dtype=jnp.int32),
+           'neas': jnp.full((2, 5), 12.0)}
+    galmag = np.asarray(_gather_galmag_nea_per_obs(None, obs, jnp.full(2, 0.1)))
+    np.testing.assert_array_equal(galmag, 666.0)
+
+
+def test_simulation_chooses_maps_by_snana_substring_rule(tmp_path):
+    """The simulation serves each SIMLIB field and band with the map and the
+    REDCOV entry SNANA chooses (INDEX_MAP_FLUXERRMODEL and
+    INDEX_REDCOV_FLUXERRMODEL, sntools_fluxErrModels.c:877-968): BAND and
+    FIELD match as substrings of the band list and of the group's field
+    list, so field S takes the SHALLOW (S1+S2) map and REDCOV, and a pair
+    nothing serves takes the inert map row and no shared factor."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text("DEFINE_FIELDGROUP: SHALLOW  S1+S2\n"
+                    "REDCOV(SHALLOW): g:0.64\n"
+                    "MAPNAME: A\nBAND: g\nFIELD: SHALLOW\nVARNAMES: PSF ERRSCALE\n"
+                    "ROW: 1.0 1.5\nROW: 2.0 1.5\nENDMAP:\n"
+                    "MAPNAME: B\nBAND: r\nFIELD: ALL\nVARNAMES: PSF ERRSCALE\n"
+                    "ROW: 1.0 2.0\nROW: 2.0 2.0\nENDMAP:\n")
+    data = read_fluxerr_model_file(str(path))
+    simlib = SimpleNamespace(fields=[SimpleNamespace(field_name=name)
+                                     for name in ("S1", "X3", "S")])
+    kcor = SimpleNamespace(get_filter_names=lambda: ["LSST-g", "LSST-r"])
+    compiled = _compile_fluxerr_model(data, simlib, kcor)
+    np.testing.assert_array_equal(compiled['fluxerr_map_index_per_field'],
+                                  [[0, 1], [2, 1], [0, 1]])
+    np.testing.assert_allclose(compiled['fluxerr_redcov_factors'][:, :, 0],
+                               [[0.8, 0.0], [0.0, 0.0], [0.8, 0.0]])
+
+
+def test_redcov_groups_sharing_a_field_are_recorded_not_fatal_at_setup(tmp_path):
+    """Two field groups may share a SIMLIB field: SNANA loads their REDCOV
+    entries, and its NMATCH>1 abort fires only for an epoch in the shared
+    field and band (snlc_sim.c:28090). Building the simulation records that
+    pair and aborts nothing; a pair one entry matches takes its factor."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text("DEFINE_FIELDGROUP: DEEP  C3+X3\nDEFINE_FIELDGROUP: WIDE  X3+S1\n"
+                    "REDCOV(DEEP): g:0.64\nREDCOV(WIDE): g:0.25\n"
+                    "MAPNAME: A\nBAND: g\nFIELD: ALL\nVARNAMES: PSF ERRSCALE\n"
+                    "ROW: 1.0 1.5\nROW: 2.0 1.5\nENDMAP:\n")
+    data = read_fluxerr_model_file(str(path))
+    simlib = SimpleNamespace(fields=[SimpleNamespace(field_name=name)
+                                     for name in ("C3", "X3", "S1")])
+    kcor = SimpleNamespace(get_filter_names=lambda: ["LSST-g", "LSST-r"])
+    compiled = _compile_fluxerr_model(data, simlib, kcor)
+    np.testing.assert_array_equal(compiled['fluxerr_redcov_counts'], [[1, 0], [2, 0], [1, 0]])
+    np.testing.assert_allclose(compiled['fluxerr_redcov_factors'][:, 0],
+                               [[0.8, 0.0], [0.0, 0.0], [0.0, 0.5]])
+    np.testing.assert_allclose(compiled['fluxerr_redcov_factors'][:, 1], 0.0)
+
+
+@pytest.mark.parametrize("lines", [
+    "REDCOV: g:0.3\nREDCOV: gr:0.2\n",
+    "REDCOV: g:0.3\nREDCOV(DEEP): g:0.2\n",
+    "REDCOV(SHALLOW): g:0.3\nREDCOV: g:0.2\n",
+])
+def test_redcov_band_defined_twice_for_a_group_aborts(tmp_path, lines):
+    """SNANA checks each REDCOV entry's bands against the entries before it
+    as it loads them (load_REDCOV_FLUXERRMODEL, sntools_fluxErrModels.c:
+    556-566, OPT_FIELD=1): an earlier entry for ALL fields matches any group,
+    and an earlier group's name matches a group name it contains, so "ALL"
+    after "SHALLOW" is a repeat too. Reading the file does not check them:
+    the fit never loads REDCOV (snana.F90:18592 passes NONE)."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text("DEFINE_FIELDGROUP: DEEP  C3\nDEFINE_FIELDGROUP: SHALLOW  S1\n" + lines)
+    data = read_fluxerr_model_file(str(path))
+    with pytest.raises(SNANAError, match="Cannot define g-"):
+        check_redcov_entries(data.redcov)
+
+
+def test_fit_fluxerrmodel_file_without_maps_keeps_every_error(tmp_path):
+    """A FLUXERRMODEL_FILE holding only REDCOV and field groups gives
+    NMAP_FLUXERRMODEL = 0, and get_FLUXERRMODEL then returns the error it
+    was given (sntools_fluxErrModels.c:753-755)."""
+    path = tmp_path / "redcov_only.dat"
+    path.write_text("DEFINE_FIELDGROUP: SHALLOW  S1+S2\nREDCOV(SHALLOW): g:0.64\n")
+    data = read_fluxerr_model_file(str(path))
+    err = np.array([3.0, 4.5])
+    np.testing.assert_array_equal(
+        evaluate_fluxerrmodel_data(data, ["g", "r"], ["S1", "X3"], err,
+                                   {"PSF": np.array([1.0, 2.0])}), err)
+
+
+def test_fit_fluxerrmodel_applies_the_chosen_map(tmp_path):
+    """Each epoch takes the map INDEX_MAP_FLUXERRMODEL chooses for its band
+    and field, interpolated linearly in its VARNAMES, then the ERRADD rule
+    of apply_FLUXERRMODEL (sntools_fluxErrModels.c:972-1002), sqrt(err^2 +
+    value^2), times SCALE_FLUXERR_DATA; an epoch no map serves keeps its
+    error."""
+    path = tmp_path / "erradd.dat"
+    path.write_text("MAPNAME: A\nBAND: g\nFIELD: ALL\nSCALE_FLUXERR_DATA: 2.0\n"
+                    "VARNAMES: PSF ERRADD\nROW: 1.0 0.0\nROW: 3.0 8.0\nENDMAP:\n")
+    data = read_fluxerr_model_file(str(path))
+    err = np.array([3.0, 3.0, 3.0])
+    out = evaluate_fluxerrmodel_data(data, ["g", "g", "r"], ["X", "X", "X"], err,
+                                     {"PSF": np.array([2.0, 5.0, 2.0])})
+    np.testing.assert_allclose(out, [2.0 * 5.0, 2.0 * np.hypot(3.0, 8.0), 3.0])
+
+
+@pytest.mark.parametrize('duplicate', [False, True])
+def test_grid_positions_are_unique_and_complete(tmp_path, duplicate):
+    """Unordered rows fill the grid; duplicate coordinates cannot hide a missing cell."""
+    path = tmp_path / 'grid.dat'
+    last = '0 1 4' if duplicate else '1 1 4'
+    path.write_text('MAPNAME: FLUXERR_SCALE\nBAND: g\n'
+                    'VARNAMES: PSF SKYSIG ERRSCALE\n'
+                    'ROW: 1 0 3\nROW: 0 1 2\nROW: 0 0 1\n'
+                    f'ROW: {last}\nENDMAP:\n')
+    if duplicate:
+        with pytest.raises(SNANAError, match='each grid position'):
+            read_fluxerr_model_file(str(path))
+    else:
+        data = read_fluxerr_model_file(str(path))
+        np.testing.assert_array_equal(data.maps[0].grid_values, [[1., 2.], [3., 4.]])
+
+
+def test_map_overlap_is_checked_for_observed_band_and_field(tmp_path):
+    """Substring field matching must reject ambiguity only for the queried pair."""
+    path = tmp_path / 'overlap.dat'
+    path.write_text(''.join(
+        f'MAPNAME: FLUXERR_SCALE\nBAND: g\nFIELD: {field}\n'
+        'VARNAMES: PSF ERRSCALE\nROW: 1 2\nROW: 2 2\nENDMAP:\n'
+        for field in ['S1', 'S10']))
+    model = read_fluxerr_model_file(str(path))
+    np.testing.assert_allclose(evaluate_fluxerrmodel_data(
+        model, ['g'], ['S10'], [3.], {'PSF': [1.5]}), [6.])
+    with pytest.raises(SNANAError, match='NMATCH=2'):
+        evaluate_fluxerrmodel_data(model, ['g'], ['S1'], [3.], {'PSF': [1.5]})
+
+
+def test_field_group_expanding_to_all_serves_every_field(tmp_path):
+    """ALL remains a wildcard after expansion of a named field group."""
+    path = tmp_path / 'all_fields.dat'
+    path.write_text('DEFINE_FIELDGROUP: EVERYWHERE ALL\n'
+                    'MAPNAME: SCALE\nBAND: g\nFIELD: EVERYWHERE\n'
+                    'VARNAMES: PSF ERRSCALE\nROW: 1 2\nROW: 2 2\nENDMAP:\n')
+    model = read_fluxerr_model_file(str(path))
+    np.testing.assert_allclose(evaluate_fluxerrmodel_data(
+        model, ['g'], ['TOY_A'], [3.], {'PSF': [1.5]}), [6.])

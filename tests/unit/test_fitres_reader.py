@@ -4,8 +4,10 @@ import gzip
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from jax_snlc_core.io.fitres_reader import read_fitres, read_fitres_multi
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import load_snana_dump, read_fitres, read_fitres_multi
 
 
 _FITRES = """\
@@ -53,12 +55,6 @@ def test_meta_header_parsed(tmp_path):
     assert fx.meta["SNANA_VERSION"] == "v12_01d"
 
 
-def test_usecols_subsets(tmp_path):
-    fx = read_fitres(_write(tmp_path, _FITRES), usecols=["CID", "zHD", "c"])
-    assert set(fx.df.columns) == {"CID", "zHD", "c"}
-    assert "x1" not in fx.df.columns
-
-
 def test_gzip_transparent(tmp_path):
     fx = read_fitres(_write(tmp_path, _FITRES, gz=True))
     assert fx.size == 2
@@ -81,7 +77,7 @@ def test_read_multi_concatenates(tmp_path):
 
 def test_as_text_preserves_tokens_and_rowkey(tmp_path):
     """as_text keeps every value as written and records the row key, so rows can be
-    re-emitted byte-for-byte (cat_only). The default read parses to numbers and
+    re-emitted without changing value tokens (cat_only). The default read parses to numbers and
     drops the key."""
     path = _write(tmp_path, _FITRES)
     fx = read_fitres(path, as_text=True)
@@ -110,12 +106,83 @@ def test_identifiers_survive_numeric_tables_and_concatenation(tmp_path):
     compressed = _write(tmp_path, text, name="ids.FITRES", gz=True)
     for path in (plain, compressed):
         table = read_fitres(path)
-        subset = read_fitres(path, usecols=["CID", "SNID"])
         verbatim = read_fitres(path, as_text=True)
-        for read in (table, subset, verbatim):
+        for read in (table, verbatim):
             assert read.get("CID").tolist() == ["00123", "123"]
             assert read.get("SNID").tolist() == ["00456", "NA"]
         np.testing.assert_allclose(table.get("MU"), [40.25, 41.5])
-    merged = read_fitres_multi([plain, compressed], usecols=["CID", "MU"])
+    merged = read_fitres_multi([plain, compressed])
     assert merged.get("CID").tolist() == ["00123", "123", "00123", "123"]
     np.testing.assert_allclose(merged.get("MU"), [40.25, 41.5, 40.25, 41.5])
+
+
+def test_values_past_the_last_varname_are_ignored(tmp_path):
+    """SNTABLE_READ_EXEC_TEXT reads a row's first NVAR values and ignores the
+    rest (sntools_output_text.c:1265-1276), so each column keeps its name."""
+    path = _write(tmp_path, "VARNAMES: CID A B\nSN: 1 2.0 3.0 9\nSN: 2 4.0 5.0\n")
+    for table in (read_fitres(path), read_fitres(path, as_text=True)):
+        assert table.varnames == ["CID", "A", "B"]
+        assert table.get("CID").tolist() == ["1", "2"]
+        np.testing.assert_array_equal(np.asarray(table.get("B"), dtype=float), [3.0, 5.0])
+
+
+def test_row_with_fewer_values_than_varnames_aborts(tmp_path):
+    """SNANA aborts on a row short of its VARNAMES (sntools_output_text.c:
+    1278-1282), whether the table is read as numbers or as tokens, and a
+    nan token in the last column is not taken for a short row."""
+    for name, rows in (("last.DUMP", "SN: 1 2.0 3.0\nSN: 2 4.0\n"),
+                       ("first.DUMP", "SN: 1 2.0\nSN: 2 4.0 5.0\n"),
+                       ("every.DUMP", "SN: 1 2.0\nSN: 2 4.0\n")):
+        short = _write(tmp_path, "VARNAMES: CID A B\n" + rows, name=name)
+        for read in (read_fitres, lambda p: read_fitres(p, as_text=True), load_snana_dump):
+            with pytest.raises(SNANAError, match="fewer values than VARNAMES"):
+                read(short)
+    with_nan = _write(tmp_path, "VARNAMES: CID A B\nSN: 1 2.0 nan\nSN: 2 4.0 5.0\n")
+    assert np.isnan(read_fitres(with_nan).get("B")[0])
+
+
+def test_only_snana_row_keys_are_rows(tmp_path):
+    """A line under VARNAMES whose first word is not a row key, such as a
+    stray VPEC_INFO: line, is not a row (validRowKey_TEXT,
+    sntools_output_text.c:1386): its length is not checked and its words do
+    not change the type of a column."""
+    path = _write(tmp_path, "VARNAMES: CID A B\nSN: 1 2.0 3.0\nVPEC_INFO: 250.0\n"
+                            "NOTE: hello world\nGAL: 2 4.0 5.0\nOBS: 3 6.0 7.0\n")
+    table = read_fitres(path)
+    assert table.get("CID").tolist() == ["1", "2", "3"]
+    np.testing.assert_array_equal(table.get("A"), [2.0, 4.0, 6.0])
+    assert read_fitres(path, as_text=True).rowkey.tolist() == ["SN:", "GAL:", "OBS:"]
+
+
+@pytest.mark.parametrize('gz', [False, True])
+@pytest.mark.parametrize('as_text', [False, True])
+@pytest.mark.parametrize('body', ['', 'NOTE: "unfinished\n', 'NOTE: "unfinished\nSN: 001 0.123\n'])
+def test_ignored_lines_do_not_affect_table_parsing(tmp_path, gz, as_text, body):
+    """Ignored notes, including unmatched quotes, cannot affect parsing or empty tables."""
+    table = read_fitres(_write(tmp_path, 'VARNAMES: CID zHD\n' + body, gz=gz),
+                       as_text=as_text)
+    assert table.size == int('SN:' in body)
+    if table.size:
+        assert table.df['CID'].iloc[0] == '001'
+        assert float(table.df['zHD'].iloc[0]) == .123
+
+
+@pytest.mark.parametrize('text,message', [
+    ('# no header\n', 'No VARNAMES line'),
+    ('VARNAMES:\n', 'No column names found in VARNAMES'),
+])
+def test_missing_and_empty_varnames_have_distinct_errors(tmp_path, text, message):
+    """A missing header and a header without columns identify different input errors."""
+    with pytest.raises(SNANAError, match=message):
+        read_fitres(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize('as_text', [False, True])
+def test_original_lines_keep_comments_and_surplus_fields_out_of_values(tmp_path, as_text):
+    """Pandas reads original whitespace and ignores comments and surplus tokens."""
+    path = _write(tmp_path, 'VARNAMES: CID A B\n'
+                            '  SN:\t001\t2.0  3.0  extra # comment\n'
+                            'SN: 002 4.0 5.0#comment\n')
+    table = read_fitres(path, as_text=as_text)
+    assert table.get('CID').tolist() == ['001', '002']
+    np.testing.assert_array_equal(np.asarray(table.get('B'), dtype=float), [3., 5.])

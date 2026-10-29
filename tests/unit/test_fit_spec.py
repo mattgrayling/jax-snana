@@ -2,9 +2,9 @@
 
 import pytest
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_fit.fit_spec import validate_fit_parameters
+from jax_snlc_fit.parameters import validate_fit_parameters
 
 
 @pytest.fixture(scope='module')

@@ -9,8 +9,8 @@ import re
 
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.survey.simlib_reader import read_simlib
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.simlib import read_simlib
 
 
 def test_simlib_reader_loads_two_libids(lsst_simlib_path):

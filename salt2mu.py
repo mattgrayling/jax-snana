@@ -14,12 +14,11 @@ import argparse
 import logging
 import sys
 
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_salt2mu.inputs import bootstrap_settings
+from jax_salt2mu.config import bootstrap_settings, parse_bbc_input
 from jax_salt2mu.run import run_bbc
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import aborting
-from jax_snlc_core.utils.precision import configure_precision
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import aborting
+from jax_snlc_core.utils import configure_precision
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +74,7 @@ def main():
         level=logging.DEBUG if verbose else logging.INFO,
         stream=sys.stdout,
     )
-    slog.startup(logger, "salt2mu", sys.argv)
+    log.startup(logger, "salt2mu", sys.argv)
     config = parse_bbc_input(input_file, overrides, settings=settings)
     configure_precision(config.double_precision)
     run_bbc(config, cat_prescale)

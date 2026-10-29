@@ -4,10 +4,11 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from jax_salt2mu.biascor_build import build_biascor_partitions, build_biascor_maps
+from jax_salt2mu.biascor import build_biascor_partitions
 from jax_salt2mu.config import BBCConfig, resolve
 from jax_salt2mu.samples import partition_idsamples
-from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, read_tablevar
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR
+from _bbc_helpers import read_tablevar
 from jax_snlc_core.models import SALTModel
 
 
@@ -37,7 +38,7 @@ def test_grouped_maps_match_independent_builds(zmin):
     _, samples = partition_idsamples(tv.idsurvey, tv.field, tv.zhd, tv.is_photoz, cfg)
     changed = [replace(samples[0], zrange=(zmin, 1.)), samples[1]]
     grouped = build_biascor_partitions(tv, {0: samples, 1: changed}, cfg, SALTModel, False)
-    independent = build_biascor_maps(tv, changed, cfg, SALTModel, False)
+    independent = build_biascor_partitions(tv, {0: changed}, cfg, SALTModel, False)[0]
     _assert_maps_equal(grouped[1], independent)
     assert grouped[0].maps[0] is not grouped[1].maps[0]
     assert grouped[0].maps[1] is grouped[1].maps[1]

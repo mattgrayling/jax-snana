@@ -8,20 +8,18 @@ the chain from there to a fitted cosmology runs for real.
 
 
 import os
-
-from jax_snlc_core.io.fits_path import open_text
+from contextlib import chdir
 
 import numpy as np
 import pytest
 import yaml
 
-from jax_snlc_core.io.factorized_covariance import dense_factorized_covariance
 from jax_pipeline import BBC, Cosmology, Covariance, Fit, run
 from jax_salt2mu import parse_bbc_input, run_bbc
-from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_DATA, EVENT_TYPE_CCPRIOR
-from jax_snlc_core.io.fitres_reader import read_fitres, read_fitres_multi
-from jax_snlc_core.io.snana_table import write_varnames_table
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import (dense_factorized_covariance, open_text, read_fitres,
+                                       read_fitres_multi, write_varnames_table)
 
 _DIR = os.path.abspath(os.path.join("tests", "fixtures", "snana", "bbc_des_beams"))
 _DATA = os.path.join(_DIR, "DATA.FITRES")
@@ -228,11 +226,16 @@ def test_the_cosmology_fits_every_covopt(distances):
         assert "std" in result["parameters"]["omega_m"]
 
 
-def test_a_second_run_loads_the_whole_chain(distances):
+def test_a_second_run_loads_the_whole_chain(distances, caplog):
     """Every stage is loaded from its files and hands on the same result."""
     outdir, results = distances
 
+    caplog.set_level("INFO", logger="jax_pipeline.run")
     _, again = _chain(outdir)
+    assert f"Outputs: {outdir}" in caplog.text
+    assert f"Run manifest: {outdir / 'MANIFEST.yml'}" in caplog.text
+    assert f"Cosmology summary: {outdir / 'COSMOLOGY_SUMMARY.csv'}" in caplog.text
+    assert (outdir / 'COSMOLOGY_SUMMARY.csv').is_file()
 
     for cell in results["distances"]:
         np.testing.assert_array_equal(
@@ -242,15 +245,14 @@ def test_a_second_run_loads_the_whole_chain(distances):
         results["cosmology"]["ALL"]["point_estimate"]
 
 
-def test_the_cosmology_writes_only_in_its_own_directory(tmp_path, monkeypatch):
+def test_the_cosmology_writes_only_in_its_own_directory(tmp_path):
     """wfit names two outputs after the Hubble diagram it read and there is
     no file here to name them after; they must land in the stage directory,
     not where the run was launched."""
     elsewhere = tmp_path / "launched_from"
     elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-
-    _chain(tmp_path / "run")
+    with chdir(elsewhere):
+        _chain(tmp_path / "run")
 
     assert list(elsewhere.iterdir()) == []
 
@@ -579,3 +581,29 @@ def _inverse(held, label="ALL"):
     if entry["kind"] == "factorized":
         return np.linalg.inv(dense_factorized_covariance(entry))
     return entry["matrix"]
+
+
+def test_muopt_reordering_invalidates_cached_labels(tmp_path):
+    """Reordering MUOPTs reruns BBC while preserving each named cut's results."""
+    fit = Fit("fit", fitres=_DATA)
+    original = BBC("bbc", data=fit, overrides=_KEYS,
+                   muopts={"tight": {"chi2max": 9}, "loose": {"chi2max": 25}})
+    outdir = tmp_path / "run"
+    before = run(original, outdir=outdir)["bbc"]
+    assert _nfit(before["tight"]) < _nfit(before["loose"])
+    run(original, outdir=outdir)
+    manifest = yaml.safe_load((outdir / "MANIFEST.yml").read_text())
+    assert manifest["stages"]["bbc"]["loaded"]
+
+    reordered = BBC("bbc", data=fit, overrides=_KEYS,
+                    muopts=dict(reversed(original.muopts.items())))
+    after = run(reordered, outdir=outdir)["bbc"]
+    for label in ("nominal", "tight", "loose"):
+        for column in ("MUDIF", "NFIT"):
+            np.testing.assert_array_equal(after[label]["M0DIF"].df[column],
+                                          before[label]["M0DIF"].df[column])
+        np.testing.assert_array_equal(after[label]["FITRES"].df["CID"],
+                                      before[label]["FITRES"].df["CID"])
+    manifest = yaml.safe_load((outdir / "MANIFEST.yml").read_text())
+    assert manifest["stages"]["fit"]["loaded"]
+    assert not manifest["stages"]["bbc"]["loaded"]

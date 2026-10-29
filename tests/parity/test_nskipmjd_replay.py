@@ -21,11 +21,11 @@ the parity result below holds under either frame.
 
 import numpy as np
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _mjd_sets(head_path, phot_path):
@@ -60,7 +60,7 @@ def test_nskipmjd_kept_epochs_replay(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "JAXNSKIP", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "JAXNSKIP", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     jdir = tmp_path / "JAXNSKIP"
     j_mjds, _ = _mjd_sets(jdir / "JAXNSKIP_HEAD.FITS",
                           jdir / "JAXNSKIP_PHOT.FITS")

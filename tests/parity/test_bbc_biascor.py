@@ -9,15 +9,17 @@ produces are compared to the SALT2mu.exe reference.
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.models import BayeSNModel, SALTModel
-from jax_snlc_core.physics.mass_step import gammadm
-from jax_salt2mu.biascor_grid import biascor_gammadm_offset, build_coeff_bins
+from jax_salt2mu.binning import biascor_gammadm_offset, build_coeff_bins
 from jax_salt2mu.config import BBCConfig, resolve
 from jax_salt2mu.distances import mu_at_sim
-from jax_salt2mu.run import prepare_cell, run_bbc_fit
-from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, read_tablevar
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.run import run_bbc_fit
+from _bbc_helpers import prepare_cell
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR
+from _bbc_helpers import read_tablevar
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import BayeSNModel, SALTModel
+from jax_snlc_core.models.salt import gammadm
+from jax_snlc_core.snana_files import read_fitres
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"
 _REF = f"{_DIR}/SALT2mu.FITRES"
@@ -230,7 +232,7 @@ def test_a_dust_model_biascor_takes_the_input_alpha_and_beta(caplog):
     fit says so. The same sample with SIM_AV = 0 keeps its own values."""
     import logging
 
-    from jax_snlc_core.io.fitres_reader import FitresTable
+    from jax_snlc_core.snana_files import FitresTable
 
     biascor = read_fitres(f"{_DIR}/BIASCOR.FITRES")
     rng = np.random.default_rng(3)

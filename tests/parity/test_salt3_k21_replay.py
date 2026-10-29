@@ -4,17 +4,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _replay_helpers import slice_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
-from jax_snlc_core.utils.error_handling import SNANAError
-
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.sampler import _population_weight  # noqa: E402
-from _replay_helpers import slice_replay  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.sampler import _population_weight
 
 
 def _load_phot(head_path: Path, phot_path: Path):
@@ -57,7 +55,7 @@ def test_salt3_k21_simmagobs_parity(snana_fixture, tmp_path):
                                          head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SALT3_REPLAY", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SALT3_REPLAY", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = _load_phot(fx.head_fits, fx.phot_fits)
     jax_dir = tmp_path / "SALT3_REPLAY"
@@ -115,7 +113,7 @@ def test_salt3_hostdust_simmagobs_parity(snana_fixture, tmp_path):
                                          head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SALT3_HOSTDUST", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SALT3_HOSTDUST", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = _load_phot(fx.head_fits, fx.phot_fits)
     jax_dir = tmp_path / "SALT3_HOSTDUST"

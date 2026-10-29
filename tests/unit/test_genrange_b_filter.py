@@ -3,8 +3,8 @@
 import numpy as np
 
 from jax_snlc_sim.simulation import Survey
-from jax_snlc_sim.builder import InputGenranges, _apply_simlib_filters
-from jax_snlc_sim.survey.simlib_reader import SimlibField, _compute_seasons
+from jax_snlc_sim.simlib import (
+    InputGenranges, SimlibData, SimlibField, _compute_seasons, apply_simlib_filters)
 
 
 def _make_field(libid=0, ra=0.0, dec=0.0):
@@ -25,13 +25,6 @@ def _make_field(libid=0, ra=0.0, dec=0.0):
     )
 
 
-class _MockSimlib:
-    def __init__(self, fields):
-        self.fields = list(fields)
-    def _rebuild_flat_structures(self):
-        pass
-
-
 def _wide_ranges(sim):
     """Input ranges wide enough to keep every entry, so only b filters."""
     return InputGenranges((0.01, 1.0), (59000.0, 62000.0), {},
@@ -41,8 +34,8 @@ def _wide_ranges(sim):
 def test_default_range_no_op():
     fields = [_make_field(libid=i, ra=ra, dec=dec)
               for i, (ra, dec) in enumerate([(120.0, 30.0), (0.0, 0.0)])]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(), _wide_ranges(sim))
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(), _wide_ranges(sim))
     assert len(sim.fields) == 2
 
 
@@ -53,9 +46,7 @@ def test_narrow_b_drops_low_galactic_latitude():
         _make_field(libid=0, ra=galactic_plane_ra, dec=galactic_plane_dec),
         _make_field(libid=1, ra=high_b_ra, dec=high_b_dec),
     ]
-    sim = _MockSimlib(fields)
-    _apply_simlib_filters(sim, Survey(genrange_b=(20.0, 90.0)),
+    sim = SimlibData(simlib_file='', fields=fields)
+    apply_simlib_filters(sim, Survey(genrange_b=(20.0, 90.0)),
                           _wide_ranges(sim))
     assert [f.libid for f in sim.fields] == [1]
-
-

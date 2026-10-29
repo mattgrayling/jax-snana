@@ -11,7 +11,7 @@ from jax_snlc_fit import LightCurveFitter
 
 
 def test_pipeline_model_variants_share_compilation():
-    template = LightCurveFitter.from_model(
+    template = LightCurveFitter(
         'SALT3.K21', batch_size=1, n_fit_iterations=1, maxiter_round1=2)
     models = [template.model, deepcopy(template.model)]
     models[1].m0 = models[1].m0 * 1.02
@@ -40,7 +40,7 @@ def test_pipeline_model_variants_share_compilation():
     # A fitter's later settings cannot mutate another fitter's compiled code.
     original_round = fitters[0]._run_round
     fitters[1].config.fit.maxiter_round1 += 1
-    fitters[1]._prepare_kernels()
+    fitters[1]._prepare_compiled_functions()
     assert fitters[1]._run_round is not original_round
     assert fitters[0]._run_round is original_round
     assert original_round._cache_size() == 1
@@ -49,7 +49,7 @@ def test_pipeline_model_variants_share_compilation():
 def test_model_arrays_are_dynamic_but_structure_is_static():
     from jax_snlc_core.models import SALTModel
 
-    model = LightCurveFitter.from_model('SALT3.K21').model
+    model = LightCurveFitter('SALT3.K21').model
     changed = deepcopy(model)
     changed.m0 = model.m0 * 1.02
     evaluate = jax.jit(lambda m: m.m0.sum())
@@ -71,7 +71,7 @@ def test_model_arrays_are_dynamic_but_structure_is_static():
 def test_bundled_model_phase_derivatives_with_dynamic_arrays(data_root, model_name):
     import jax.numpy as jnp
     from jax_snlc_core.models import build_model
-    from jax_snlc_fit.fit_spec import init_params
+    from jax_snlc_fit.parameters import init_params
 
     if model_name.startswith("REDBACK."):
         pytest.importorskip("redback_jax")
@@ -96,13 +96,13 @@ def test_bundled_model_phase_derivatives_with_dynamic_arrays(data_root, model_na
 
 
 def test_different_preparations_do_not_share_fit_functions():
-    template = LightCurveFitter.from_model('SALT3.K21', batch_size=1)
+    template = LightCurveFitter('SALT3.K21', batch_size=1)
     cache = {}
     shape = dict(epoch_lengths=[], batch_size=1, n_z=None, band_window=None)
 
     def prepare(model):
         return LightCurveFitter._from_prepared(
-            template.config, model, template.calibration, shape, kernel_cache=cache)
+            template.config, model, template.calibration, shape, compiled_cache=cache)
 
     original = prepare(template.model)
     identical = prepare(deepcopy(template.model))

@@ -9,19 +9,17 @@ covariance is built, so only the iteration's rebuild picks the values up.
 References are SALT2mu.exe on the 5D biasCor config; see the fixture README.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import functools
 
 import numpy as np
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.fitter import MAXFITITER
 from jax_salt2mu.output import write_m0_csv
 from jax_salt2mu.run import run_bbc_fit
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 
 _DIR = "tests/fixtures/snana/bbc_des_beams"
