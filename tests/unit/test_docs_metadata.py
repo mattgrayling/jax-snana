@@ -8,10 +8,12 @@ import pytest
 
 pytest.importorskip("sphinx")
 
+import configtable
+
 
 @pytest.fixture
 def extension():
-    from docs._ext import configtable
+    """The documentation's Sphinx extension (docs/_ext/configtable.py)."""
     return configtable
 
 

@@ -1091,13 +1091,6 @@ class SFDDustMap:
                                      function_name="device_data")
                 with fits.open(path) as hdul:
                     header = hdul[0].header
-                    # MWgaldust.c's lambert_lb2fpix projection; its GLON-ZEA
-                    # alternative is not supported
-                    ctypes = (header.get('CTYPE1'), header.get('CTYPE2'))
-                    if ctypes != ('LAMBERT--X', 'LAMBERT--Y'):
-                        raise SNANAError(f"{path}: CTYPE1/CTYPE2 = {ctypes}, not the "
-                                         "LAMBERT--X/LAMBERT--Y projection",
-                                         function_name="device_data")
                     images.append((jnp.asarray(hdul[0].data.astype(np.float32)),
                                    {key: header[key] for key in keys}))
             self._images = tuple(images)

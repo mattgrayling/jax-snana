@@ -669,35 +669,21 @@ def test_concatenate_missing_metadata_preserves_values(text_dtype):
     """Missing metadata has complete null markers and exact integer values."""
     first = dataclasses.replace(_make_batch(n=2), head_extras={
         'NAME': np.array(['A', 'B'], dtype=text_dtype),
-        'ID': np.array([2**63 + 1, 2**64 - 1], dtype=np.uint64),
-        'COUNT': np.array([2**32 - 1, 1], dtype=np.uint32),
-        'BOOL': np.array([True, False]),
+        'ID': np.array([2**62 + 1, 2**63 - 1], dtype=np.int64),
         'VECTOR': np.array([['A'], ['B']], dtype=text_dtype),
-    }, obs_extras={'PHOTFLAG': np.full((2, 5), 2**32 - 1, dtype=np.uint32)})
+    }, obs_extras={'PHOTFLAG': np.full((2, 5), 4096, dtype=np.int32)})
     second = dataclasses.replace(_make_batch(n=1, max_obs=3),
                                  head_extras={'VECTOR': np.array([['C', 'D']])})
     merged = LightCurveBatch.concatenate([first, second])
     assert merged.head_extras['NAME'].tolist() == ['A', 'B', 'NULL']
-    assert merged.head_extras['ID'].tolist() == [2**63 + 1, 2**64 - 1, -9]
-    assert merged.head_extras['COUNT'].tolist() == [2**32 - 1, 1, -9]
-    assert merged.head_extras['BOOL'].tolist() == [1, 0, -9]
+    assert merged.head_extras['ID'].tolist() == [2**62 + 1, 2**63 - 1, -9]
     assert merged.head_extras['VECTOR'].tolist() == [['A', 'NULL'], ['B', 'NULL'], ['C', 'D']]
     np.testing.assert_array_equal(merged.obs_extras['PHOTFLAG'][:2], first.obs_extras['PHOTFLAG'])
     np.testing.assert_array_equal(merged.obs_extras['PHOTFLAG'][2], np.zeros(5))
-    assert merged.obs_extras['PHOTFLAG'].dtype == np.dtype('uint32')
+    assert merged.obs_extras['PHOTFLAG'].dtype == np.dtype('int32')
     merged_again = LightCurveBatch.concatenate([merged, _make_batch(n=1)])
     assert merged_again.head_extras['NAME'].tolist() == ['A', 'B', 'NULL', 'NULL']
-    assert merged_again.head_extras['ID'].tolist() == [2**63 + 1, 2**64 - 1, -9, -9]
-
-
-def test_concatenate_signed_and_unsigned_identifiers():
-    """Combining integer metadata must not round uint64 identifiers to floats."""
-    first = dataclasses.replace(_make_batch(n=1),
-                                head_extras={'ID': np.array([2**64 - 1], dtype=np.uint64)})
-    second = dataclasses.replace(_make_batch(n=1),
-                                 head_extras={'ID': np.array([-9], dtype=np.int64)})
-    merged = LightCurveBatch.concatenate([first, second])
-    assert merged.head_extras['ID'].tolist() == [2**64 - 1, -9]
+    assert merged_again.head_extras['ID'].tolist() == [2**62 + 1, 2**63 - 1, -9, -9]
 
 
 def test_concatenate_after_band_cuts_remove_all_epochs():

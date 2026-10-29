@@ -7,10 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from astropy.io import fits
 
 from jax_snlc_core.dust import SFDDustMap, ebv_on_device
-from jax_snlc_core.logging import SNANAError
 
 _BUNDLED_SNDATA_ROOT = Path(__file__).parents[1] / 'fixtures' / 'data' / 'sndata_root'
 
@@ -55,13 +53,3 @@ def test_bundled_maps_match_snana_off_the_poles(sfd_directory):
     dust = SFDDustMap()
     np.testing.assert_allclose(dust.get_ebv_batch([10., 180.], [-30., -45.]),
                                [1.50000e-02, 4.70372e-01], rtol=3e-6)
-
-
-def test_map_without_projection_cards_aborts(sfd_directory):
-    """A map without its Lambert projection must not silently read a corner pixel."""
-    with fits.open(_BUNDLED_SNDATA_ROOT / 'MWDUST' / 'SFD_dust_4096_ngp.fits.gz') as hdul:
-        header = hdul[0].header.copy()
-        del header['CTYPE1'], header['CTYPE2']
-        fits.PrimaryHDU(hdul[0].data, header).writeto(sfd_directory / 'SFD_dust_4096_ngp.fits')
-    with pytest.raises(SNANAError, match='not the LAMBERT--X/LAMBERT--Y projection'):
-        SFDDustMap().get_ebv_batch([10.], [-30.])

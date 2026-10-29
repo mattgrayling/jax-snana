@@ -140,7 +140,7 @@ def _parse_is_data_real(
         return None
     try:
         value = int(meta["ISDATA_REAL"].strip().split()[0])
-    except (ValueError, IndexError):
+    except ValueError:
         raise SNANAError(
             f"ISDATA_REAL is {meta['ISDATA_REAL']!r} in {source}, which is "
             "not an integer",

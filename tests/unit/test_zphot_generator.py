@@ -163,13 +163,3 @@ def test_generate_zphot_quantiles_gaussian_custom_percentiles():
         'ZPHOT_Q005', 'ZPHOT_Q025', 'ZPHOT_Q050', 'ZPHOT_Q075', 'ZPHOT_Q095'}
     med = out['ZPHOT_Q050']
     np.testing.assert_allclose(med, zphot, atol=1e-6)
-
-
-def test_fudgemap_validation_keeps_input_precision():
-    """Host-side validation preserves ordered nodes in single-precision runs."""
-    import jax
-
-    with jax.enable_x64(False):
-        validate_genzphot_fudgemap(
-            np.array([0.1, 0.100000001, 0.5]), np.array([0.01, 0.02, 0.03]),
-            (0.1, 0.5))

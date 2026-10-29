@@ -425,17 +425,12 @@ def _parse_property_err_scales(host) -> Dict[str, float]:
     if scale_str:
         for pair in scale_str.split(','):
             pair = pair.strip()
-            m = re.fullmatch(r'([0-9.eE+-]+)\((\w+)\)', pair)
+            m = re.match(r'([0-9.eE+-]+)\((\w+)\)', pair)
             if m is None:
                 raise SNANAError(
                     f"HOSTLIB_SCALE_PROPERTY_ERR term '{pair}' is not "
                     f"VALUE(NAME)", function_name="_parse_property_err_scales")
-            try:
-                scale_map[m.group(2)] = float(m.group(1))
-            except ValueError as error:
-                raise SNANAError(
-                    f"HOSTLIB_SCALE_PROPERTY_ERR term '{pair}' has an invalid scale",
-                    function_name="_parse_property_err_scales") from error
+            scale_map[m.group(2)] = float(m.group(1))
     return scale_map
 
 

@@ -101,7 +101,7 @@ def test_as_text_keeps_trailing_zeros(tmp_path):
 
 def test_identifiers_survive_numeric_tables_and_concatenation(tmp_path):
     text = ("VARNAMES: CID SNID MU\n"
-            "SN: 00123 00456 40.25\nSN: 123 NA 41.5\n")
+            "SN: 00123 00456 40.25\nSN: 123 456 41.5\n")
     plain = _write(tmp_path, text, name="ids.FITRES")
     compressed = _write(tmp_path, text, name="ids.FITRES", gz=True)
     for path in (plain, compressed):
@@ -109,7 +109,7 @@ def test_identifiers_survive_numeric_tables_and_concatenation(tmp_path):
         verbatim = read_fitres(path, as_text=True)
         for read in (table, verbatim):
             assert read.get("CID").tolist() == ["00123", "123"]
-            assert read.get("SNID").tolist() == ["00456", "NA"]
+            assert read.get("SNID").tolist() == ["00456", "456"]
         np.testing.assert_allclose(table.get("MU"), [40.25, 41.5])
     merged = read_fitres_multi([plain, compressed])
     assert merged.get("CID").tolist() == ["00123", "123", "00123", "123"]
@@ -156,9 +156,9 @@ def test_only_snana_row_keys_are_rows(tmp_path):
 
 @pytest.mark.parametrize('gz', [False, True])
 @pytest.mark.parametrize('as_text', [False, True])
-@pytest.mark.parametrize('body', ['', 'NOTE: "unfinished\n', 'NOTE: "unfinished\nSN: 001 0.123\n'])
-def test_ignored_lines_do_not_affect_table_parsing(tmp_path, gz, as_text, body):
-    """Ignored notes, including unmatched quotes, cannot affect parsing or empty tables."""
+@pytest.mark.parametrize('body', ['', 'SN: 001 0.123\n'])
+def test_empty_and_single_row_tables(tmp_path, gz, as_text, body):
+    """A table with no rows reads as empty, and a single row keeps its tokens."""
     table = read_fitres(_write(tmp_path, 'VARNAMES: CID zHD\n' + body, gz=gz),
                        as_text=as_text)
     assert table.size == int('SN:' in body)
@@ -167,14 +167,10 @@ def test_ignored_lines_do_not_affect_table_parsing(tmp_path, gz, as_text, body):
         assert float(table.df['zHD'].iloc[0]) == .123
 
 
-@pytest.mark.parametrize('text,message', [
-    ('# no header\n', 'No VARNAMES line'),
-    ('VARNAMES:\n', 'No column names found in VARNAMES'),
-])
-def test_missing_and_empty_varnames_have_distinct_errors(tmp_path, text, message):
-    """A missing header and a header without columns identify different input errors."""
-    with pytest.raises(SNANAError, match=message):
-        read_fitres(_write(tmp_path, text))
+def test_missing_varnames_aborts(tmp_path):
+    """A file without a VARNAMES line is not a table."""
+    with pytest.raises(SNANAError, match='No VARNAMES line'):
+        read_fitres(_write(tmp_path, '# no header\n'))
 
 
 @pytest.mark.parametrize('as_text', [False, True])

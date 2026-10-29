@@ -376,7 +376,7 @@ def test_zero_point_jitter_scales_the_difference_flux():
             readnoise=5.0, template_skysig=0.0, template_readnoise=0.0,
             template_zpt=30.0, fluxgal_pe=0.0, template_fluxcal=template_fluxcal,
             smearflag_zeropt=1, zp_fluxcal=27.5)
-        return sqsig_SZ - sqsig_S
+        return float(sqsig_SZ - sqsig_S)
     assert jitter_variance(1000.0) == 0.0
     assert jitter_variance(0.0) > 0.0
     assert jitter_variance(500.0) == pytest.approx(0.25 * jitter_variance(0.0), rel=1e-12)

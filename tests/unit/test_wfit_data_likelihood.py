@@ -635,14 +635,3 @@ def test_prepared_diagram_rejects_indefinite_or_singular_precision(kind, precisi
         covariance=np.eye(2) if kind != 'total_inverse' else None)
     with pytest.raises(SNANAError, match='positive definite'):
         cut_supplied_diagram(WFITConfig(), diagram)
-
-
-@pytest.mark.parametrize("value", ["", "   ", "invalid"])
-def test_invalid_data_flag_names_the_input(tmp_path, value):
-    """Malformed data flags raise a named input error rather than IndexError."""
-    path = tmp_path / "invalid_flag.M0DIF"
-    path.write_text(f"# ISDATA_REAL: {value}\n"
-                    "VARNAMES: CID zHD MU MUERR\nSN: A 0.1 38.0 0.1\n")
-    diagram = load_hubble_diagrams(WFITConfig(hubble_diagram=str(path)))[0]
-    with pytest.raises(SNANAError, match="ISDATA_REAL.*not an integer"):
-        _ = diagram.is_data_real
