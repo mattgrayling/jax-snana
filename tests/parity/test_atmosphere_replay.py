@@ -21,13 +21,13 @@ Two parity checks:
 
 import numpy as np
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.atmosphere import airmass_from_mjd  # noqa: E402
-from jax_snlc_sim.survey.survey_def import parse_survey_def  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.atmosphere import airmass_from_mjd
+from jax_snlc_sim.atmosphere import read_observatory_sites
 
 
 def _phot(path, cols):
@@ -58,7 +58,7 @@ def test_airmass_byte_exact(snana_fixture):
     fx = snana_fixture("atmosphere_replay")
     head = _head(fx.head_fits)
     phot = _phot(fx.phot_fits, ('MJD', 'AIRMASS'))
-    site = parse_survey_def()['LSST']
+    site = read_observatory_sites()['LSST']
     ra = np.array(head['RA'], float)
     dec = np.array(head['DEC'], float)
     pmin = np.array(head['PTROBS_MIN'], int)
@@ -97,7 +97,7 @@ def test_dcr_magshift_replay(snana_fixture, tmp_path):
 
     override = build_override_parameters(dump.columns, simulation, resources, head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "JAXATM", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "JAXATM", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     jdir = tmp_path / "JAXATM"
     j_head = _head(jdir / "JAXATM_HEAD.FITS")
     j_phot = _phot(jdir / "JAXATM_PHOT.FITS", cols)
@@ -160,7 +160,7 @@ def test_atmosphere_text_format(snana_fixture, tmp_path):
     resources = sim
     simulation.output.format_mask = 130          # TEXT(2) + ATMOS(128)
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "ATXT", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, res, "ATXT", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     dats = sorted((tmp_path / "ATXT").glob("*.DAT"))
     assert dats, "no TEXT light curves written"
     txt = dats[0].read_text()
@@ -184,7 +184,7 @@ def test_atmosphere_format_combos(snana_fixture, tmp_path):
         simulation.output.format_mask = fmask
         res, sel, spectra_cache = sim_run.run_simulation(sim)
         out = tmp_path / tag
-        sim_run.save_snana_outputs(sim, res, tag, sel, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, res, tag, sel, spectra_by_sn=spectra_cache, output_dir=str(out))
         return out / tag
 
     atmos_cols = ('dRA', 'dDEC', 'AIRMASS', 'SIM_DCR_dRA')
@@ -221,7 +221,7 @@ def test_atmosphere_batch_invariant(snana_fixture, tmp_path):
         resources = sim
         res, sel, spectra_cache = sim_run.run_simulation(sim)
         out = tmp_path / f"c{batch}"
-        sim_run.save_snana_outputs(sim, res, "C", sel, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, res, "C", sel, spectra_by_sn=spectra_cache, output_dir=str(out))
         return _head(out / "C" / "C_HEAD.FITS"), _phot(out / "C" / "C_PHOT.FITS", cols)
 
     def per_obs(h, p):

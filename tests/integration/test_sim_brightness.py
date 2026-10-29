@@ -6,8 +6,9 @@ import jax
 import numpy as np
 import pytest
 
-from jax_snlc_core.photometry.filter_system import filter_band
+from jax_snlc_core.filters import filter_band
 from jax_snlc_sim import run
+from jax_snlc_sim.spectra import compute_spectra_for_mask
 
 
 @pytest.fixture(scope='module')
@@ -72,7 +73,7 @@ def spectral_baseline():
     simulation = None if sim is None else sim.config
     resources = sim
     result, _, _ = run.run_simulation(sim)
-    spectra, _ = run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, result, np.array([True]),
         key=jax.random.PRNGKey(3))
     assert spectra
@@ -88,7 +89,7 @@ def test_spectral_brightness(spectral_baseline, settings):
     changed = replace(simulation, model=replace(simulation.model, **settings))
     sim = run.prepare(changed)
     result, _, _ = run.run_simulation(sim)
-    spectra, _ = run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, result, np.array([True]),
         key=jax.random.PRNGKey(3))
     for name in ('x0', 'x1', 'c', 'peakmjd_true'):
@@ -116,7 +117,7 @@ def test_spectral_event_offsets(spectral_baseline):
         params[name] = np.asarray(params.get(name, np.zeros(1))) + offset
     result = dict(baseline, parameters=params)
     sim = run.prepare(simulation)
-    spectra, _ = run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, result, np.array([True]),
         key=jax.random.PRNGKey(3))
     expected = 10.**(-.4 * sum(offsets.values()))

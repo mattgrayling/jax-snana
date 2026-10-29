@@ -16,8 +16,8 @@ from jax_snlc_sim.atmosphere import (
     index_refrac_minus1, dcr_weighted_arcsec, _parallactic_shift,
     airmass_from_mjd, compute_atmosphere, site_refrac_draws,
     DCR_BATCH, DCR_NULL_ARCSEC)
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_sim.random_streams import event_keys, root_key
+from jax_snlc_sim.inputs import parse_snana_input_file
+from jax_snlc_core.random import event_keys, root_key
 
 
 def test_index_refrac_dispersion_and_pressure():
@@ -133,8 +133,8 @@ def test_atmosphere_keys_reach_the_config(tmp_path):
 def test_survey_def_site_params():
     """SURVEY.DEF geo parsing derives site T/BP/PWV from altitude."""
     import os
-    from jax_snlc_sim.survey.survey_def import parse_survey_def
-    sites = parse_survey_def(os.path.join(os.environ['SNDATA_ROOT'], 'SURVEY.DEF'))
+    from jax_snlc_sim.atmosphere import read_observatory_sites
+    sites = read_observatory_sites(os.path.join(os.environ['SNDATA_ROOT'], 'SURVEY.DEF'))
     lsst = sites['LSST']
     assert lsst.geo_lat == pytest.approx(-30.244639)
     assert lsst.geo_alt == pytest.approx(2647.0)

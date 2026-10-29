@@ -9,23 +9,20 @@ modulus, assigns IDSAMPLE, and applies the CUTWIN selection.
 
 import logging
 from copy import deepcopy
-from dataclasses import dataclass, field as _dc_field, fields, replace
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field as _dc_field, replace
+from typing import ClassVar, Dict, List, Optional
 
 import jax
 import numpy as np
 
-from jax_snlc_core.io.fits_path import open_text
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.io.fitres_reader import read_fitres_multi
-from jax_snlc_core.io.sim_cosmology import SIM_COSMOLOGY_KEYS
-from jax_snlc_core.utils.covariance import fix_covariance
-from jax_snlc_core.utils import SNANA_NULLFLOAT
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import (SIM_COSMOLOGY_KEYS, SNANA_NULLFLOAT, open_text,
+                                       read_fitres_multi)
+from jax_snlc_core.utils import LIGHT_KM, fix_covariance
 
+from .config import (MASK_BIASCOR_MUCOVSCALE, BBCConfig, lcpar_windows, map_bins)
+from .blinding import unblinded
 from .distances import mu_at
-from .config import (BBCConfig, MASK_BIASCOR_MUCOVSCALE, lcpar_windows,
-                     map_bins, unblinded)
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +74,12 @@ CUTBIT_FIELD = 24       # fieldlist=
 
 @dataclass
 class TableVar:
+    PER_EVENT_ARRAYS: ClassVar[tuple[str, ...]] = (
+        'name', 'idsurvey', 'idsample', 'zhd', 'zmuerr', 'logmass',
+        'covmat_fit', 'mumodel', 'cutbits', 'snrmax', 'field', 'is_photoz',
+        'vpec', 'zcmb', 'pIa', 'sntype', 'baderr', 'badcov',
+    )
+
     event_type: int
     name: np.ndarray
     idsurvey: np.ndarray
@@ -106,11 +109,14 @@ class TableVar:
 
     def take(self, rows) -> "TableVar":
         """Select event rows, preserving table metadata."""
-        selected = {f.name: value[rows] for f in fields(self)
-                    if isinstance(value := getattr(self, f.name), np.ndarray)}
-        for name in ("lcpar", "sim_truth", "passthrough"):
-            selected[name] = {key: value[rows] for key, value in getattr(self, name).items()}
-        return replace(self, **selected)
+        def take(value):
+            return None if value is None else value[rows]
+
+        return replace(self,
+            **{name: take(getattr(self, name)) for name in self.PER_EVENT_ARRAYS},
+            lcpar={key: value[rows] for key, value in self.lcpar.items()},
+            sim_truth={key: value[rows] for key, value in self.sim_truth.items()},
+            passthrough={key: value[rows] for key, value in self.passthrough.items()})
 
     @property
     def size(self) -> int:
@@ -137,7 +143,7 @@ def _resolve(table, aliases) -> Dict[str, np.ndarray]:
         if col is None:
             raise SNANAError(
                 f"required column for '{raw}' not found (tried {candidates})",
-                function_name="read_tablevar",
+                function_name="convert_table",
             )
         out[raw] = _f32(table.get(col))
     return out
@@ -156,41 +162,11 @@ def read_data_table(paths):
     """The data FITRES at ``paths``, parsed and again as text.
 
     Both readings are needed because the writer re-emits the input's own tokens
-    (:func:`_passthrough_column`). Split out because blinding is resolved between
-    the read and the derive (``prepare_cell``).
+    (:func:`passthrough_column`). Split out because blinding is resolved between
+    the read and the derive during cell preparation.
     """
     paths = list(paths)
     return read_fitres_multi(paths), read_fitres_multi(paths, as_text=True)
-
-
-def read_tablevar(paths, event_type, config: BBCConfig, model) -> TableVar:
-    """The table variables of the FITRES files at ``paths``."""
-    if event_type == EVENT_TYPE_DATA:
-        table, text = read_data_table(paths)
-    else:
-        table, text = read_fitres_multi(list(paths)), None
-    return tablevar_from(table, event_type, config, model, text_table=text)
-
-
-def tablevar_from(table, event_type, config: BBCConfig, model,
-                  text_table=None) -> TableVar:
-    """The table variables of an already-read FITRES table.
-
-    The reading half is :func:`read_tablevar`; a caller holding the table the
-    fitter returned goes straight here. ``text_table`` is the same table read
-    as text, whose tokens the writer re-emits; without one the table's own
-    values are the tokens, which is what an in-memory handoff has.
-    """
-    tv = _convert_table(table, event_type, config, model)
-    if event_type == EVENT_TYPE_DATA:
-        text = text_table if text_table is not None else table
-        for name in output_varnames(table.varnames_by_file, config):
-            tv.passthrough[name] = _passthrough_column(text, name)
-    tv = select_tablevar(tv, table, config, model)
-    # SNANA only checks duplicates for real data (SALT2mu.c:2270, !IS_SIM).
-    if event_type == EVENT_TYPE_DATA and not tv.sim_truth:
-        apply_duplicates(tv, config)
-    return tv
 
 
 def select_tablevar(tv, table, config, model):
@@ -223,7 +199,7 @@ def sample_coordinates(table, config):
 def _read_redshift(table, config):
     if not table.has(config.varname_z):
         raise SNANAError(f"varname_z column '{config.varname_z}' is not in the input table",
-                         function_name="read_tablevar")
+                         function_name="convert_table")
     return _f32(table.get(config.varname_z))
 
 
@@ -232,16 +208,16 @@ def _required_lcpar(model, config, *, biascor=None, ccprior=None):
     if config.simfile_biascor or biascor is not None:
         required.update(model.biascor_binning)
         if config.opt_biascor & MASK_BIASCOR_MUCOVSCALE:
-            required.update(map_bins(model, config, "mucovscale_bins"))
+            required.update(map_bins(model.mucovscale_bins, config.mucovscale_bins))
     if config.simfile_ccprior or ccprior is not None:
-        required.update(map_bins(model, config, "ccprior_bins"))
+        required.update(map_bins(model.ccprior_bins, config.ccprior_bins))
     return required
 
 
-def _conversion_key(event_type, config, model, *, biascor=None, ccprior=None):
+def conversion_key(event_type, config, model, *, biascor=None, ccprior=None):
     """Only inputs to numerical conversion; cuts and map grids are applied later.
 
-    Keep this dependency list beside _convert_table. Cosmology uses the same
+    Keep this dependency list beside convert_table. Cosmology uses the same
     unblinding rule as _mumodel, including for CC-prior inputs.
     """
     cosmology = unblinded(config) if event_type == EVENT_TYPE_CCPRIOR else config
@@ -252,34 +228,29 @@ def _conversion_key(event_type, config, model, *, biascor=None, ccprior=None):
         config.zpecerr, config.uzsim, config.zspec_errmax_idsample,
         config.force_realdata if event_type == EVENT_TYPE_DATA else False,
         config.zphot_shift if event_type == EVENT_TYPE_DATA else 0.,
-        tuple(getattr(cosmology, name) for name in
-              ("omega_l", "omega_k", "h0", "w0", "wa", "radiation", "muref_zpoly")),
+        (cosmology.omega_l, cosmology.omega_k, cosmology.h0, cosmology.w0,
+         cosmology.wa, cosmology.radiation, cosmology.muref_zpoly),
     ))
 
 
 def readonly_variables(tv):
     """Protect shared arrays through views without changing their source table."""
     def readonly(value):
+        if value is None:
+            return None
         value = value.view()
         value.setflags(write=False)
         return value
 
-    arrays = {}
-    for field in fields(tv):
-        value = getattr(tv, field.name)
-        if isinstance(value, np.ndarray):
-            arrays[field.name] = readonly(value)
-    mappings = {}
-    for name in ("lcpar", "sim_truth", "passthrough"):
-        values = {}
-        for key, value in getattr(tv, name).items():
-            values[key] = readonly(value)
-        mappings[name] = values
-    return replace(tv, **arrays, **mappings)
+    return replace(tv,
+        **{name: readonly(getattr(tv, name)) for name in tv.PER_EVENT_ARRAYS},
+        lcpar={key: readonly(value) for key, value in tv.lcpar.items()},
+        sim_truth={key: readonly(value) for key, value in tv.sim_truth.items()},
+        passthrough={key: readonly(value) for key, value in tv.passthrough.items()})
 
 
-def _convert_table(table, event_type, config, model, *, biascor=None, ccprior=None,
-                   cosmology_width=None):
+def convert_table(table, event_type, config, model, *, biascor=None, ccprior=None,
+                  cosmology_width=None):
     """Derive numerical columns before output formatting, cuts or duplicates."""
     is_biascor = event_type == EVENT_TYPE_BIASCOR
 
@@ -325,7 +296,7 @@ def _convert_table(table, event_type, config, model, *, biascor=None, ccprior=No
     # (SALT2mu.c:8822-8832); force_realdata does the same for data (:8825)
     if "SIM_TEMPLATE_INDEX" not in sim_truth and event_type == EVENT_TYPE_BIASCOR:
         raise SNANAError("biasCor input has no SIM_TEMPLATE_INDEX or SIM_NONIA_INDEX "
-                         "column, so it is not a simulation", function_name="read_tablevar")
+                         "column, so it is not a simulation", function_name="convert_table")
     if ("SIM_TEMPLATE_INDEX" not in sim_truth
             or (event_type == EVENT_TYPE_DATA and config.force_realdata)):
         sim_truth = {}
@@ -333,7 +304,7 @@ def _convert_table(table, event_type, config, model, *, biascor=None, ccprior=No
         missing = [c for c in ("SIM_ZCMB", "SIM_DLMAG") if c not in sim_truth]
         if missing:
             raise SNANAError(f"simulated input lacks the required column(s) {missing}",
-                             function_name="read_tablevar")
+                             function_name="convert_table")
     if sim_truth and "SIM_WGT_POP" not in sim_truth:
         # every row starts at unit population weight (SALT2mu.c:8557)
         sim_truth["SIM_WGT_POP"] = np.ones(table.size)
@@ -449,10 +420,10 @@ def _require_pia_column(tv, config) -> None:
         f"Missing column varname_pIa='{config.varname_pia}': "
         f"{int((~forced).sum())} of {tv.size} events have no pIa and are not "
         f"forced to 1 by idsurvey_list_probcc0",
-        function_name="tablevar_from")
+        function_name="convert_table")
 
 
-def _passthrough_column(table, name) -> np.ndarray:
+def passthrough_column(table, name) -> np.ndarray:
     """The column's original tokens, with SNANA's fill where a file lacked it.
 
     write_fitres_line (SALT2mu.c:24501) re-emits the input words verbatim rather
@@ -504,12 +475,13 @@ def accept_zrate_scale(names, zhd, path) -> np.ndarray:
     the last three digits of the CID act as the draw, kept when <= the linearly
     interpolated scale(z). Rows are "z scale"; blanks and comments are skipped."""
     zs, scales = [], []
-    for line in open(path):
-        w = line.split()
-        if not w or line.startswith((" ", "#")):
-            continue
-        zs.append(float(w[0]))
-        scales.append(float(w[1]))
+    with open_text(path) as stream:
+        for line in stream:
+            w = line.split()
+            if not w or line.startswith((" ", "#")):
+                continue
+            zs.append(float(w[0]))
+            scales.append(float(w[1]))
     if not zs:
         return np.ones(len(names), dtype=bool)
     zhd = np.asarray(zhd)
@@ -567,14 +539,6 @@ def match_cid_selection(tv, paths):
     return np.asarray(keep, dtype=bool), np.asarray(bins, dtype=int)
 
 
-def apply_duplicates(tv: TableVar, config: BBCConfig) -> None:
-    """iflag_duplicate (SALT2mu.c:4505): 0 ignore, 1 abort, 2 merge duplicate CIDs by
-    inverse-covariance weight, keeping the first and cutting the rest (CUTBIT_DUPL)."""
-    duplicates = merge_duplicates(tv, config)
-    if not config.cutwin_disable:
-        tv.cutbits[duplicates] |= 1 << CUTBIT_DUPL
-
-
 def merge_duplicates(tv: TableVar, config: BBCConfig) -> np.ndarray:
     """Merge numerical values and return duplicate rows, independently of cuts."""
     duplicates = np.zeros(tv.size, dtype=bool)
@@ -589,7 +553,7 @@ def merge_duplicates(tv: TableVar, config: BBCConfig) -> np.ndarray:
     if flag == 1:
         raise SNANAError(f"{len(groups)} duplicate CID(s) in the data, e.g. "
                          f"{tv.name[groups[0][0]]}; set iflag_duplicate=0 or 2",
-                         function_name="apply_duplicates")
+                         function_name="merge_duplicates")
 
     names = list(tv.lcpar)
     # merging writes back into the arrays, which the reader may hand out read-only
@@ -730,3 +694,22 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
         if passing.size > config.nmax:
             fail(passing[config.nmax:], CUTBIT_NMAXCUT)
     return bits
+
+
+def write_passcuts_list(path, which, tv, idsample):
+    """SNANA update_fitres_passcuts: the CIDs of a biasCor/CC-prior sample that pass
+    the BBC cuts, as a diagnostic list. No effect on the fit.
+
+    ``idsample`` is the per-event sample assignment, which is only known once the
+    samples are partitioned, hence after the maps are built.
+    """
+    has_field = tv.field is not None
+    with open(path, "w") as f:
+        f.write(f"# list of {which} events passing BBC cuts \n\n")
+        f.write("VARNAMES:  CID  IDSAMPLE  IDSURVEY" + ("  FIELD\n" if has_field else "\n"))
+        for i in np.where(tv.cutmask)[0]:
+            row = (f"SN: {str(tv.name[i]):>12s}  {int(idsample[i]):2d}  "
+                   f"{int(tv.idsurvey[i]):3d}  ")
+            if has_field:
+                row += f"{tv.field[i]} "
+            f.write(row + "\n")

@@ -18,13 +18,12 @@ The fixture is built so the test can fail three separate ways:
 """
 
 import numpy as np
-
-from jax_snlc_sim.selection import _simlib_band_mask
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.selection import _simlib_band_mask
 
 # jax and SNANA disagree on an epoch when it sits within a fraction of a day of
 # the Trest window edge: the zHEL/zCMB convention moves

@@ -2,9 +2,7 @@
 
 import numpy as np
 
-from jax_snlc_sim.survey.simlib_reader import (
-    build_jax_field_cache, max_obs_per_event, read_simlib,
-)
+from jax_snlc_sim.simlib import build_jax_field_cache, max_obs_per_event, read_simlib
 
 
 def _field_cache(reader):

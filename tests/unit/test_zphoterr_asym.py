@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from jax_snlc_sim.hostlib.zphot_generator import (
+from jax_snlc_sim.hostlib.photoz import (
     NRAND_ZPHOT,
     GenZphot,
     generate_zphot_from_calc,

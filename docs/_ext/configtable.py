@@ -14,7 +14,7 @@ A config whose field names are not the input keys, and which holds fields no
 input key sets, supplies the difference through two options::
 
     .. configtable:: jax_snlc_sim.simulation.Run
-       :keys-from: jax_snlc_sim.config_parser
+       :keys-from: jax_snlc_sim.inputs
        :omit-sections: Set by the program rather than by an input key
 
 ``keys-from`` names the parser module whose ``_supplied`` specifications map a
@@ -61,13 +61,13 @@ collection reads *unset*, since all three mean the key was not given.
 default, ``simulation`` for the keys the simulator reads, or ``bbc`` for the
 keys the distance fit reads::
 
-    .. modeltable:: jax_snlc_core.models.redback_model.RedbackModel
+    .. modeltable:: jax_snlc_core.models.redback.RedbackModel
        :context: simulation
 
 ``rejectedkeys`` takes the parser's dict of refused key to reason, and with
 ``:group-by-reason:`` renders the keys refused for one reason as one row::
 
-    .. rejectedkeys:: jax_snlc_sim.config_parser._REJECTED_KEYS
+    .. rejectedkeys:: jax_snlc_sim.inputs._REJECTED_KEYS
        :group-by-reason:
 """
 
@@ -78,9 +78,9 @@ import inspect
 import io
 import re
 import sys
-import types
 import textwrap
 import tokenize
+import types
 import typing
 from collections.abc import Mapping
 from dataclasses import MISSING, fields as dataclass_fields

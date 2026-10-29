@@ -8,14 +8,14 @@ import pytest
 import yaml
 
 from jax_create_cov import compute_covariance
-from jax_create_cov.config_parser import load_config as covariance_config
+from jax_create_cov.config import load_config as covariance_config
 from jax_salt2mu import fit_distances
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils import SNANAError
-from jax_wfit import fit_cosmology, WFITConfig
-from jax_wfit.data import load_hubble_diagrams
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
+from jax_wfit import WFITConfig, fit_cosmology
+from jax_wfit.hubble import load_hubble_diagrams
 from jax_wfit.run import run_wfit
 
 

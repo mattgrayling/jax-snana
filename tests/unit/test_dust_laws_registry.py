@@ -1,4 +1,4 @@
-"""Smoke + invariance tests for every dust law in the registry.
+"""Smoke + invariance tests for every dust law in DUST_LAWS.
 
 For each registered dust law:
 - ``extinction_curve(λ, Rv)`` returns finite values shaped like ``λ``.
@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.dust_laws import DustLawRegistry
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.dust import DUST_LAWS, load_dust_law
+from jax_snlc_core.logging import SNANAError
 
 
 WAVE_V = 5495.0  # CCM89/Fitzpatrick definition of Johnson V
@@ -28,14 +28,14 @@ _RV = {'GORD03': 2.74}
 def _prepared(name, wavelength):
     """Construct a law and prep its wavelength grid (no-op for laws that
     don't override the hook)."""
-    law = DustLawRegistry.get_dust_law(name)
+    law = load_dust_law(name)
     if name in _PARLIST:
         law.set_params(_PARLIST[name])
     law.prepare_wavelength_grid(np.asarray(wavelength))
     return law
 
 
-@pytest.mark.parametrize("name", DustLawRegistry.list_dust_laws())
+@pytest.mark.parametrize("name", list(DUST_LAWS))
 def test_registered_law_returns_finite_curve(name):
     """Every registered dust law evaluates to a finite array with the input shape."""
     wavelength = np.array([3000.0, 4000.0, WAVE_V, 7000.0, 10000.0])
@@ -52,7 +52,7 @@ def test_registered_law_returns_finite_curve(name):
 
 
 @pytest.mark.parametrize(
-    "name", [n for n in DustLawRegistry.list_dust_laws() if n != "OFF"])
+    "name", [n for n in DUST_LAWS if n != "OFF"])
 def test_registered_law_v_band_normalisation(name):
     """A(V)/A(V) ≈ 1 at the V-band reference wavelength.
 
@@ -86,9 +86,9 @@ _WAVE_RANGE = {
 }
 
 
-@pytest.mark.parametrize("name", DustLawRegistry.list_dust_laws())
+@pytest.mark.parametrize("name", list(DUST_LAWS))
 def test_the_declared_validity_range_is_the_one_snana_enforces(name):
-    law = DustLawRegistry.get_dust_law(name)
+    law = load_dust_law(name)
     assert law.wave_range == _WAVE_RANGE[name], name
     if law.wave_range is None:
         return                      # CCM89, O'Donnell94 and F99-approx

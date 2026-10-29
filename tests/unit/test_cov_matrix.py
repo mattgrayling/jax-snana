@@ -9,11 +9,8 @@ silently returns a wrong-sized matrix.
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.cov_matrix import (
-    expand_upper_triangle,
-    read_covariance_npz,
-    write_covariance_npz,
-)
+from jax_snlc_core.snana_files import (expand_upper_triangle, read_covariance_npz,
+                                       write_covariance_npz)
 
 
 def _symmetric(n, seed=0):

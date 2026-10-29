@@ -17,8 +17,8 @@ from pathlib import Path
 import jax
 import pytest
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
-from jax_snlc_core.utils.precision import configure_precision
+from jax_snlc_core.snana_files import resolve_fits_path
+from jax_snlc_core.utils import configure_precision
 
 # Persist XLA compilation across runs, capped at 2 GB.
 if not jax.config.jax_compilation_cache_dir:

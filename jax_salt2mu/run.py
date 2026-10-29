@@ -9,35 +9,35 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import jax.numpy as jnp
 import numpy as np
+import pandas as pd
 
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.io.survey_def import load_survey_ids
+from jax_snlc_core import logging as log
+from jax_snlc_core.input_settings import merge_settings
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import standardised_model
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import FitresTable, load_survey_ids, read_fitres
+from jax_snlc_core.utils import LIGHT_KM
 
-from .config import (BBCConfig, BBC_NUISANCE_SPEC, H11_PARAMS,
-                     M0FITFLAG_CONSTANT,
-                     M0_HALFWIDTH, M0_HALFWIDTH_FIXED,
-                     M0_HALFWIDTH_ZPOLY, MASK_BIASCOR_CELLMAP, MASK_BIASCOR_MUCOVADD,
-                     parval, use_gamma0)
-from .distances import (bias_parameters, mu_at, mu_coef, muerr_vpec_sq,
-                        mu_variance_scaled)
+from .biascor import BiasCorMaps
+from .ccprior import CHI2_BEAMS_NOPROB, build_h11prior, ccprior_data
+from .config import (
+    BBC_NUISANCE_SPEC, H11_PARAMS, M0_HALFWIDTH, M0_HALFWIDTH_FIXED, M0_HALFWIDTH_ZPOLY,
+    M0FITFLAG_CONSTANT, MASK_BIASCOR_CELLMAP, MASK_BIASCOR_MUCOVADD, BBCConfig, build_config,
+    parse_bbc_input, parval, use_gamma0, output_path
+)
+from .distances import bias_parameters, mu_at, mu_coef, mu_variance_scaled, muerr_vpec_sq
 from .fitter import BBCResult, FitSpec, run_fit
 from .likelihood import LikelihoodInputs, event_chi2, mures_muerrsq_fn
-from .results import (CRAZY_ERRMAX, CRAZY_ERRMIN_FRAC, CRAZY_SIGINT_REF,
-                      YamlSummary, compute_output)
-from .tablevar import (CUTBIT_BIASCOR, CUTBIT_CHI2, CUTBIT_MINBIN, CUTBIT_z,
-                       force_probcc0, match_cid_selection)
-from .zbins import ZBinGrid, make_zbins
-from .biascor_build import BiasCorMaps
-from .preparation import (read_cells, prepare_biascor_maps, prepare_ccpriors, prepare_data, format_data,
-                          interpolate_corrections, select_data)
-from .output import (output_path, write_cat_fitres, write_chi2grid, write_cov,
-                     write_fitres, write_m0_csv, write_m0dif,
-                     write_yaml)
-from .ccprior import CHI2_BEAMS_NOPROB, build_h11prior, ccprior_data
+from .output import (
+    BBCOutput, CRAZY_ERRMAX, CRAZY_ERRMIN_FRAC, CRAZY_SIGINT_REF,
+    compute_output, m0dif_columns, write_cat_fitres, write_chi2grid, write_outputs, yaml_summary
+)
+from .preparation import (format_data, interpolate_corrections, prepare_biascor_maps,
+                          prepare_ccpriors, prepare_data, read_cells, select_data)
+from .tablevar import (EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, TableVar,
+                       CUTBIT_BIASCOR, CUTBIT_CHI2, CUTBIT_MINBIN, CUTBIT_z, force_probcc0,
+                       match_cid_selection)
+from .binning import ZBinGrid, make_zbins
 
 logger = logging.getLogger(__name__)
 
@@ -57,71 +57,6 @@ def _zmu_solve(muref, config):
     zgrid = np.linspace(max(config.zmin * 0.5, 1e-4),
                         config.zmax * 1.2, 200_000)
     return np.interp(np.asarray(muref), mu_at(zgrid, config), zgrid)
-
-
-def _yaml_summary(cell, output, cpu_minutes):
-    """Gather write_yaml_info's counts (SALT2mu.c:23571).
-
-    The two reject counts are not the bit tallies they look like. SNANA's
-    NREJECT_CUTWIN counts events failing *any* cut that is not the biasCor
-    (cutmask_noBCOR > 0, :18665), and NREJECT_BIASCOR counts only events that
-    would otherwise have passed, so an event cut for two reasons appears once.
-    """
-
-    tv, maps, config = cell.tv, cell.summary_maps, cell.config
-    biascor_bit = 1 << CUTBIT_BIASCOR
-    other_bits = tv.cutbits & ~biascor_bit
-    only_biascor = (tv.cutbits & biascor_bit) != 0
-
-    summary = YamlSummary(
-        nevt={"DATA": int(tv.cutmask.sum())},
-        nreject_biascor=int((only_biascor & (other_bits == 0)).sum()),
-        isdata_real=not tv.sim_truth,
-        cpu_minutes=cpu_minutes,
-        ncrazy=int(output.crazy_m0.sum()),
-    )
-    if output.probcc is not None:
-        # 0/0 writes nan, as SNANA (write_yaml_info, SALT2mu.c:23775)
-        summary.contam_data = output.contam_data
-        with np.errstate(invalid="ignore", divide="ignore"):
-            if tv.sim_truth:
-                passing = tv.cutmask
-                tmpl = np.asarray(tv.sim_truth["SIM_TEMPLATE_INDEX"])
-                xncc_true = float((passing & (tmpl != 0)).sum())
-                xntot = float(passing.sum()
-                              - (passing & force_probcc0(tv, config)).sum())
-                summary.contam_true = float(np.divide(xncc_true, xntot))
-                summary.contam_true_err = float(
-                    np.divide(np.sqrt(xncc_true), xntot))
-    if maps is None:
-        # NDATA_REJECT_CUTWIN is summed over biasCor samples (:22486); with none
-        # to sum over SNANA reports 0 however many events were cut
-        return summary
-
-    ids = [s.idsample for s in maps.samples]
-    summary.sample_ids = [-1] + ids
-    summary.sample_names = ["ALL"] + [s.name for s in maps.samples]
-
-    def by_sample(idsample, keep, total):
-        return [total] + [int((keep & (idsample == i)).sum()) for i in ids]
-
-    summary.nreject_cutwin = int(sum(
-        ((other_bits != 0) & (tv.idsample == i)).sum() for i in ids))
-    summary.nevt_by_sample["DATA"] = by_sample(
-        tv.idsample, tv.cutmask, summary.nevt["DATA"])
-    summary.nreject_cutwin_by_sample = by_sample(
-        tv.idsample, other_bits != 0, summary.nreject_cutwin)
-    summary.nreject_biascor_by_sample = by_sample(
-        tv.idsample, only_biascor & (other_bits == 0), summary.nreject_biascor)
-
-    for kind, counts in (("BIASCOR", maps.biascor_counts),
-                         ("CCPRIOR", cell.ccprior_counts)):
-        n = counts[0] if counts else 0
-        summary.nevt[kind] = n
-        if kind == "BIASCOR" and maps.biascor_nevt_total is not None:
-            summary.nevt[kind] = maps.biascor_nevt_total
-        summary.nevt_by_sample[kind] = list(counts) if counts else [0] * (len(ids) + 1)
-    return summary
 
 
 def build_inputs(tv, izbin, config, model, accept, biascor=None,
@@ -148,7 +83,7 @@ def build_inputs(tv, izbin, config, model, accept, biascor=None,
     )
     if zM0 is not None:
         izbin = np.asarray(inp.izbin)
-        # same "has events" test results.py uses for the M0 average
+        # same "has events" test compute_output uses for the M0 average
         isfloat = np.bincount(izbin[izbin >= 0], minlength=len(zM0)) > 0
         iz1, zfrac = _m0_interp_weights(tv.zhd[m], izbin, zM0, isfloat)
         inp = inp._replace(izbin_nbr=jnp.asarray(iz1), m0_zfrac=jnp.asarray(zfrac))
@@ -210,9 +145,9 @@ def check_vpec_sign(tv, config, model):
         mures = mu - model.m0_reference - mu_at(ztest, config)
         rms.append(float(np.sqrt(np.mean((mures - mures.mean()) ** 2))))
 
-    slog.line(logger,
-              f"check_vpec_sign over {zwin[0]:.3f}<z<{zwin[1]:.3f} ({nsn} events): "
-              f"RMS(MURES) nominal={rms[0]:.4f}, flip-vpec={rms[1]:.4f}")
+    log.line(logger,
+             f"check_vpec_sign over {zwin[0]:.3f}<z<{zwin[1]:.3f} ({nsn} events): "
+             f"RMS(MURES) nominal={rms[0]:.4f}, flip-vpec={rms[1]:.4f}")
     if rms[1] < rms[0]:
         raise SNANAError(
             f"RMS(MURES) is smaller with sign-flip of vpec "
@@ -240,7 +175,7 @@ def _warn_biascor_loss(ok, tv, maps, config, model):
     ndump = config.ndump_nobiascor
     if ndump > 0:
         for cid in tv.name[~ok & tv.cutmask][:ndump]:
-            slog.warn(logger, "BBC", f"no valid biasCor for CID={cid}")
+            log.warn(logger, "BBC", f"no valid biasCor for CID={cid}")
     lines = []
     frac_warn = config.frac_warn_nobiascor
     warned = False
@@ -257,16 +192,16 @@ def _warn_biascor_loss(ok, tv, maps, config, model):
                 f"have no biasCor for {smp.name}   {warn}")
         lines.append(line)
         if warn:
-            slog.warn(logger, "BBC", line)
+            log.warn(logger, "BBC", line)
             warned = True
     if warned:
         widths = ":".join(f"{axis}bin=<width>" for axis in model.biascor_binning)
-        slog.warn(logger, "BBC",
-                  f"an event needs min_per_cell_biascor={config.min_per_cell_biascor} "
-                  f"biasCor events in its cell; the cells are "
-                  f"{model.__name__}.biascor_binning {model.biascor_binning}, "
-                  f"widened per sample by surveygroup_biascor's STRINGOPT, "
-                  f"e.g. SAMPLE(zbin=<width>:{widths})")
+        log.warn(logger, "BBC",
+                 f"an event needs min_per_cell_biascor={config.min_per_cell_biascor} "
+                 f"biasCor events in its cell; the cells are "
+                 f"{model.__name__}.biascor_binning {model.biascor_binning}, "
+                 f"widened per sample by surveygroup_biascor's STRINGOPT, "
+                 f"e.g. SAMPLE(zbin=<width>:{widths})")
     return lines
 
 
@@ -290,8 +225,8 @@ def floated_and_defaults(model, config, *, ccprior=None):
                      if k in config.nuisance_float}
         if (requested and not config.fixpar_all
                 and not all(requested.get(k, False) for k in H11_PARAMS)):
-            slog.warn(logger, "BBC", "H11 floats all six polynomial coefficients, "
-                      "as in SNANA; individual H11 float settings do not restrict the fit")
+            log.warn(logger, "BBC", "H11 floats all six polynomial coefficients, "
+                     "as in SNANA; individual H11 float settings do not restrict the fit")
         floated = [k for k in floated if k not in H11_PARAMS] + list(H11_PARAMS)
         if "scalePCC" not in floated:
             floated.append("scalePCC")
@@ -314,8 +249,8 @@ def _warn_held_at_parval(held, config):
     this silently."""
     unset = {n: v for n, v in held.items() if n not in config.nuisance_val}
     if unset:
-        slog.warn(logger, "BBC", "held with no p<N> value, at SNANA's parval: "
-                  + ", ".join(f"{n}={v:g}" for n, v in unset.items()))
+        log.warn(logger, "BBC", "held with no p<N> value, at SNANA's parval: "
+                 + ", ".join(f"{n}={v:g}" for n, v in unset.items()))
 
 
 def _chi2max_keep(spec, inputs, config, m0_reference, chi2max):
@@ -486,7 +421,7 @@ def _apply_zbin_cuts(tv, accept, izbin, zbins, config):
     if sparse.all():
         raise SNANAError(
             f"no z bin with at least {config.min_per_zbin} SN",
-            function_name="prepare_cell")
+            function_name="_apply_zbin_cuts")
     if config.min_per_zbin <= 1 or config.cutwin_disable:
         return accept, nevt_zfit
     return _reject(tv, accept, sparse[izb], CUTBIT_MINBIN), nevt_zfit
@@ -506,17 +441,6 @@ def fit_spec(config, model, maps=None, ccprior=None, cc_ncell=0):
         cc_bias_names=tuple(bias_parameters(model, config)) if ccprior is not None else (),
         cc_ncell=cc_ncell,
     )
-
-
-def prepare_cell(config: BBCConfig, tables=None) -> BBCCell:
-    """Prepare a single cell through the same producers used by complete grids."""
-    cells = read_cells({None: (config, tables)})
-    maps = prepare_biascor_maps(cells)
-    priors = prepare_ccpriors(cells, maps)
-    data = prepare_data(cells)
-    format_data(cells, data)
-    biascor = interpolate_corrections(cells, data, maps)
-    return prepare_cells(cells, data, maps, biascor, priors)[None]
 
 
 def prepare_cells(cells, data, maps, biascor, priors):
@@ -573,7 +497,7 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
         ncell = 0
         with _section(timings, "prior_inputs"):
             if cc_prior is not None:
-                inp = inp._replace(ccprior=ccprior_data(cc_prior, tv, acc, maps,
+                inp = inp._replace(ccprior=ccprior_data(cc_prior, tv, acc,
                                                         model, config))
                 ncell = cc_ncell
             elif config.use_h11:
@@ -615,13 +539,6 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
                    nevt_zfit, timings, warnings, cc_counts, cc_version)
 
 
-def grid_width(cells: Mapping[Any, BBCCell]) -> int:
-    """The event count the grid's compiled functions are built for: its
-    largest cell. Compatible cells can reuse compiled fits at this width.
-    """
-    return max(int(cell.inputs.z.shape[0]) for cell in cells.values())
-
-
 def fit_cells(cells: Mapping[Any, BBCCell], fit_widths) -> Dict[Any, BBCResult]:
     """Fit every cell at its fit program's fixed event capacity."""
     results = {}
@@ -653,7 +570,7 @@ def finish_cell(cell: BBCCell, result: BBCResult, n_pad: int, t_start: float, *,
     is when the cell's preparation began, for the YAML's CPU minutes."""
     config, model, zbins, tv, accept, inputs = (
         cell.config, cell.model, cell.zbins, cell.tv, cell.accept, cell.inputs)
-    maps, summary_maps = cell.maps, cell.summary_maps
+    summary_maps = cell.summary_maps
     if write and config.write_chi2grid > 0:
         write_chi2grid(output_path(config, ".CHI2GRID"), cell.spec, inputs,
                        result, config.write_chi2grid)
@@ -714,7 +631,7 @@ def finish_cell(cell: BBCCell, result: BBCResult, n_pad: int, t_start: float, *,
                 if model.biascor_coeffs else "")
         output.biascor_summary = (m.ndim, nsim, note, m.sigint_biascor)
 
-    output.yaml = _yaml_summary(cell, output, (time.time() - t_start) / 60.0)
+    output.yaml = yaml_summary(cell, output, (time.time() - t_start) / 60.0)
 
     ncrazy = int(output.crazy_m0.sum())
     if ncrazy:
@@ -722,19 +639,19 @@ def finish_cell(cell: BBCCell, result: BBCResult, n_pad: int, t_start: float, *,
         output.warnings.append(
             f"WARNING(SEVERE): {ncrazy} fitted M0ERR have crazy values "
             "after final fit. ")
-        slog.warn(logger, "BBC",
-                  f"{ncrazy} z bin(s) with M0ERR outside [{CRAZY_ERRMIN_FRAC} * "
-                  f"{CRAZY_SIGINT_REF}/sqrt(N), {CRAZY_ERRMAX}] (crazy_M0_errors): "
-                  f"a sample scattering less than "
-                  f"sigint={CRAZY_SIGINT_REF} trips the floor while sigint is not "
-                  f"fitted (fitflag_sigmb={config.fitflag_sigmb})")
+        log.warn(logger, "BBC",
+                 f"{ncrazy} z bin(s) with M0ERR outside [{CRAZY_ERRMIN_FRAC} * "
+                 f"{CRAZY_SIGINT_REF}/sqrt(N), {CRAZY_ERRMAX}] (crazy_M0_errors): "
+                 f"a sample scattering less than "
+                 f"sigint={CRAZY_SIGINT_REF} trips the floor while sigint is not "
+                 f"fitted (fitflag_sigmb={config.fitflag_sigmb})")
     output.warnings += cell.warnings
 
-    slog.kv(logger, "N(data)", int(tv.cutmask.sum()))
+    log.kv(logger, "N(data)", int(tv.cutmask.sum()))
     for name in result.nuis_err:
-        slog.kv(logger, name, f"{result.nuisance[name]:.4f}")
-    slog.kv(logger, "sigint", f"{result.sigint:.4f}")
-    slog.kv(logger, "seconds", "  ".join(
+        log.kv(logger, name, f"{result.nuisance[name]:.4f}")
+    log.kv(logger, "sigint", f"{result.sigint:.4f}")
+    log.kv(logger, "seconds", "  ".join(
         f"{name} {value:.2f}" for name, value in cell.timings.items()
         if name != "fit_iterations"))
     return result, output, zbins, tv, accept
@@ -766,7 +683,7 @@ def finish_grid(prepared, *, write=True, t_start=None, fit_widths=None):
     if t_start is None:
         t_start = time.time()
     if fit_widths is None:
-        n_pad = grid_width(prepared)
+        n_pad = max(len(cell.inputs.z) for cell in prepared.values())
         fit_widths = dict.fromkeys((cell.spec for cell in prepared.values()), n_pad)
     results = fit_cells(prepared, fit_widths)
     return {key: finish_cell(cell, results[key], fit_widths[cell.spec], t_start, write=write)
@@ -789,8 +706,8 @@ def run_cat(config: BBCConfig) -> BBCConfig:
                          function_name="write_fitres_driver")
     tables = [read_fitres(p, as_text=True) for p in config.datafile]
     n = write_cat_fitres(config.cat_file_out, tables, config.datafile, config)
-    slog.kv(logger, "wrote", f"{n} events to {config.cat_file_out}")
-    slog.done(logger, Path(config.cat_file_out).name)
+    log.kv(logger, "wrote", f"{n} events to {config.cat_file_out}")
+    log.done(logger, Path(config.cat_file_out).name)
     return config
 
 
@@ -803,12 +720,12 @@ def run_bbc(config: BBCConfig, cat_prescale=None, tables=None) -> BBCConfig:
     if cat_prescale is not None:
         config.cat_only = True
         config.cat_prescale = cat_prescale
-    slog.banner(logger, "SALT2mu / BBC")
-    slog.kv(logger, "model_lcfit", config.model_lcfit)
-    slog.kv(logger, "datafile", ", ".join(config.datafile) or "(none)")
+    log.banner(logger, "SALT2mu / BBC")
+    log.kv(logger, "model_lcfit", config.model_lcfit)
+    log.kv(logger, "datafile", ", ".join(config.datafile) or "(none)")
 
     if not config.datafile and tables is None:
-        slog.warn(logger, "BBC", "no datafile given; nothing to fit")
+        log.warn(logger, "BBC", "no datafile given; nothing to fit")
         return config
 
     if config.cat_only:
@@ -817,29 +734,69 @@ def run_bbc(config: BBCConfig, cat_prescale=None, tables=None) -> BBCConfig:
     fitres_path = output_path(config, ".FITRES")   # fail before fitting, not after
     result, output, zbins, tv, accept = run_bbc_fit(config, tables=tables)
     write_outputs(fitres_path, result, output, zbins, tv, accept)
-    slog.done(logger, Path(config.prefix).name)
+    log.done(logger, Path(config.prefix).name)
     return output.config
 
 
-def write_outputs(fitres_path, result, output, zbins, tv, accept):
-    """Every file the BBC program writes for one fit, beside ``fitres_path``:
-    FITRES, then M0DIF, COV and CSV unless cutmask_write=-9, then the YAML.
-    ``output.config`` is the resolved config the fit ran with, blinded where
-    asked, which is what the headers report."""
-    config = output.config
-    passthrough = {n: np.asarray(a)[accept] for n, a in tv.passthrough.items()}
-    write_fitres(fitres_path, output, zbins, result, config,
-                 passthrough=passthrough, warnings=output.warnings)
-    # cutmask_write=-9 keeps the FITRES fit-results block and writes none of the
-    # binned outputs (write_M0_fitres :22701, write_M0_csv :22821,
-    # write_M0_cov :22882)
-    stem = str(fitres_path)[:-len(".FITRES")]
-    if config.cutmask_write != -9:
-        write_m0dif(f"{stem}.M0DIF", zbins, output, result, config,
-                    warnings=output.warnings)
-        write_cov(f"{stem}.COV", result.cov_m0)
-        if config.write_csv:
-            write_m0_csv(f"{stem}.CSV", zbins, output, config)
-    if config.write_yaml:          # SNANA default is off (SALT2mu.c:6485)
-        write_yaml(f"{stem}.YAML", output.yaml, result, config,
-                   timings=output.timings)
+@dataclass
+class DistanceFitResult:
+    """A BBC fit, its distances, redshift bins and accepted-event mask.
+
+    ``fit`` contains fitted nuisance parameters and their uncertainties.
+    ``output`` contains per-event distances and per-bin distance offsets.
+    ``accepted_mask`` selects rows of ``data`` used for those per-event arrays.
+    """
+
+    fit: BBCResult
+    output: BBCOutput
+    bins: ZBinGrid
+    data: TableVar
+    accepted_mask: np.ndarray
+
+    @property
+    def hubble_diagram(self):
+        """The binned M0DIF columns as a pandas DataFrame, ready for covariance construction."""
+        return pd.DataFrame(m0dif_columns(self.bins, self.output))
+
+
+def fit_distances(inputs=None, *, data=None, biascor=None, ccprior=None,
+                  write=False, **settings):
+    """Fit BBC distances using keyword settings, a mapping or an input file.
+
+    ``data``, ``biascor`` and ``ccprior`` accept ``FitresTable`` objects or
+    pandas DataFrames. Use ``FitresTable`` when header metadata is needed;
+    a DataFrame supplies columns only. Files can instead be named with
+    ``datafile``, ``simfile_biascor`` and ``simfile_ccprior`` settings.
+    A table and a file for the same input are rejected.
+
+    Keyword settings override ``inputs``.
+    Returns a ``DistanceFitResult``. Set ``write=True`` and supply ``prefix``
+    to write the configured outputs.
+    """
+    if isinstance(inputs, BBCConfig):
+        config = build_config(settings, config=inputs)
+    elif inputs is None or isinstance(inputs, Mapping):
+        config = build_config(merge_settings(inputs or {}, settings))
+    else:
+        config = parse_bbc_input(inputs, settings=settings)
+    tables = {}
+    for event_type, table in ((EVENT_TYPE_DATA, data), (EVENT_TYPE_BIASCOR, biascor),
+                              (EVENT_TYPE_CCPRIOR, ccprior)):
+        if table is None:
+            continue
+        if isinstance(table, pd.DataFrame):
+            table = FitresTable(df=table.copy(), varnames=list(table.columns), meta={},
+                                varnames_by_file=[list(table.columns)])
+        if not isinstance(table, FitresTable):
+            raise SNANAError('BBC tables must be FitresTable objects or pandas DataFrames')
+        tables[event_type] = table
+    if not config.datafile and EVENT_TYPE_DATA not in tables:
+        raise SNANAError('Supply data or the datafile setting for a distance fit')
+    if config.cat_only:
+        raise SNANAError('cat_only joins files; use run_bbc for that operation')
+    path = output_path(config, '.FITRES') if write else None
+    result = DistanceFitResult(*run_bbc_fit(config, tables=tables, write=write))
+    if write:
+        write_outputs(path, result.fit, result.output, result.bins,
+                      result.data, result.accepted_mask)
+    return result

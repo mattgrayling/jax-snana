@@ -4,9 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.models import (BayeSNModel, SALTModel, StandardisedModel,
-                                  model_input_keys, standardised_model)
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import (BayeSNModel, SALTModel, StandardisedModel, model_input_keys,
+                                  standardised_model)
 
 _NUIS = {"alpha0": 0.14, "dalpha_dz": 0.0, "beta0": 3.2, "dbeta_dz": 0.0,
          "gamma0": 0.0, "dgamma_dz": 0.0, "logmass_cen": 10.0, "logmass_tau": 0.01,

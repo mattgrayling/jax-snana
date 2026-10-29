@@ -9,19 +9,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils import sndata_root
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.builder import resolve_counts
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import sndata_root
+from jax_snlc_sim.rate import resolve_counts
+from jax_snlc_sim.inputs import (_ARGV_ONLY_KEYS, _parse_cutwin_filter_triplets,
+                                        group_override_tokens, is_key, known_keys,
+                                        parse_snana_input_file, read_keys)
 from jax_snlc_sim.zvariation import parse_variation_keys, shift_array
-from jax_snlc_sim.config_parser import (
-    _ARGV_ONLY_KEYS,
-    _parse_cutwin_filter_triplets,
-    group_override_tokens,
-    is_key,
-    known_keys,
-    parse_snana_input_file,
-    read_keys,
-)
 
 
 _FIXTURES = Path(__file__).parent.parent / "fixtures" / "snana"
@@ -58,7 +52,7 @@ def test_magnitude_dictating_genmodels_are_rejected(genmodel):
     posixpath, and bare SIMLIB and LCLIB parse to an empty model_type and are
     accepted silently.
     """
-    from jax_snlc_sim.config_parser import _check_genmodel_implemented
+    from jax_snlc_sim.inputs import _check_genmodel_implemented
     with pytest.raises(SNANAError, match="not implemented"):
         _check_genmodel_implemented(genmodel)
 
@@ -115,7 +109,6 @@ def test_solid_angle_names_the_fields(tmp_path):
 def test_resolve_model_type_hint_and_failure():
     """The path decides; the hint is only a fallback; neither is fatal."""
     from jax_snlc_core.models import resolve_model_type
-    from jax_snlc_core.utils.error_handling import SNANAError
     assert resolve_model_type('SALT3.K21', hint='bayesn') == 'salt'
     assert resolve_model_type('MLCS2k2.X', hint='salt') == 'salt'
     with pytest.raises(SNANAError):
@@ -152,14 +145,14 @@ def test_infer_model_type_from_path_prefix_not_substring():
 
 def test_no_warning_on_known_input(tmp_path, caplog):
     """A real input file consumes every key: no unrecognized-key warning."""
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         _parse_with_extra(tmp_path)
     assert "Unrecognized SNANA input key" not in caplog.text
 
 
 def test_warns_on_unrecognized_key(tmp_path, caplog):
     """A bogus key (and a near-miss typo) is listed in one warning."""
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         _parse_with_extra(tmp_path, "TOTALLY_BOGUS_KEY: 1\nGENMAG_TYPOO: 2\n")
     assert "Unrecognized SNANA input key" in caplog.text
     assert "TOTALLY_BOGUS_KEY" in caplog.text
@@ -730,6 +723,24 @@ def test_missing_genpdf_file_aborts(tmp_path):
         _parse_with_extra(tmp_path, "GENPDF_FILE: /nonexistent/missing.DAT\n")
 
 
+@pytest.mark.parametrize("spelling", ["SALT2x1", "x1"])
+@pytest.mark.parametrize("reweight", [1.0, 2.0])
+def test_genpdf_embedded_keys_override_existing_population(tmp_path, reweight, spelling):
+    """Embedded population keys override input values before constructing the draw."""
+    genpdf = tmp_path / "POPULATION.DAT"
+    genpdf.write_text(f"GENPEAK_{spelling}: 0.7\nGENSIGMA_{spelling}: 0.2 0.3\n")
+    cfg = _parse_with_extra(
+        tmp_path, f"GENPDF_FILE: {genpdf}\nGENPDF_EXPON_REWGT: {reweight}\n")
+    distribution, = cfg.model.populations['x1'].distributions
+    assert distribution.peak == 0.7
+    assert distribution.sigma == (0.2, 0.3)
+    assert distribution.range == (-2.0, 2.0)
+    assert distribution.prob_expon_rewgt == reweight
+    untouched, = cfg.model.populations['c'].distributions
+    assert untouched.peak == 0.0
+    assert untouched.sigma == (0.05, 0.05)
+
+
 def test_genmag_smear_in_a_genpdf_file(tmp_path):
     """GENMAG_SMEAR may sit in the GENPDF file (sntools_genPDF.c:221); a sim
     input that also sets it aborts, as init_modelSmear does (snlc_sim.c:9944)."""
@@ -914,7 +925,7 @@ def test_include_does_not_warn_as_unrecognised(tmp_path, caplog):
         tmp_path,
         primary_extra="INPUT_FILE_INCLUDE: extra.input\n",
         **{"extra.input": "GENPREFIX: X\n"})
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         parse_snana_input_file(path)
     assert "Unrecognized SNANA input key" not in caplog.text
 
@@ -961,7 +972,7 @@ def test_a_broken_value_does_not_shrink_the_known_keys(tmp_path):
 
 
 def test_key_plus_filter_one_line_per_band_accumulates(tmp_path):
-    from jax_snlc_sim.config_parser import _key_plus_filter
+    from jax_snlc_sim.inputs import _key_plus_filter
     raw = read_keys(_write_with_extra(
         tmp_path,
         "EXPOSURE_TIME_FILTER: g 2.0\n"
@@ -975,7 +986,7 @@ def test_key_plus_filter_one_line_per_band_accumulates(tmp_path):
 def test_key_plus_filter_no_comma_in_bands_reads_one_value(tmp_path):
     """Without a comma in the filter token, sscanf reads a single value for
     every named band (snlc_sim.c:3697-3703)."""
-    from jax_snlc_sim.config_parser import _key_plus_filter
+    from jax_snlc_sim.inputs import _key_plus_filter
     raw = read_keys(_write_with_extra(
         tmp_path, "EXPOSURE_TIME_FILTER: gri -6.4,3.2,6.9\n"))
     out = _key_plus_filter(raw, 'EXPOSURE_TIME', 1.0, 'gri')
@@ -983,7 +994,7 @@ def test_key_plus_filter_no_comma_in_bands_reads_one_value(tmp_path):
 
 
 def test_key_plus_filter_comma_bands_pair_values(tmp_path):
-    from jax_snlc_sim.config_parser import _key_plus_filter
+    from jax_snlc_sim.inputs import _key_plus_filter
     raw = read_keys(_write_with_extra(
         tmp_path, "EXPOSURE_TIME_FILTER: g,r,i 2.0,3.0,4.0\n"))
     out = _key_plus_filter(raw, 'EXPOSURE_TIME', 1.0, 'gri')
@@ -996,7 +1007,7 @@ def test_key_plus_filter_comma_bands_pair_values(tmp_path):
 
 
 def test_genperfect_exposure_preserves_band_ratios(tmp_path):
-    from jax_snlc_sim.config_parser import _apply_genperfect, _key_plus_filter
+    from jax_snlc_sim.inputs import _apply_genperfect, _key_plus_filter
     raw = read_keys(_write_with_extra(
         tmp_path,
         "GENPERFECT: 2\n"
@@ -1008,7 +1019,7 @@ def test_genperfect_exposure_preserves_band_ratios(tmp_path):
 
 
 def test_genperfect_smear_bit_clears_filter_smear(tmp_path):
-    from jax_snlc_sim.config_parser import _apply_genperfect
+    from jax_snlc_sim.inputs import _apply_genperfect
     raw = read_keys(_write_with_extra(
         tmp_path,
         "GENPERFECT: 4\n"
@@ -1036,7 +1047,7 @@ def test_take_spectrum_none_discards_previous_entries(tmp_path):
 
 
 def test_wv07_rewgt_zero_activates_profile():
-    from jax_snlc_sim.config_parser import _wv07_profile
+    from jax_snlc_sim.inputs import _wv07_profile
     assert _wv07_profile({'WV07_REWGT_EXPAV': 0}) == 1
     assert _wv07_profile({'WV07_REWGT_EXPAV': 0.0}) == 1
     assert _wv07_profile({'WV07_REWGT_EXPAV': -9.0}) == 0
@@ -1047,7 +1058,7 @@ def test_cutwin_snrmax_repeatable_with_logic(tmp_path):
     """Each CUTWIN_SNRMAX line is an independent AND-combined cut
     (snlc_sim.c:4338-4346); the logic token is AND, OR, or a validated
     integer (prep_user_CUTWIN, snlc_sim.c:7741-7760)."""
-    from jax_snlc_sim.config_parser import _cuts
+    from jax_snlc_sim.inputs import _cuts
     raw = read_keys(_write_with_extra(
         tmp_path,
         "CUTWIN_SNRMAX: 5 griz OR -20 60\n"
@@ -1119,12 +1130,12 @@ def test_cutwin_snrmax_rejects_a_filter_the_survey_lacks(tmp_path):
     """An undefined filter in CUTWIN_SNRMAX aborts (snlc_sim.c:24351-24358).
     Dropping it silently would leave the entry with no filters, and the
     NFILT requirement would then reject every event."""
-    from jax_snlc_sim.survey.cutwin import make_jax_cutwin
+    from jax_snlc_sim.cutwin import prepare_cutwin
     from dataclasses import replace
     from jax_snlc_sim.simulation import Cuts
     cuts = replace(Cuts(), snrmax_cuts=[(5.0, 'gX', 1, -20.0, 60.0)])
     with pytest.raises(SNANAError, match="Invalid filter"):
-        make_jax_cutwin(cuts, ['LSST-g', 'LSST-r'], byfield_masks=())
+        prepare_cutwin(cuts, ['LSST-g', 'LSST-r'], byfield_masks=())
 
 
 def test_unused_argv_only_key_aborts():

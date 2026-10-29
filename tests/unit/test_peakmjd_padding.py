@@ -6,7 +6,7 @@ import jax
 import numpy as np
 import pytest
 
-from jax_snlc_core.photometry.peakmjd import fmax_clump_peakmjd
+from jax_snlc_core.peak_time import fmax_clump_peakmjd
 
 
 @pytest.mark.parametrize('log_weight', [False, True])
@@ -44,7 +44,7 @@ def test_different_logical_histograms_reuse_compilation(caplog):
 
 
 def test_peak_sizes_use_head_pointers_and_overrides(tmp_path):
-    from jax_snlc_fit.data_loader import peak_sizes, read_header_override_file
+    from jax_snlc_fit.loader import peak_sizes, read_header_override_file
 
     head = dict(SNID=np.array(['1', '2']), PTROBS_MIN=np.array([1, 6]),
                 PTROBS_MAX=np.array([3, 8]))

@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from jax_salt2mu import map_kernels
-from jax_salt2mu.cellgrid import uniform_bininfo
-from jax_salt2mu.scatter import estimate
+from _bbc_helpers import uniform_bininfo
+from jax_salt2mu.map_kernels import estimate_intrinsic_scatter as estimate
 
 
 def _fit(mask, *, poisoned=False, zlimits=(0., 1.)):
@@ -84,7 +84,7 @@ def test_segmented_scatter_matches_independent_cells_with_masked_nan(mad):
 
 def test_centroid_roundoff_does_not_change_neighbour_choice():
     import jax.numpy as jnp
-    from jax_salt2mu.biascor_grid import below_centroid
+    from jax_salt2mu.binning import below_centroid
 
     value = np.array([.2, -.3, 10.])
     count = np.array([1, 100, 10000])
@@ -126,22 +126,32 @@ def test_error_map_selection_reuses_compilation():
 
 
 def test_host_map_entry_preserves_float64_in_single_precision_fit():
-    from jax_salt2mu.biascor_map import build_fitparbias
-    from jax_salt2mu.cellgrid import CellGrid
+    from types import SimpleNamespace
+    from jax_salt2mu.biascor import BiasCorEvents, _build_one_map
+    from jax_salt2mu.binning import CellGrid
+    from jax_salt2mu.config import BBCConfig
 
-    grid = CellGrid((uniform_bininfo(0., 1., 1),))
-    cell = np.zeros(20, dtype=np.int64)
+    bins = (uniform_bininfo(0., 1., 1), uniform_bininfo(-1., 1., 1))
+    grid = CellGrid(bins)
     bias = np.tile([1., 1. + 1.e-9], 10)[:, None]
+    events = BiasCorEvents([], np.zeros(20, dtype=int), np.ones((20, 1)),
+                           np.ones(20), np.zeros(20), bias)
+    table = SimpleNamespace(zhd=np.full(20, .5), logmass=np.zeros(20),
+                            sim_truth={"SIM_WGT_POP": np.ones(20)}, lcpar={})
+    model = SimpleNamespace(biascor_coeffs=(), biascor_binning={})
     with jax.enable_x64(False):
-        result = build_fitparbias(grid, cell, bias, np.ones(20), np.ones(20), [0])
+        result = _build_one_map(table, events, model, grid, bins, np.array([0.]),
+                                np.ones(20, dtype=bool), 1., BBCConfig())
         assert not jax.config.jax_enable_x64
-    assert result.val.dtype == np.float64
-    np.testing.assert_allclose(result.val[0, 0], np.mean(bias), atol=1.e-15, rtol=0.)
+    assert result.fitparbias.val.dtype == np.float64
+    np.testing.assert_allclose(result.fitparbias.val[0, 0], np.mean(bias),
+                               atol=1.e-15, rtol=0.)
+
 
 
 @pytest.mark.parametrize('clamp', [False, True])
 def test_device_bins_preserve_inclusive_edges_and_nan(clamp):
-    from jax_salt2mu.cellgrid import BinInfo
+    from jax_salt2mu.binning import BinInfo
 
     bins = BinInfo(3, np.array([0., .2, .5]), np.array([.2, .4, .8]),
                    np.array([.1, .3, .65]), .2)

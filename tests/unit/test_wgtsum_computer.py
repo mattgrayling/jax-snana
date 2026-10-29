@@ -10,17 +10,13 @@ with-snvars path based on the WGTMAP header.
 import numpy as np
 import pytest
 
-
-from jax_snlc_core.io.wgtmap_reader import read_wgtmap
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import MODEL_REGISTRY
-from jax_snlc_sim.hostlib.hostlib_selection import wgtmap_snvar_names
+from jax_snlc_core.snana_files import read_wgtmap
+from jax_snlc_sim.hostlib.catalogue import hostlib_declared, read_hostlib
+from jax_snlc_sim.hostlib.host_selection_weights import wgtmap_snvar_names
+from jax_snlc_sim.hostlib.host_selection_weights import WgtSumData, compute_wgtsum
 from jax_snlc_sim.population import declared_population, population_spellings
-from jax_snlc_sim.hostlib.hostlib_reader import hostlib_declared, read_hostlib
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_sim.hostlib.wgtsum_computer import (
-    compute_wgtsum,
-    WgtSumData,
-)
 
 # what a SALT run declares: its population under each spelling, plus the
 # host dust every model draws

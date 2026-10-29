@@ -1,19 +1,29 @@
-"""Photo-z steps of :class:`LightCurveFitter`'s fit.
+"""Redshift as a fit parameter, and the host redshift PDFs.
 
 When ``config.photoz.dofit_photoz`` is set, redshift becomes a free fit
 parameter, the last of the fit vector, alongside the model parameters. The
-fit itself is the fitter's one round loop; this module holds what only a
-photo-z fit does:
+fit itself is the fitter's one round loop; this module holds what a photo-z
+fit adds to it:
 
 - :func:`redshift_priors` is every SN's redshift prior as the fit reads
-  it, and :func:`scan_size` sizes the coarse z grid from the whole
-  sample's so all batches share a single compiled scan.
-- :func:`coarse_z_grids` and :func:`coarse_grid_axes` are the axes of the
-  coarse grid search that seeds the fit.
+  it, and :func:`distance_prior_tables` the PRIOR_MUERRSCALE and
+  PRIOR_DMU_RANGE distance prior; :func:`photoz_priors` evaluates their chi2
+  contributions for the fitter.
+- :func:`scan_size`, :func:`coarse_z_grids` and :func:`coarse_grid_axes`
+  size and lay out the coarse grid search that seeds the fit, the whole
+  sample's at once so all batches share a single compiled scan;
+  :func:`redshift_bounds` and :func:`pdf_support_mask` are the PHOTOZ_BOUND
+  range each event is fitted over.
 - :func:`iter1_band_mask`, :func:`round1_band_set` and
   :func:`dropped_epochs` are PHOTOZ_ANA's band set: round 1's
   PHOTOZ_ITER1_LAMRANGE, then the margin test at the fitted z (SNANA
   PHOTOZ_DROPFILTER) over each band's :func:`band_z_ranges`.
+- :func:`fitted_z` is each event's redshift as fitted, photo-z or not.
+
+:func:`precompute_zpdf_spline` splines a host's redshift quantiles into a
+PDF. A photo-z fit's quantile prior reads it, and so do the loader's
+USE_SNHOST_QZPHOT substitution and the QZPHOT output columns, outside any
+photo-z fit.
 
 Photo-z with non-SALT models (the generic path, e.g. BayeSN) is an
 extension beyond SNANA: snlc_fit.exe hard-stops in INIT_COURSEBIN_PHOTOZ
@@ -27,10 +37,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.physics.cosmology import reference_distance_modulus
-from jax_snlc_core.utils import SNANA_NULLFLOAT, ZSPEC_SOURCE_MASK
-from jax_snlc_core.utils.interp import compute_catmullrom_slopes, hermite_interp_1d
-from .loss_functions import precompute_zpdf_spline
+from jax_snlc_core.cosmology import reference_distance_modulus
+from jax_snlc_core.interpolation import (compute_catmullrom_slopes, hermite_interp_1d,
+                                         hermite_spline_derivative, natural_spline_slopes,
+                                         spline_knots, steffen_slopes)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SNANA_NULLFLOAT
+
+from . import parameters
+
+# MASK_REDSHIFT_SOURCE bits marking a spec-z: 1 host, 2 SN (sndata.h:106-107)
+ZSPEC_SOURCE_MASK = 3
 
 # SNANA MXRATIO_INIVAL_ZPHOT (snlc_fit.F90:8568)
 LZDONE_FRACTIONAL_THRESHOLD = 0.05
@@ -137,7 +154,6 @@ class RedshiftPriors(NamedTuple):
     pdf_grid: jnp.ndarray
     pdf_vals: jnp.ndarray
     pdf_slopes: jnp.ndarray
-    pdf_max: jnp.ndarray
 
 
 def is_zspec(config, batch, n_sne):
@@ -209,7 +225,6 @@ def redshift_priors(config, batch) -> RedshiftPriors:
         pdf_vals_np = expand(spline_data['pdf_fine'])
         pdf_max_np = expand(spline_data['pdf_max'])
         pdf_vals = jnp.asarray(pdf_vals_np)
-        pdf_max = jnp.asarray(pdf_max_np)
 
         # SNHOST_QZPHOT_MEAN/STD from the splined PDF
         pdf_fine_np = pdf_vals_np * pdf_max_np[:, None]
@@ -224,7 +239,7 @@ def redshift_priors(config, batch) -> RedshiftPriors:
         zpdf_std = np.where(use_quantiles, zpdf_std, np.asarray(batch.redshift_errs))
         pdf_slopes = jax.vmap(compute_catmullrom_slopes)(pdf_grid, pdf_vals)
     else:
-        pdf_grid = pdf_vals = pdf_slopes = pdf_max = None
+        pdf_grid = pdf_vals = pdf_slopes = None
 
     host_ok = jnp.ones(n_sne, dtype=bool)
     lo_b, hi_b = config.photoz.photoz_bound
@@ -260,7 +275,7 @@ def redshift_priors(config, batch) -> RedshiftPriors:
     z_prior_width = jnp.where(sentinel, batch.redshift_errs, z_prior_width)
     return RedshiftPriors(z_init, z_prior, z_prior_err, z_prior_width,
                           host_ok, jnp.asarray(use_quantiles),
-                          pdf_grid, pdf_vals, pdf_slopes, pdf_max)
+                          pdf_grid, pdf_vals, pdf_slopes)
 
 
 def scan_size(config, z_priors):
@@ -445,3 +460,182 @@ def dropped_epochs(config, restlambda, lam, filter_indices, physical,
                                      z_priors.z_prior_width)
     dropped = dropped & jnp.reshape(which, (-1, 1))
     return jnp.take_along_axis(dropped, filter_indices, axis=1)
+
+
+def zpdf_rows_usable(z_quantiles, n_quantiles=None):
+    """Which events' quantiles the spline can take: at least two, strictly
+    increasing across the row, a null marker included (init_spline aborts on
+    fewer than two and returns an error code otherwise,
+    sntools_spline.c:188-210). ``n_quantiles`` excludes padded columns."""
+    q = np.asarray(z_quantiles)
+    counts = (np.full(len(q), q.shape[1]) if n_quantiles is None
+              else np.asarray(n_quantiles))
+    used = np.arange(max(q.shape[1] - 1, 0)) < counts[:, None] - 1
+    return (np.all((np.diff(q, axis=1) > 0) | ~used, axis=1)
+            & (counts >= 2) & (counts <= q.shape[1]))
+
+
+# events whose PDFs are evaluated at once
+ZPDF_SPLINE_ROWS = 2048
+
+
+def precompute_zpdf_spline(z_quantiles, cdf_percentiles, n_fine=1000,
+                           spline='cubic', n_quantiles=None):
+    """Precompute the fine-grid PDF for the quantile redshift prior, returning
+    a dict of ``z_fine``, ``pdf_fine`` (PDF/PDF_max), ``pdf_max``, ``pdf_mean``
+    and ``pdf_std``, each [n_sne] or [n_sne, n_fine].
+    ``n_quantiles`` excludes padded columns when rows have different counts.
+
+    The PDF is the derivative of the ``spline`` through the CDF at
+    ``z_quantiles`` ([n_sne, n_q] or [n_q], the redshift at each of the
+    ``cdf_percentiles``, e.g. ``[0.0, 0.1, ..., 1.0]``), on a fine z-grid
+    over each SN's quantile range; the fit Hermite-interpolates it at
+    runtime for correct AD gradients and Hessians. The splines are the
+    interpolants SNANA reads the PDF from (init_spline, sntools_spline.c):
+    GSL's cspline and its steffen.
+    """
+    knot_slopes = {'cubic': natural_spline_slopes,
+                   'steffen': steffen_slopes}[spline]
+    z_quantiles = np.atleast_2d(np.asarray(z_quantiles, dtype=np.float64))
+    cdf_percentiles = np.broadcast_to(cdf_percentiles, z_quantiles.shape)
+    n_sne = z_quantiles.shape[0]
+    z_fine = np.empty((n_sne, n_fine))
+    pdf = np.empty((n_sne, n_fine))
+    counts = (np.full(n_sne, z_quantiles.shape[1]) if n_quantiles is None
+              else np.asarray(n_quantiles))
+    if not zpdf_rows_usable(z_quantiles, counts).all():
+        raise SNANAError("each redshift PDF needs at least two increasing quantiles",
+                         function_name="precompute_zpdf_spline")
+    for count in np.unique(counts):
+        indices = np.flatnonzero(counts == count)
+        for start in range(0, len(indices), ZPDF_SPLINE_ROWS):
+            rows = indices[start:start + ZPDF_SPLINE_ROWS]
+            knots = spline_knots(z_quantiles[rows, :count],
+                                 cdf_percentiles[rows, :count])
+            z_fine[rows], pdf[rows] = hermite_spline_derivative(
+                knots, knot_slopes(knots), n_fine)
+    pdf = np.maximum(pdf, 0.0)  # sntools_zPDF_spline.c:145
+    pdf_max = np.max(pdf, axis=1)
+    pdf_max = np.where(pdf_max > 0, pdf_max, 1.0)
+    pdf_fine = pdf / pdf_max[:, None]
+
+    # fine-grid mean/std; SNANA's integrate the same spline over 100 bins
+    # (NBIN_SPLINE_GEN, sntools_spline.h:70)
+    pdf_mean = np.average(z_fine, weights=pdf_fine, axis=1)
+    pdf_std = np.sqrt(np.average((z_fine - pdf_mean[:, None])**2, weights=pdf_fine, axis=1))
+
+    return {
+        'z_fine': z_fine,
+        'pdf_fine': pdf_fine,
+        'pdf_max': pdf_max,
+        'pdf_mean': pdf_mean,
+        'pdf_std': pdf_std,
+    }
+
+
+def fitted_z(config, params, redshifts):
+    """Each event's redshift as fitted: its zPHOT under photo-z, and
+    ``redshifts``, the data's, otherwise."""
+    return np.asarray(params['zPHOT'] if config.photoz.dofit_photoz
+                      else redshifts)
+
+
+def z_prior_sigma(z_prior_err, zerrscale):
+    """PRIOR_ZPULL's width, protected against a zero error then scaled.
+
+    SNANA adds the floor in quadrature before applying PRIOR_ZERRSCALE
+    (snlc_fit.F90:12598), so the scale reaches a zero-error event too.
+    """
+    return jnp.sqrt(z_prior_err ** 2 + 1.0e-6) * zerrscale
+
+
+def chi2_z_prior_gaussian(z_fit, z_prior, z_prior_err, zerrscale):
+    """Gaussian redshift prior chi2, SNANA PRIOR_ZPULL (snlc_fit.F90:12610)."""
+    return ((z_fit - z_prior) / z_prior_sigma(z_prior_err, zerrscale)) ** 2
+
+
+def chi2_z_prior_quantile(z_fit, z_fine, pdf_fine, pdf_slopes):
+    """Photo-z PDF quantile prior chi2 via Hermite-interpolated PDF.
+
+    Matches SNANA eval_zPDF_spline (sntools_zPDF_spline.c):
+        1. Cubic spline (natural or Steffen) fit to CDF(z) from quantile
+           data (at setup)
+        2. PDF evaluated on fine z-grid from spline derivative (at setup)
+        3. Runtime: Catmull-Rom Hermite interpolation of PDF on fine grid
+        4. chi2 = -2 * log(PDF / PDF_max), or 1000 where the PDF is not
+           positive (snlc_fit.F90:4893)
+
+    The fine-grid Hermite interpolation is C1-continuous, so the AD
+    gradients and Hessians are exact inside the PDF's support.
+
+    ``z_fine`` and ``pdf_fine`` (PDF/PDF_max) are the fine grid
+    :func:`~jax_snlc_fit.photoz.precompute_zpdf_spline` returns and ``pdf_slopes`` their
+    Catmull-Rom slopes, each shape ``(n_fine,)``.
+    Returns the scalar chi2 contribution.
+    """
+    outside = (z_fit < z_fine[0]) | (z_fit > z_fine[-1])
+    z_clipped = jnp.clip(z_fit, z_fine[0], z_fine[-1])
+    pdf_norm = hermite_interp_1d(z_clipped, z_fine, pdf_fine, pdf_slopes)
+    wall = outside | (pdf_norm <= 0.0)
+    # log(1) where discarded, so the wall's derivatives are zero, not NaN
+    return jnp.where(wall, 1000.0, -2.0 * jnp.log(jnp.where(wall, 1.0, pdf_norm)))
+
+
+def z_prior_chi2(settings, z, z_prior):
+    """One event's redshift-prior chi2 at ``z``: SNANA's
+    CHI2PRIOR(IPAR_zPHOT) (snlc_fit.F90:4903-4921), zero where OPT_PRIOR
+    leaves it out (:4868)."""
+    if settings['config'].model.opt_prior <= 0:
+        return jnp.zeros(())
+    def gaussian():
+        return chi2_z_prior_gaussian(
+            z, z_prior.z_prior, z_prior.z_prior_width,
+            settings['config'].photoz.prior_zerrscale)
+
+    if z_prior.pdf_grid is not None:
+        return jax.lax.cond(
+            z_prior.use_quantiles,
+            lambda: chi2_z_prior_quantile(
+                z, z_prior.pdf_grid, z_prior.pdf_vals, z_prior.pdf_slopes),
+            gaussian)
+    return gaussian()
+
+
+# SNANA tabulates the PRIOR_MUERRSCALE prior over pulls of -10 to 10 and
+# CHI2_PRIOR clamps into the table, so a larger pull costs no more
+# (FITINI_MUPRIOR, snlc_fit.F90:11706; CHI2_PRIOR, :12413)
+MUPULL_MAX = 10.0
+
+
+def _distance_prior_chi2(settings, mu, z):
+    """The distance-prior chi2 of a source at distance modulus ``mu`` and
+    redshift ``z``, which broadcast: CHI2PRIOR(IPAR_DLMAG) under photo-z
+    (snlc_fit.F90:4910-4917), zero where OPT_PRIOR leaves priors out
+    (:4868). PRIOR_MUERRSCALE is a Gaussian on the offset from the reference
+    distance, PRIOR_DMU_RANGE a flat window on it."""
+    cfg = settings['config']
+    if cfg.model.opt_prior <= 0:
+        return jnp.zeros(())
+    tables = settings['distance_prior']
+    ln_z = jnp.log(z)
+    dmu = mu - hermite_interp_1d(ln_z, tables['ln_z'], tables['mu'], tables['mu_slopes'])
+    if cfg.photoz.prior_muerrscale is not None:
+        sigma = hermite_interp_1d(ln_z, tables['ln_z'], tables['sigma'],
+                                  tables['sigma_slopes'])
+        return jnp.clip(dmu / (cfg.photoz.prior_muerrscale * sigma),
+                        -MUPULL_MAX, MUPULL_MAX) ** 2
+    lo, hi = cfg.photoz.prior_dmu_range
+    return parameters.FORMS['flat_rolloff'](
+        dmu, {'lo': lo, 'hi': hi, 'sigma': cfg.photoz.prior_dmu_sigma})
+
+
+def photoz_priors(settings, chi2, z, z_prior, distance):
+    """``chi2`` with a photo-z fit's priors added at redshift ``z``: the
+    redshift prior (:func:`z_prior_chi2`) and, when one is set, the distance
+    prior on the distance modulus ``distance()`` returns
+    (:func:`_distance_prior_chi2`). One event's chi2 adds them at its fitted
+    parameters and the coarse grid at every grid point."""
+    chi2 = chi2 + z_prior_chi2(settings, z, z_prior)
+    if settings['distance_prior'] is not None:
+        chi2 = chi2 + _distance_prior_chi2(settings, distance(), z)
+    return chi2

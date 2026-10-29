@@ -17,13 +17,12 @@ from dataclasses import replace
 
 import numpy as np
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.config_parser import parse_snana_input_file  # noqa: E402
-from jax_snlc_sim.random_streams import root_key  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 def _load_sedtrue_spec(path):
@@ -78,7 +77,7 @@ def test_sedtrue_replay(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SEDT", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SEDT", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana = _load_sedtrue_spec(fx.root / "SPEC.FITS")
     jax_spec = _load_sedtrue_spec(tmp_path / "SEDT" / "SEDT_SPEC.FITS")
@@ -182,7 +181,7 @@ def test_sedtrue_text_spectra(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SEDT2", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SEDT2", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana = _load_sedtrue_spec(fx.root / "SPEC.FITS")
     dats = sorted((tmp_path / "SEDT2").glob("SEDT2_SN*.DAT"))
@@ -236,7 +235,7 @@ def test_sedtrue_cidran_and_nospec(snana_fixture, tmp_path):
     def save(mask, ver):
         """format_mask is read only when writing, so one run serves both masks."""
         simulation.output.format_mask = mask
-        sim_run.save_snana_outputs(sim, results, ver, sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+        save_snana_outputs(sim, results, ver, sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
         return tmp_path / ver
 
     # noSPEC first: the CIDRAN write renumbers results['parameters']['cid'] in place

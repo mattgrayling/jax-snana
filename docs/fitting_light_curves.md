@@ -36,7 +36,7 @@ fitting input `fit.nml` could contain:
 including transmission curves and reference standards. The model and
 calibration paths can contain environment variables.
 {ref}`data-version-location` describes the dataset directory search, and
-{ref}`preparing-text-data` explains how to convert TEXT observations for fitting.
+{ref}`preparing-text-data` explains how to prepare TEXT observations for fitting.
 
 Run the fit with `snlc_fit`. Trailing `KEY value` pairs override the input
 settings:

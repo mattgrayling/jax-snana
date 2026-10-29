@@ -11,13 +11,13 @@ equivalent of), and the tracemalloc/debug instrumentation. An input file naming
 any of them is warned about rather than silently accepted.
 
 The input YAML's `DOUBLE_PRECISION` key chooses the frame and defaults to single
-(`jax_snlc_core.utils.precision`); importing this package fixes nothing.
+(`jax_snlc_core.utils`); importing this package fixes nothing.
 """
 
-from .config import Cosmology, Covopt, CreateCovConfig
-from .config_parser import apply_filter, load_config, parse_covopt
-from .run import CovResult, build_covariance, create_covariance, write_outputs
-from .api import compute_covariance
+from .config import (Cosmology, Covopt, CreateCovConfig, apply_filter, load_config,
+                     parse_covopt)
+from .covariance import (CovResult, build_covariance, compute_covariance, create_covariance,
+                         write_outputs)
 
 __all__ = [
     "compute_covariance",

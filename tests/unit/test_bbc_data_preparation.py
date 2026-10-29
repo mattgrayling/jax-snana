@@ -1,14 +1,15 @@
 """Grouping numerical data must preserve conversion and local selection."""
-from copy import deepcopy
 from dataclasses import fields, replace
+
 import numpy as np
 import pytest
 
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.preparation import read_cells, prepare_data, format_data, select_data
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, tablevar_from
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_salt2mu.preparation import format_data, prepare_data, read_cells, select_data
+from jax_salt2mu.tablevar import EVENT_TYPE_DATA
+from _bbc_helpers import tablevar_from
 from jax_snlc_core.models import standardised_model
+from jax_snlc_core.snana_files import read_fitres
 
 
 @pytest.fixture

@@ -24,10 +24,10 @@ for extra in ("tests/parity", "."):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump, resolve_fits_path  # noqa: E402
 from replay_snana_dump import build_override_parameters  # noqa: E402
 from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
 
 _FIXTURE = "salt3_k21_replay"
 
@@ -72,7 +72,7 @@ def _run_jax(inp, out_dir, genversion, override=None):
         resources = sim
         ov = build_override_parameters(dump, simulation, resources, head_columns=head_cols)
         res, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=ov)
-    sim_run.save_snana_outputs(sim, res, genversion, sel, spectra_cache=spectra_cache, output_dir=str(out_dir))
+    save_snana_outputs(sim, res, genversion, sel, spectra_by_sn=spectra_cache, output_dir=str(out_dir))
     return out_dir / genversion
 
 
@@ -246,8 +246,8 @@ def test_simlib_dump_rowvalues_live(tmp_path, fixture, simlib, filters, mjd, tag
     run_simlib_dump reads only the SIMLIB, so the two compare directly: AVG is
     byte-exact; OBS matches except float32-MJD-level noise in MJD-derived cols.
     Two SIMLIB layouts exercise both DEC/DECL and inline/standalone FIELD."""
-    from jax_snlc_sim.config_parser import parse_snana_input_file
-    from jax_snlc_sim.simlib_dump import run_simlib_dump
+    from jax_snlc_sim.inputs import parse_snana_input_file
+    from jax_snlc_sim.diagnostics import run_simlib_dump
     fdir = PROJECT_ROOT / "tests" / "fixtures" / "data"
     env = os.environ.copy()
     env["JAX_TEST_FIXTURE_ROOT"] = str(fdir)

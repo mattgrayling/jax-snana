@@ -8,13 +8,13 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from jax_snlc_sim.hostlib.cache_manager import (
+from jax_snlc_sim.hostlib.catalogue import (
     _SOURCE_HASH_META_KEY, cache_paths, has_valid_cache, save_to_cache,
 )
 
 
 def _touch_newer(path, seconds=10):
-    """Age a file forward; cache_manager compares raw getmtime floats."""
+    """Age a file forward; cache validation compares raw getmtime floats."""
     t = os.path.getmtime(path) + seconds
     os.utime(path, (t, t))
 
@@ -85,7 +85,7 @@ def test_a_failed_cache_write_leaves_nothing_behind(tmp_path):
     write that dies leaves the previous file (or none) rather than the
     zero-byte Parquet the next reader trips over. Two pytest workers on a
     cold cache is the ordinary case, not a rare one."""
-    from jax_snlc_sim.hostlib.cache_manager import _write_then_rename
+    from jax_snlc_sim.hostlib.catalogue import _write_then_rename
 
     target = tmp_path / "x.parquet"
 
@@ -101,7 +101,7 @@ def test_a_failed_cache_write_leaves_nothing_behind(tmp_path):
 
 def test_a_successful_cache_write_renames_into_place(tmp_path):
     """The happy path leaves the file and no temporary neighbours."""
-    from jax_snlc_sim.hostlib.cache_manager import _write_then_rename
+    from jax_snlc_sim.hostlib.catalogue import _write_then_rename
 
     target = tmp_path / "y.parquet"
     _write_then_rename(str(target), lambda path: Path(path).write_bytes(b"ok"))

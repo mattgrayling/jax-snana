@@ -9,12 +9,14 @@ concerns separate.
 
 Key public exports:
     - LightCurveFitter, FitConfig: main fitting interface
+    - run_fitting: the snlc_fit command, run on a FitConfig
     - fit_static_data, fit_photometry: what the fitter evaluates a model
       against, and the calibrated filters of a data version
 """
 
 from .config import FitConfig
-from .fitter import LightCurveFitter, fit_photometry, fit_static_data
+from .fitter import fit_static_data, LightCurveFitter
+from .calibration import fit_photometry
 from .run import run_fitting
 
 __all__ = [

@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_sim.hostlib.hostlib_selection import (
+from jax_snlc_sim.hostlib.selection import (
     compute_dztol,
     compute_snvar_bin_index_1d,
     compute_snvar_bin_index_1d_vectorized,
@@ -58,7 +58,7 @@ def test_snvar_value_outside_wgtmap_range_is_flagged():
     sntools_host.c:1655-1660) instead of silently taking the edge bin's
     weights; the edges themselves are inside."""
     from types import SimpleNamespace
-    from jax_snlc_sim.hostlib.hostlib_selection import HostSelector
+    from jax_snlc_sim.hostlib.selection import HostSelector
 
     sel = SimpleNamespace(
         has_snvars=True,

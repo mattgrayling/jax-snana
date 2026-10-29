@@ -15,7 +15,7 @@ ROOT = HERE.parents[3]
 sys.path.insert(0, str(ROOT))
 from tests.parity.test_bbc_output_contract import CONFIGS, CHI2GRID_NBIN
 from tests.fixtures.snana.bbc_des_beams.build import build
-from jax_snlc_core.io.fits_path import open_text, resolve_fits_path
+from jax_snlc_core.snana_files import open_text, resolve_fits_path
 
 
 def main():

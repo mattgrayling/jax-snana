@@ -8,30 +8,19 @@ the prepared object `build_simulation` returns.
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import jax
 import numpy as np
 
-from jax_snlc_core.io import is_ignorefile
-from jax_snlc_core.physics.cosmology import load_hz_map
-from jax_snlc_core.physics.dust_laws import load_dust_law
-from jax_snlc_core.photometry.noise import ZEROPOINT_FLUXCAL_SNANA
-from jax_snlc_sim.rate import parse_dndz_entries
-
-
-@dataclass
-class RateModifiers:
-    """Multiplicative DNDZ reweighting, neutral unless supplied."""
-
-    scale: float = 1.0
-    zexp: float = 0.0
-    zpoly: List[float] = field(default_factory=list)
-    z1poly: List[float] = field(default_factory=list)
-
-
-def neutral_rate_mods() -> Dict[str, Any]:
-    return dataclasses.asdict(RateModifiers())
+from jax_snlc_core.models import MODEL_REGISTRY, infer_model_type_from_path
+from jax_snlc_core.random import root_key
+from jax_snlc_core.cosmology import load_hz_map
+from jax_snlc_core.dust import load_dust_law
+from jax_snlc_core.filters import ZEROPOINT_FLUXCAL_SNANA
+from jax_snlc_core.snana_files import is_ignorefile
+from jax_snlc_sim.population import declared_population
+from jax_snlc_sim.rate import neutral_rate_mods, parse_dndz_entries
 
 
 @dataclass
@@ -234,37 +223,6 @@ class Cosmology:
 
 
 @dataclass(frozen=True)
-class HostDustParameter:
-    """One host-dust quantity the sampler draws for every event, whatever the
-    SED model, alongside that model's own population parameters."""
-
-    #: the distributions and GENPDF maps key
-    key: str
-    #: spellings of the same quantity in GENGAUSS and GENPDF input
-    input_names: Tuple[str, ...]
-    #: the HOSTLIB column USESNPAR reads it from
-    hostlib_column: str
-    #: an exp + half-Gaussian profile rather than a GENGAUSS population
-    exp_halfgauss: bool
-    #: the per-SN parameter it lands in, where it has one of its own. EBV is a
-    #: parameterisation of AV, so the drawn value is AV either way.
-    param: Optional[str] = None
-
-
-#: SNANA grants the dust HOSTLIB columns to SALT alone and accepts AV and RV as
-#: WGTMAP dimensions for any model; jax grants both to every model, since every
-#: model draws host dust.
-HOST_DUST_PARAMETERS = (
-    HostDustParameter(key='RV', input_names=('RV',), hostlib_column='RV',
-                      exp_halfgauss=False, param='rv'),
-    HostDustParameter(key='AV', input_names=('AV', 'AV_HOST'),
-                      hostlib_column='AV', exp_halfgauss=True, param='av'),
-    HostDustParameter(key='EBV_HOST', input_names=('EBV', 'EBV_HOST'),
-                      hostlib_column='EBV', exp_halfgauss=True),
-)
-
-
-@dataclass(frozen=True)
 class SubPopulation:
     """One named class of SNe, drawn once per event.
 
@@ -299,15 +257,12 @@ class Model:
     @property
     def model_type(self) -> str:
         """Registered model family, determined by GENMODEL."""
-        from jax_snlc_core.models import infer_model_type_from_path
         return infer_model_type_from_path(self.genmodel) or ''
 
     def population_declaration(self):
         """The model's population parameter names, their other input
         spellings and SNANA's defaults, as its class or its input declares
         them."""
-        from jax_snlc_core.models import MODEL_REGISTRY
-        from jax_snlc_sim.population import declared_population
         return declared_population(MODEL_REGISTRY[self.model_type],
                                    self._structured_config)
 
@@ -1182,22 +1137,6 @@ class Lensing:
 
 
 @dataclass
-class SpectrumRequest:
-    """One TAKE_SPECTRUM observation and its exposure prescription."""
-
-    field: str = ''
-    wgt: float = 1.0
-    epoch_frame: Literal['', 'REST', 'OBS', 'MJD', 'HOST'] = ''
-    epoch_range: List[float] = dataclasses.field(default_factory=lambda: [0.0, 0.0])
-    epoch_step: Optional[float] = None
-    opt_texpose: Literal[0, 1, 2] = 0
-    zpoly_texpose: List[float] = dataclasses.field(default_factory=list)
-    zpoly_snr: List[float] = dataclasses.field(default_factory=list)
-    snr_lamrange: List[float] = dataclasses.field(default_factory=lambda: [0.0, 0.0])
-    snr_lam_frame: Literal['REST', 'OBS'] = 'REST'
-
-
-@dataclass
 class Spectra:
     """Spectrograph configuration and exposure requests."""
 
@@ -1589,8 +1528,7 @@ class LightCurveSimulator:
     phase_range: Tuple[float, float] = field(metadata={'static': True})
     model_wave_range: Tuple[float, float] = field(metadata={'static': True})
     filter_center_range: Tuple[float, float] = field(metadata={'static': True})
-    gensmear_n_randoms: int = field(metadata={'static': True})          # GENMAG_SMEAR_MODELNAME randoms per SN
-    gensmear: Optional[Any]   # (randoms, wavelengths) -> DeltaM
+    gensmear: Optional[Any]   # prepared wavelength-dependent intrinsic scatter
 
     # survey identity (SIMLIB header SURVEY after SIMLIB_SURVEY)
     survey_name: str = field(default=None, metadata={'static': True})
@@ -1667,25 +1605,25 @@ class LightCurveSimulator:
     phasecor_cholesky_L: Optional[Any]  # None = GENMAG_SMEAR_ADDPHASECOR off
     fluxerr_enabled: bool = field(metadata={'static': True})
     fluxerr_active_vars: Tuple[str, ...] = field(metadata={'static': True})
-    fluxerr_n_dims: int = field(metadata={'static': True})
     fluxerr_is_errscale: bool = field(metadata={'static': True})
-    fluxerr_grid: Optional[Any]
+    fluxerr_grids: Optional[Any]
     fluxerr_grid_origins: Tuple[float, ...]
     fluxerr_grid_steps: Tuple[float, ...]
-    fluxerr_grid_lengths: Tuple[int, ...] = field(metadata={'static': True})
     fluxerr_scale_true: Optional[Any]
     fluxerr_scale_data: Optional[Any]
-    fluxerr_mask_true: Optional[Any]
-    fluxerr_mask_data: Optional[Any]
-    fluxerr_field_group_idx_per_field: Optional[Any]
+    fluxerr_applies_true: Optional[Any]
+    fluxerr_applies_data: Optional[Any]
+    fluxerr_map_index_per_field: Optional[Any]
     fluxerr_needs_host_vars: bool = field(metadata={'static': True})
     fluxerr_has_redcov: bool = field(metadata={'static': True})
     fluxerr_redcov_factors: Optional[Any]
     fluxerr_n_factors: int = field(metadata={'static': True})
+    # Match counts per field and band, checked only for generated epochs.
+    fluxerr_map_counts: Optional[Any] = field(default=None, metadata={'host_only': True})
+    fluxerr_redcov_counts: Optional[Any] = field(default=None, metadata={'host_only': True})
 
     # weak lensing
     lensing_probmap: Optional[Any]
-    lensing_inv_cdf: Optional[Any]
 
     rates: Rates | None = None
     cosmology: Cosmology | None = None
@@ -1771,3 +1709,15 @@ for _record in (
         meta_fields=[f.name for f in _fields if f.metadata.get("static")],
         drop_fields=[f.name for f in _fields if f.metadata.get("host_only")],
     )
+
+
+def run_key(simulation):
+    """The root key of an ordinary run's events: RANSEED's, with CIDOFF folded
+    in under random CIDs (FORMAT_MASK 16), where SNANA's CID draw takes
+    CIDOFF and more randoms off the stream before the first event. The CID
+    draw itself stays on `root_key`, so every job sharing a seed draws the
+    same CID list."""
+    key = root_key(simulation.run.random_seed)
+    if simulation.output.format_mask & FORMAT_MASK_CIDRAN and simulation.output.cidoff:
+        key = jax.random.fold_in(key, simulation.output.cidoff)
+    return key

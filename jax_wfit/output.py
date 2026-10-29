@@ -11,16 +11,14 @@ import numpyro
 import yaml
 from scipy.linalg import cho_factor, cho_solve
 
-from jax_snlc_core.io.factorized_covariance import dense_factorized_covariance
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import distance_modulus
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.cosmology import distance_modulus
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import dense_factorized_covariance
+from jax_snlc_core.utils import LIGHT_KM
 
-from .blinding import (apply_blinding, parameter_offsets,
-                       parameter_random_integers)
-from .config import (OMEGA_MATTER_DEFAULT, W0_DEFAULT, WA_DEFAULT,
-                     WFITConfig)
-from .data import HubbleDiagram
+from .blinding import apply_blinding, parameter_offsets, parameter_random_integers
+from .config import OMEGA_MATTER_DEFAULT, W0_DEFAULT, WA_DEFAULT, WFITConfig
+from .hubble import HubbleDiagram
 from .inference import free_parameter_names
 from .likelihood import hdibc_observed_mu, offset_marginalised_chi2
 
@@ -34,7 +32,7 @@ def _plain(value: Any) -> Any:
         return value.tolist()
     if isinstance(value, np.generic):
         return value.item()
-    if getattr(value, "shape", None) == ():
+    if isinstance(value, jax.Array) and value.shape == ():
         return float(value)
     return value
 

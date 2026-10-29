@@ -1,8 +1,6 @@
 """Acceptance-only synchronisation, final-fit parity and cache reuse."""
-from pathlib import Path
-from jax_snlc_core.io.fits_path import open_text
-
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,7 +11,7 @@ from jax_pipeline import BBC, Fit, run
 from jax_salt2mu import parse_bbc_input
 from jax_salt2mu.run import run_bbc_fit, run_prepared_grid
 from jax_salt2mu.tablevar import EVENT_TYPE_DATA
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_snlc_core.snana_files import open_text, read_fitres
 
 
 def _two_pass_reference(grid, maps, priors, fitopts, muopts, outdir, *, t_start=None):
@@ -87,8 +85,8 @@ def test_common_sample_matches_two_pass_fits_and_loads_from_cache(
     assert not list((root / 'bbc/initial').rglob('*.M0DIF'))
     # Compare acceptance and serialized outputs with two fitted passes.
     from jax_pipeline.stages import prepare_bbc_stages
-    from jax_pipeline.systematics import dirname
-    from jax_salt2mu.run import write_outputs
+    from jax_snlc_core.snana_files import fitopt_muopt_name
+    from jax_salt2mu.output import write_outputs
     legacy_root = tmp_path / 'two_pass'
     legacy_dir = legacy_root / 'bbc'
     legacy_dir.mkdir(parents=True)
@@ -99,7 +97,7 @@ def test_common_sample_matches_two_pass_fits_and_loads_from_cache(
     grid_priors = {cell: priors['bbc', cell] for cell in grid}
     fitted = _two_pass_reference(grid, grid_maps, grid_priors, *bbc.systematics(), legacy_dir)
     for cell, values in fitted.items():
-        cell_dir = legacy_dir / dirname(cell)
+        cell_dir = legacy_dir / fitopt_muopt_name(cell)
         cell_dir.mkdir(parents=True)
         write_outputs(cell_dir / 'bbc.FITRES', *values)
     legacy = bbc.load(inputs, legacy_dir)
@@ -129,7 +127,7 @@ def test_common_sample_matches_two_pass_fits_and_loads_from_cache(
 
 
 def test_fitopt_sync_is_separate_for_each_realisation_and_split(tmp_path):
-    from jax_snlc_core.io.snana_table import write_varnames_table
+    from jax_snlc_core.snana_files import write_varnames_table
     table = read_fitres('tests/fixtures/snana/bbc_des_beams/DATA.FITRES').df
     stages = []
     for realisation in (1, 2):

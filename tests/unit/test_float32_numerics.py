@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 from scipy.integrate import quad
 
-from jax_snlc_core.physics.cosmology import flat_cpl_comoving_integral
-from jax_snlc_core.utils.interp import compute_catmullrom_slopes, hermite_interp_1d
-from jax_snlc_core.utils.newton_lm import newton_lm
-from jax_snlc_core.utils.precision import configure_precision
+from jax_snlc_core.cosmology import flat_cpl_comoving_integral
+from jax_snlc_core.interpolation import compute_catmullrom_slopes, hermite_interp_1d
+from jax_snlc_core.optimiser import newton_lm
+from jax_snlc_core.utils import configure_precision
 
 
 @pytest.fixture(autouse=True)

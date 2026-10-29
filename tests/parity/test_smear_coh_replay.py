@@ -7,13 +7,13 @@ smear inside its GENPDF file instead of the sim input (sntools_genPDF.c:221).
 
 import numpy as np
 import pytest
+from _replay_helpers import load_jax_phot, load_snana_phot, slice_replay
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import slice_replay  # noqa: E402
-from _replay_helpers import load_snana_phot, load_jax_phot  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 @pytest.mark.parametrize("fixture", ["smear_coh_replay", "genpdf_smear"])
@@ -38,7 +38,7 @@ def test_genmag_smear_coh_simmagobs_parity(snana_fixture, tmp_path, fixture):
     assert float(np.std(override['magsmear'])) > 0.05
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "SMEAR_COH", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "SMEAR_COH", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = load_snana_phot(fx.head_fits, fx.phot_fits)
     jax_phot = load_jax_phot(tmp_path / "SMEAR_COH", "SMEAR_COH")

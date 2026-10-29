@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.covariance import EIGMIN_COV, fix_covariance
+from jax_snlc_core.utils import EIGMIN_COV, fix_covariance
 
 
 def _stack(*mats):

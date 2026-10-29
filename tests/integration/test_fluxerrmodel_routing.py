@@ -17,6 +17,7 @@ from astropy.io import fits
 
 
 from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
 
 
 _EXPECTED_SCALE = {"u": 1.5, "g": 2.0, "r": 2.5, "i": 3.0, "z": 3.5, "Y": 4.0}
@@ -34,7 +35,7 @@ def _run_jax(input_file: Path, n_sne: int = 150) -> dict[tuple[int, float, str],
         cwd = os.getcwd()
         try:
             os.chdir(td)
-            sim_run.save_snana_outputs(sim, results, "FE", sel, spectra_cache=spectra_cache)
+            save_snana_outputs(sim, results, "FE", sel, spectra_by_sn=spectra_cache)
             return _load_fluxerr(Path(td) / "FE")
         finally:
             os.chdir(cwd)

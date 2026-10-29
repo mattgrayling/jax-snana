@@ -7,6 +7,12 @@ the next. Here the fitted tables are objects, so classifying and merging is
 one stage: it predicts once, writes the predictions, and hands on the fit's
 tables with the probability column joined. A distance fit consumes it
 exactly as it consumes a fit.
+
+Classifiers are dataclasses with a probability-column name and a
+``predict(fit, photometry, model)`` method returning probabilities indexed
+by CID. Trainable classifiers also implement ``train(fit, photometry, outdir)``
+and return the saved model path. The dataclass fields participate in the
+pipeline cache key.
 """
 
 import dataclasses
@@ -15,9 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 from .stages import FitVersion, Stage, one_version
 from .systematics import NOMINAL
@@ -130,7 +137,7 @@ class Classify(Stage):
 def _joined_onto(tables: Mapping[str, Any], path: Path) -> Mapping[str, Any]:
     """Every cell's table with the predictions in ``path`` joined on, the
     file's first column the event's ID."""
-    predictions = pd.read_csv(path, dtype=str)
+    predictions = pd.read_csv(path, converters={0: str}, float_precision="round_trip")
     predictions = predictions.set_index(predictions.columns[0]).astype(float)
     return {cell: _joined(table, predictions) for cell, table in tables.items()}
 
@@ -143,5 +150,39 @@ def _joined(table, predictions: pd.DataFrame):
         table,
         df=table.df.assign(**{c: cids.map(predictions[c]).fillna(0.0).to_numpy()
                               for c in columns}),
-        varnames=[*table.varnames, *columns],
-        varnames_by_file=[[*names, *columns] for names in table.varnames_by_file])
+        varnames=table.varnames + [c for c in columns if c not in table.varnames],
+        varnames_by_file=[names + [c for c in columns if c not in names]
+                           for names in table.varnames_by_file])
+
+
+@dataclass(frozen=True)
+class Perfect:
+    """Probabilities from the simulation truth: ``prob_ia`` for every true
+    type Ia, ``prob_cc`` for other simulated types.
+
+    Use this classifier to validate a pipeline with known simulated types.
+    Its training method saves the two probabilities in a model file for
+    the classification stage.
+    """
+
+    prob_ia: float = 1.0
+    prob_cc: float = 0.0
+    column: str = "PROB_PERFECT"
+
+    def train(self, fit, photometry, outdir) -> Path:
+        model = Path(outdir) / "perfect.model"
+        model.write_text(f"{self.prob_ia} {self.prob_cc}\n")
+        return model
+
+    def predict(self, fit, photometry, model) -> pd.Series:
+        if fit is None or "SIM_TEMPLATE_INDEX" not in fit.df:
+            raise SNANAError("Perfect reads SIM_TEMPLATE_INDEX from a fitted "
+                             "simulation; there is none here",
+                             function_name="Perfect")
+        prob_ia, prob_cc = ((self.prob_ia, self.prob_cc) if model is None
+                            else (float(x) for x in Path(model).read_text().split()))
+        # SIM_TEMPLATE_INDEX is 0 for a Type Ia model (SNANA's convention,
+        # which BBC's own force_pIa=perfect reads the same way)
+        is_ia = fit.df["SIM_TEMPLATE_INDEX"].astype(int) == 0
+        return pd.Series(np.where(is_ia, prob_ia, prob_cc),
+                         index=fit.df["CID"].astype(str), name=self.column)

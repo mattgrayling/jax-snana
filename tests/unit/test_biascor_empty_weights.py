@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 
-from jax_salt2mu.biascor_grid import coeff_weights
+from jax_salt2mu.binning import coeff_weights
 
 
 def test_empty_coefficient_weights_under_jit():

@@ -6,9 +6,7 @@ import sys
 
 import pytest
 
-from jax_salt2mu.config_parser import parse_bbc_input
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.precision import DEFAULT_DOUBLE_PRECISION
+from jax_snlc_core.utils import DEFAULT_DOUBLE_PRECISION
 
 
 def test_cli_help_runs(repo_root) -> None:
@@ -72,7 +70,7 @@ def test_importing_does_not_overrule_jaxs_own_variable(repo_root) -> None:
 # cheapest parser to ask; every parser reads the key in the same first stage.
 _PARSE_PROBE = (
     "import jax\n"
-    "from jax_salt2mu.config_parser import parse_bbc_input\n"
+    "from jax_salt2mu.config import parse_bbc_input\n"
     "config = parse_bbc_input(None, {tokens!r})\n"
     "print(config.double_precision, jax.config.x64_enabled)\n"
 )
@@ -91,7 +89,7 @@ def test_parsing_an_input_records_the_frame_and_leaves_it_alone(
 
 def test_an_input_that_omits_precision_preserves_it_until_cli_setup(repo_root) -> None:
     result = _probe(repo_root, _PARSE_PROBE.format(tokens=[]) + (
-        'from jax_snlc_core.utils.precision import configure_precision\n'
+        'from jax_snlc_core.utils import configure_precision\n'
         'configure_precision(config.double_precision)\n'
         'print(jax.config.x64_enabled)\n'))
     assert result.returncode == 0, result.stderr
@@ -136,9 +134,9 @@ def test_salt2mu_positional_forms(argv, expected) -> None:
     (["--input", "my.input"], ("my.input", [])),
 ])
 def test_snlc_sim_input_and_override_forms(argv, expected) -> None:
-    from snlc_sim import _parse_cli_args, _resolve_input_and_overrides
+    from jax_snlc_sim.inputs import parse_cli_args, _resolve_input_and_overrides
 
-    assert _resolve_input_and_overrides(_parse_cli_args(argv)) == expected
+    assert _resolve_input_and_overrides(parse_cli_args(argv)) == expected
 
 
 @pytest.mark.parametrize("argv, flag, value", [
@@ -148,9 +146,9 @@ def test_snlc_sim_input_and_override_forms(argv, expected) -> None:
 def test_snlc_sim_flags_survive_alongside_overrides(argv, flag, value) -> None:
     """argparse.REMAINDER would swallow these into the override list; nargs='*'
     does not. The overrides must still come through intact."""
-    from snlc_sim import _parse_cli_args, _resolve_input_and_overrides
+    from jax_snlc_sim.inputs import parse_cli_args, _resolve_input_and_overrides
 
-    args = _parse_cli_args(argv)
+    args = parse_cli_args(argv)
     assert (args.settings[flag] if flag in args.settings else getattr(args, flag)) == value
     assert _resolve_input_and_overrides(args) == ("my.input", ["NGENTOT_LC", "500"])
 

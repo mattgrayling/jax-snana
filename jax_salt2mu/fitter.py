@@ -6,26 +6,23 @@ SNANA's outer secant loop on chi2_Ia/dof-1 with sigma_int held fixed inside each
 inner fit. Both reuse the single likelihood and the shared Newton-LM kernel.
 """
 
+import logging
+import time
 from dataclasses import dataclass
 from functools import partial
 from typing import Dict, Optional, Tuple
-
-import logging
-import time
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.newton_lm import newton_lm
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.optimiser import newton_lm
 
-from .derivatives import loss_derivatives
-from .config import BBC_NUISANCE_SPEC
 from .ccprior import CHI2_BEAMS_NOPROB
-from .likelihood import (LikelihoodInputs, event_chi2, make_loss, mures_muerrsq_fn,
-                         nuisance_at)
+from .config import BBC_NUISANCE_SPEC
+from .likelihood import LikelihoodInputs, event_chi2, make_loss, mures_muerrsq_fn, nuisance_at
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +95,8 @@ def _nuisance_errors(nerr, floated_nuis) -> Dict[str, float]:
     nuis_err = {n: float(nerr[i]) for i, n in enumerate(floated_nuis)}
     flat = [n for n, e in nuis_err.items() if np.isnan(e)]
     if flat:
-        slog.warn(logger, "BBC", f"the likelihood does not depend on "
-                  f"{', '.join(flat)}; the error is undefined")
+        log.warn(logger, "BBC", f"the likelihood does not depend on "
+                 f"{', '.join(flat)}; the error is undefined")
     return nuis_err
 
 
@@ -121,31 +118,6 @@ def pad_rows(a, n_pad: int):
     return jnp.concatenate([a, jnp.repeat(a[-1:], n_pad - a.shape[0], axis=0)])
 
 
-def pad_ccprior(prior, n_pad, template=None):
-    """Pad a simulation prior with finite, zero-weight rows."""
-    n = len(prior.cc_z)
-    if n_pad < n:
-        raise SNANAError(f"CC-prior capacity {n_pad} is smaller than {n} rows",
-                         function_name="pad_ccprior")
-    if n == n_pad:
-        return prior
-    source = prior if n else template
-    if source is None or not len(source.cc_z):
-        raise SNANAError("an empty prior needs a compatible finite row for padding",
-                         function_name="pad_ccprior")
-    arrays = {}
-    for name in ("cc_z", "cc_logmass", "cc_mumodel", "cc_fitparbias_nodes", "cc_cell"):
-        values = getattr(prior, name)
-        row = getattr(source, name)[-1:]
-        arrays[name] = jnp.concatenate((jnp.asarray(values), jnp.repeat(row, n_pad - n, axis=0)))
-    return prior._replace(
-        **arrays,
-        cc_lcpar={name: jnp.concatenate((jnp.asarray(values),
-                                        jnp.repeat(source.cc_lcpar[name][-1:], n_pad - n, axis=0)))
-                  for name, values in prior.cc_lcpar.items()},
-        cc_valid=jnp.concatenate((jnp.asarray(prior.cc_valid), jnp.zeros(n_pad - n))))
-
-
 def padded(inputs: LikelihoodInputs, n_pad: int) -> LikelihoodInputs:
     """The inputs with every per-event array padded to ``n_pad`` rows and
     ``valid`` marking the real rows, so the cells of a grid share one
@@ -155,29 +127,32 @@ def padded(inputs: LikelihoodInputs, n_pad: int) -> LikelihoodInputs:
     keeps its length; only its per-data-event arrays are padded."""
     n = int(inputs.z.shape[0])
 
-    def pad_fields(obj, names):
-        return obj._replace(**{
-            name: pad_rows(getattr(obj, name), n_pad)
-            for name in names if getattr(obj, name) is not None
-        })
+    def pad(value):
+        return None if value is None else pad_rows(value, n_pad)
 
-    per_event = (
-        "z", "logmass", "covmat_fit", "mumodel", "izbin", "muerr_vpec_sq",
-        "izbin_nbr", "m0_zfrac", "idsample", "sqsigint", "muerrsq_last",
-        "fitwgt0", "fitparbias_nodes", "mucovscale_nodes", "mucovadd_nodes",
-        "mubias_const", "fitparbias_nevt", "fitparbias_err",
-    )
-    out = pad_fields(inputs, per_event)
-    out = out._replace(lcpar={k: pad_rows(v, n_pad)
-                              for k, v in inputs.lcpar.items()})
+    out = inputs._replace(
+        z=pad(inputs.z), logmass=pad(inputs.logmass),
+        covmat_fit=pad(inputs.covmat_fit), mumodel=pad(inputs.mumodel),
+        izbin=pad(inputs.izbin), muerr_vpec_sq=pad(inputs.muerr_vpec_sq),
+        izbin_nbr=pad(inputs.izbin_nbr), m0_zfrac=pad(inputs.m0_zfrac),
+        idsample=pad(inputs.idsample), sqsigint=pad(inputs.sqsigint),
+        muerrsq_last=pad(inputs.muerrsq_last), fitwgt0=pad(inputs.fitwgt0),
+        fitparbias_nodes=pad(inputs.fitparbias_nodes),
+        mucovscale_nodes=pad(inputs.mucovscale_nodes),
+        mucovadd_nodes=pad(inputs.mucovadd_nodes), mubias_const=pad(inputs.mubias_const),
+        fitparbias_nevt=pad(inputs.fitparbias_nevt), fitparbias_err=pad(inputs.fitparbias_err),
+        lcpar={name: pad(values) for name, values in inputs.lcpar.items()},
+        valid=jnp.concatenate([jnp.ones(n), jnp.zeros(n_pad - n)]))
     if inputs.ccprior is not None:
-        prior = pad_fields(inputs.ccprior, ["data_cell", "pIa"])
+        prior = inputs.ccprior._replace(data_cell=pad(inputs.ccprior.data_cell),
+                                         pIa=pad(inputs.ccprior.pIa))
         # Padded and unpadded priors must have the same device-array signature.
         out = out._replace(ccprior=jax.tree.map(jnp.asarray, prior))
     if inputs.h11prior is not None:
-        out = out._replace(h11prior=pad_fields(
-            inputs.h11prior, ["z", "muerrsq_raw", "pIa"]))
-    return out._replace(valid=jnp.concatenate([jnp.ones(n), jnp.zeros(n_pad - n)]))
+        prior = inputs.h11prior
+        out = out._replace(h11prior=prior._replace(
+            z=pad(prior.z), muerrsq_raw=pad(prior.muerrsq_raw), pIa=pad(prior.pIa)))
+    return out
 
 
 @dataclass(frozen=True)
@@ -215,6 +190,54 @@ class FitSpec:
     def nuisance(self, p, sigint):
         """The full nuisance dict at ``p``, the floated entries read from it."""
         return nuisance_at(p, self.floated, dict(self.defaults, sigint=sigint))
+
+
+def loss_derivatives(p, loss, *, n_nuisance, nzbin, interpolate, with_value=False):
+    """Gradient and full Hessian, without differentiating each M0 separately.
+
+    The M0 block is diagonal for ordinary bins and tridiagonal when events
+    interpolate between adjacent knots. Columns separated by three bins then
+    have disjoint support. One direction per colour recovers every entry of
+    that block. Nuisance parameters (and joint-fit sigint) retain individual
+    directions; their columns also supply the cross terms by symmetry.
+
+    This is exact sparse-Hessian recovery, not a curvature approximation.
+    The loss must couple each event to only its own or an adjacent M0 bin,
+    as m0_for and _m0_interp_weights do. Shared model/CC-prior quantities may
+    depend on nuisance parameters but must not depend on M0.
+    """
+    if with_value:
+        (value, gradient), linear = jax.linearize(jax.value_and_grad(loss), p)
+
+        def curvature(direction):
+            return linear(direction)[1]
+    else:
+        gradient, curvature = jax.linearize(jax.grad(loss), p)
+        value = None
+
+    n = p.shape[0]
+    # A joint-fit sigint follows M0; otherwise this trailing slice is empty.
+    global_indices = jnp.concatenate((jnp.arange(n_nuisance),
+                                      jnp.arange(n_nuisance + nzbin, n)))
+    ng = global_indices.shape[0]
+    colours = min(3 if interpolate else 1, nzbin)
+    bin_colour = jnp.arange(nzbin) % colours
+    local = jnp.zeros((colours, n), dtype=p.dtype)
+    local = local.at[:, n_nuisance:n_nuisance + nzbin].set(
+        jax.nn.one_hot(bin_colour, colours, dtype=p.dtype).T)
+    directions = jnp.concatenate((jnp.eye(n, dtype=p.dtype)[global_indices], local))
+    columns = jax.vmap(curvature)(directions).T
+
+    hessian = jnp.zeros((n, n), dtype=p.dtype)
+    hessian = hessian.at[:, global_indices].set(columns[:, :ng])
+    hessian = hessian.at[global_indices, n_nuisance:n_nuisance + nzbin].set(
+        columns[n_nuisance:n_nuisance + nzbin, :ng].T)
+    bins = jnp.arange(nzbin)
+    band = jnp.abs(bins[:, None] - bins[None, :]) <= int(interpolate)
+    block = columns[n_nuisance:n_nuisance + nzbin, ng:][:, bin_colour]
+    hessian = hessian.at[n_nuisance:n_nuisance + nzbin,
+                          n_nuisance:n_nuisance + nzbin].set(jnp.where(band, block, 0.))
+    return gradient, hessian, value
 
 
 @partial(jax.jit, static_argnames="spec")

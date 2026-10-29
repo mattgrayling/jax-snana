@@ -4,28 +4,24 @@ These exercise the full simulator with various SEARCHEFF_SPEC / SEARCHEFF_zHOST
 configurations and check downstream effects (redshift_flag, observed redshift,
 HEAD output columns, CUTWIN behaviour).
 
-Pure-JAX unit tests of the underlying ``searcheff_map`` live in
+Pure-JAX unit tests of the underlying ``spectroscopic_efficiency`` live in
 ``tests/unit/test_searcheff_map.py``.
 """
 
 from pathlib import Path
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
-
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from jax_snlc_sim.output.dump import _prepare_dump_data  # noqa: E402
-from jax_snlc_sim.output.tables import (  # noqa: E402
-    build_header_columns, compute_derived_values,
-)
-from jax_snlc_sim.selection import _build_columnar_data  # noqa: E402
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output.dump import _prepare_dump_data
+from jax_snlc_sim.output.tables import (build_columnar_data, build_header_columns,
+                                        compute_derived_values)
 
 
 def _derived(simulation, resources, sel, results):
     """The distance moduli and peak magnitudes the writer would compute."""
-    cd = _build_columnar_data(resources, results, sel)
+    cd = build_columnar_data(resources, results, sel)
     return compute_derived_values(
         cd, results, resources.filter_names,
         len(cd["parameters"]["sim_redshift_cmb"]), sel)
@@ -37,7 +33,7 @@ def _peak_mags(simulation, resources, sel, results):
 
 def _header_table(simulation, resources, sel, results):
     """The HEAD columns the writer would build for this run."""
-    cd = _build_columnar_data(resources, results, sel)
+    cd = build_columnar_data(resources, results, sel)
     distance_moduli, peak_magnitudes = _derived(simulation, resources, sel, results)
     return build_header_columns(
         cd, simulation, resources, resources.filter_names,
@@ -132,7 +128,7 @@ def test_setz_unconfirmed_photoz(specz_zero_run):
     sel = sim_run.apply_selection(sim, results)
     assert int(sel["n_passed"]) > 0, "searcheff_snii_basic passed no SNe"
 
-    p = _build_columnar_data(resources, results, sel)["parameters"]
+    p = build_columnar_data(resources, results, sel)["parameters"]
     assert not np.any(p["specid_pass"])
     assert np.all(p["redshift_flag"] == 3)
     passing = sel["passing_mask"]
@@ -156,7 +152,7 @@ def test_wronghost_flag(specz_zero_run):
     sel = sim_run.apply_selection(sim, results)
     assert int(sel["n_passed"]) > 0, "searcheff_snii_basic passed no SNe"
 
-    flag = _build_columnar_data(resources, results, sel)["parameters"]["redshift_flag"]
+    flag = build_columnar_data(resources, results, sel)["parameters"]["redshift_flag"]
     # All CORRECT_HOSTMATCH=0 with photo-z available → all FLAG=4.
     assert np.all(flag == 4)
 
@@ -186,7 +182,7 @@ def test_cutwin_redshift_final(snana_fixture, tmp_path):
     n = int(sel["n_passed"])
     assert n > 0, "searcheff_snii_basic passed no SNe"
 
-    z_final = _build_columnar_data(resources, results, sel)["parameters"]["sim_redshift_cmb"]
+    z_final = build_columnar_data(resources, results, sel)["parameters"]["sim_redshift_cmb"]
     in_range = (z_final >= 0.3) & (z_final <= 0.8)
     sentinel = z_final < 0
     assert np.all(in_range | sentinel)
@@ -212,7 +208,7 @@ def test_scenario_spec_none(snana_fixture, tmp_path):
     patched = _opt1_input(fx.input_file, tmp_path / "spec_none.input")
     simulation, resources, results, sel = _run_sim(patched)
     assert int(sel["n_passed"]) > 0, "searcheff_snii_basic passed no SNe"
-    p = _build_columnar_data(resources, results, sel)["parameters"]
+    p = build_columnar_data(resources, results, sel)["parameters"]
     assert np.all(p["specid_pass"])
     assert np.all(p["redshift_flag"] == 1)
     assert np.all(p["sim_searcheff_mask"] & 2)
@@ -227,7 +223,7 @@ def test_scenario_spec_zero_zhost_none(snana_fixture, tmp_path):
     )
     simulation, resources, results, sel = _run_sim(patched)
     assert int(sel["n_passed"]) > 0, "searcheff_snii_basic passed no SNe"
-    p = _build_columnar_data(resources, results, sel)["parameters"]
+    p = build_columnar_data(resources, results, sel)["parameters"]
     passing = sel["passing_mask"]
     true_zhel = np.array(results["parameters"]["sim_redshift_helio"])[passing]
 
@@ -251,7 +247,7 @@ def test_scenario_spec_zero_zhost_zero(snana_fixture, tmp_path):
     )
     simulation, resources, results, sel = _run_sim(patched)
     assert int(sel["n_passed"]) > 0, "searcheff_snii_basic passed no SNe"
-    p = _build_columnar_data(resources, results, sel)["parameters"]
+    p = build_columnar_data(resources, results, sel)["parameters"]
     assert not np.any(p["specid_pass"])
     assert np.all(p["redshift_flag"] == 0)
     assert np.all(p["redshift_helio"] == -9.0)
@@ -275,7 +271,7 @@ def test_scenario_pipeline_mask(snana_fixture, tmp_path):
         assert np.all(mask_full[pipe_pass] & 1)
 
     dump = _prepare_dump_data(
-        _build_columnar_data(resources, results, sel), simulation, resources, results,
+        build_columnar_data(resources, results, sel), simulation, resources, results,
         list(resources.photometry.transmissions.keys()),
         resources.model, _peak_mags(simulation, resources, sel, results), sel,
         include_all=True, to_written_cid=_identity_cids)
@@ -306,7 +302,7 @@ def test_speceff_map_on_salt2mb(snana_fixture, tmp_path):
     ])
     simulation, resources, results, sel = _run_sim(patched, n_sne=120)
     assert int(sel["n_passed"]) > 0, "des_salt3_replay passed no SNe"
-    p = _build_columnar_data(resources, results, sel)["parameters"]
+    p = build_columnar_data(resources, results, sel)["parameters"]
     x0 = np.asarray(p["x0"])
     mb = -2.5 * np.log10(np.where(x0 > 0, x0, 1e-30)) + 10.635
     confirmed = np.asarray(p["specid_pass"])
@@ -324,7 +320,7 @@ def test_speceff_map_missing_a_field_aborts_unless_told_not_to(snana_fixture, tm
     OPT_FIELDMATCH_REQUIRE: 0 in the map file gives it EFF=0 instead
     (:2990). The DES SIMLIB has deep and shallow fields; the map names the
     deep ones only."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     fx = snana_fixture("des_salt3_replay")
     body = ("VARNAMES: SALT2mB SPECEFF\n"

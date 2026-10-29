@@ -17,7 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 from hypothesis import given, settings, strategies as st
 
-from jax_snlc_sim.survey.searcheff_map import compute_dtseason_peak
+from jax_snlc_sim.simlib import compute_dtseason_peak
 
 
 def _pad_seasons(fields, max_s):

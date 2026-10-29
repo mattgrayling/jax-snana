@@ -11,17 +11,15 @@ data tree (the top-level conftest sets that env var to
 ``tests/fixtures/data``).
 """
 
-import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from jax_snlc_core.io.fits_path import open_text
+from jax_snlc_core.snana_files import open_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

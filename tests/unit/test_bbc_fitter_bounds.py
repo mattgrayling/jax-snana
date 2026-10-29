@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from jax_salt2mu.fitter import _fit_covariance, _nuisance_errors, fit_bounds, next_sigint
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.utils.error_handling import SNANAError
 
 
 def test_joint_sigint_bounds_from_config():

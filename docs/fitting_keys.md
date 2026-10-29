@@ -28,8 +28,8 @@ such as `PRIOR_MJDSIG`.
 
 The photometry and calibration inputs are:
 
-- `VERSION_PHOTOMETRY` names the directory of light curves, in the FITS form
-  or as a Rubin HATS catalogue, both described in {doc}`light_curve_data`.
+- `VERSION_PHOTOMETRY` names the directory of light curves, in SNANA FITS
+  or TEXT form, or as a Rubin HATS catalogue, described in {doc}`light_curve_data`.
 - `KCOR_FILE` names a {ref}`calibration input or FITS file <format-kcor>`
   giving the transmissions, primary reference spectrum and zero points.
 
@@ -40,9 +40,8 @@ the filters of the calibration file, as described in {ref}`format-kcor`.
 The redshift is read from each event's header or fitted as described under
 {ref}`photoz-settings`. The version is named without a path and searched for
 in several places, `PRIVATE_DATA_PATH` first where it is set. See
-{ref}`data-version-location` for the search order. SNANA versions must be in
-FITS form; {ref}`preparing-text-data` describes conversion with SNANA's
-`snana.exe`.
+{ref}`data-version-location` for the search order. SNANA versions may be in
+FITS or TEXT form; {ref}`preparing-text-data` describes preparing a TEXT version.
 
 (host-mass-interpolation)=
 `HEADER_OVERRIDE_FILE` and `SIM_HEADER_OVERRIDE_FILE` can supply host

@@ -13,12 +13,12 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .config import BBCConfig, MASK_BIASCOR_SAMPLE
-from .tablevar import CUTBIT_IDSAMPLE, CUTBIT_z
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import load_survey_ids
 
-from jax_snlc_core.io.survey_def import load_survey_ids
-from jax_snlc_core.utils.error_handling import SNANAError
-from .biascor_grid import parse_binsize_stringopt
+from .binning import parse_binsize_stringopt
+from .config import MASK_BIASCOR_SAMPLE, BBCConfig
+from .tablevar import CUTBIT_IDSAMPLE, CUTBIT_z
 
 
 _IGNORE = {"null", "none", "blank", ""}  # IGNOREFILE (sntools.c:4832)
@@ -287,7 +287,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
     # sort_IDSAMPLE_biasCor_driver (SALT2mu.c:10554)
     order = _sorted_order(samples, survey_groups, groups, has_photoz)
     old_to_new = np.empty(len(order), dtype=np.int64)
-    old_to_new[np.asarray(order)] = np.arange(len(order))
+    old_to_new[np.asarray(order, dtype=np.int64)] = np.arange(len(order))
     idsample_array = np.full(n, -9, dtype=np.int64)
     idsample_array[selected] = old_to_new[event_idx[selected]]
 

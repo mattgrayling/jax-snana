@@ -12,12 +12,10 @@ and asserts:
 
 from pathlib import Path
 
-from jax_snlc_core.io.fits_path import open_text
-
 import numpy as np
 
-
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_sim import run as sim_run
 
 
 def _parse_dump_column(path: Path, column: str) -> np.ndarray:

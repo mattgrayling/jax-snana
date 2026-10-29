@@ -7,9 +7,9 @@ expected, but well-converged fits should agree within their error bars. The
 remaining tests cover load-time fudges, selection, epoch quality and priors.
 """
 
-import gzip
 import dataclasses
 import functools
+import gzip
 import os
 import subprocess
 import sys
@@ -22,42 +22,36 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots, fit_config,
+                          fit_fixture, fitter_photometry, for_fit, load_batch, override,
+                          parse_fitres, peak_start, regenerate_lcplot, run_fit)
 from astropy.io import fits
 from astropy.table import Table
 
-from _fit_helpers import (build_fit_model, build_fitter, compare_lcplots,
-                          fit_config, fit_fixture, fitter_photometry, for_fit,
-                          load_batch, override, parse_fitres, peak_start,
-                          regenerate_lcplot, run_fit)
-
-from jax_snlc_core.io.fits_path import open_text, resolve_fits_path
-from jax_snlc_core.io.kcor_reader import KcorReader
-from jax_snlc_core.physics.cosmology import zhelio_to_zcmb
-from jax_snlc_core.models import FittedModel, SNModel
-from jax_snlc_core.models.fitted import flux_error_from_fracerr
-from jax_snlc_core.photometry.noise import ZEROPOINT_FLUXCAL_SNANA_ORIG
-from jax_snlc_fit.fit_spec import (error_surface_overrides, init_params,
-                                   snana_parameter_aliases)
-from jax_snlc_sim.simulation import Instrument
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_fit.batch import apply_snana_selection, select_events
-from jax_snlc_fit.data_loader import (RUBIN_ZP_NJY, batch_from_columns,
-                                      load_and_batch_snana_fits,
-                                      load_and_batch_snana_text,
-                                      model_sim_columns,
-                                      read_epoch_ignore_file, read_magcor_file,
-                                      read_rubin_hats)
+from jax_snlc_core.cosmology import zhelio_to_zcmb
+from jax_snlc_core.filters import ZEROPOINT_FLUXCAL_SNANA_ORIG, KcorReader
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import FittedModel, SNModel, build_model
+from jax_snlc_core.models.roles import flux_error_from_fracerr
+from jax_snlc_core.snana_files import open_text, resolve_fits_path
 from jax_snlc_fit import LightCurveFitter
-from jax_snlc_fit.data_loader import resolve_mw_colour_law
-from jax_snlc_fit.fitter import (fit_band_window, fit_photometry,
-                                 fiterr_windowed, fitwin_trest_edges,
-                                 maxfrac_floor_errs)
-from jax_snlc_core.models import build_model
-from jax_snlc_fit.photoz import coarse_grid_axes
+from jax_snlc_fit.calibration import fit_photometry, read_magcor_file, resolve_mw_colour_law
 from jax_snlc_fit.config import FitConfig, Model
 from jax_snlc_fit.config_parser import FIELD_RECORD, RECORD_CLASSES
-from jax_snlc_fit.run import (build_selection, drop_unfittable, ideal_fit,
-                              sncid_list)
+from jax_snlc_fit.cuts import (apply_snana_selection, build_selection, drop_unfittable,
+                               select_events, sncid_list)
+from jax_snlc_fit.fitter import (band_weights, colour_fraction, fit_band_window,
+                                 fiterr_windowed, fitwin_trest_bounds, fitwin_trest_edges,
+                                 interpolated_band_weights, maxfrac_floor_errs, model_flux,
+                                 model_flux_error, model_fracerr, restlambda_mask,
+                                 z_grid_band_weights)
+from jax_snlc_fit.loader import (RUBIN_ZP_NJY, batch_from_columns, model_sim_columns,
+                                 read_epoch_ignore_file, read_rubin_hats)
+from _fit_helpers import (load_and_batch_snana_fits, load_and_batch_snana_text)
+from jax_snlc_fit.parameters import (error_surface_overrides, init_params,
+                                     snana_parameter_aliases)
+from jax_snlc_fit.photoz import coarse_grid_axes
+from jax_snlc_sim.simulation import Instrument
 
 
 _LSST_BANDS = ["LSST-u", "LSST-g", "LSST-r", "LSST-i", "LSST-z", "LSST-Y"]
@@ -168,8 +162,8 @@ def test_fitres_writes_a_string_cid(salt3_fit_results, tmp_path):
     """SNANA holds the CID as a string (SNLC_CCID) and its text writer emits it
     as one, so a data version whose events carry names rather than numbers
     writes them out as it read them. The OUTLIER table already did."""
-    from jax_snlc_core.io.snana_table import write_varnames_table
-    from jax_snlc_fit.sntable import build_fitres_table
+    from jax_snlc_core.snana_files import write_varnames_table
+    from jax_snlc_fit.output import build_fitres_table
 
     fx, results, batch = salt3_fit_results
     named = dataclasses.replace(results.take(np.arange(2)),
@@ -525,18 +519,15 @@ def test_first_iteration_model_error_vs_snana(snana_fixture, fixture):
         z = float(batch.redshifts[i])
         ref = float(batch.reference_mjds[i])
         values = {"PKMJD": s["PKMJD"] - ref, "x0": s["x0"], **pinned}
-        bw, bw_err = fitter.band_weights(
-            photometry, z, jnp.ones(len(photometry['common_filter_wave_grid'])))
+        bw, bw_err = band_weights(fitter._compiled_settings, photometry, z, jnp.ones(len(photometry['common_filter_wave_grid'])))
         mjd, fi = jnp.asarray(batch.mjd_offsets[i]), jnp.asarray(batch.filter_indices[i])
         mask = jnp.asarray(batch.observation_mask[i])
         params = jnp.array([values[n] for n in names])
-        flux = fitter.model_flux(fitter.model, photometry, params, mjd, fi, mask, bw, z)
-        err = fitter.model_flux_error(flux, fitter.model_fracerr(
-            fitter.model, photometry, params, mjd, fi, mask, bw, bw_err, z,
+        flux = model_flux(fitter._compiled_settings, fitter.model, photometry, params, mjd, fi, mask, bw, z)
+        err = model_flux_error(fitter._compiled_settings, flux, model_fracerr(fitter._compiled_settings, fitter.model, photometry, params, mjd, fi, mask, bw, bw_err, z,
             error_overrides=overrides), mask)
         flux, err = np.asarray(flux), np.asarray(err)
-        fitted = np.asarray(mask) & np.asarray(fitter.restlambda_mask(
-            photometry, fi[None, :], jnp.array([z])))[0]
+        fitted = np.asarray(mask) & np.asarray(restlambda_mask(fitter._compiled_settings, photometry, fi[None, :], jnp.array([z])))[0]
         assert fitted.sum() == s["NDOF"] + len(pinned), sid
 
         fc, fce = np.asarray(batch.fluxcals[i]), np.asarray(batch.fluxcalerrs[i])
@@ -564,7 +555,7 @@ def test_first_iteration_model_error_vs_snana(snana_fixture, fixture):
 def test_salt3_fitter_nonlinearity(snana_fixture, data_root, fixture, nlfile, rtol):
     """NONLINEARITY_FILE parity (PER_NEA and PER_PIX modes): JAX's
     post-non-linearity per-epoch FLUXCAL matches SNANA's (OUTLIER)."""
-    from jax_snlc_fit.nonlinearity import read_nonlinearity_file
+    from jax_snlc_fit.calibration import read_nonlinearity_file
     nl = snana_fixture(fixture)
     dense_data = snana_fixture("salt3_fit_dense")
     fmap = {b: i for i, b in enumerate(_LSST_BANDS)}
@@ -590,7 +581,7 @@ def test_salt3_fitter_fluxerrmodel(snana_fixture, data_root):
     """FLUXERRMODEL_FILE parity: JAX's post-model per-epoch FLUXCAL_ERR_DATA
     equals SNANA's (OUTLIER) to float precision. Fixture is sim data, so the
     SNANA path is SIM_FLUXERRMODEL_FILE."""
-    from jax_snlc_core.photometry.fluxerr_model import read_fluxerr_model_file
+    from jax_snlc_core.noise import read_fluxerr_model_file
     fe = snana_fixture("salt3_fit_fluxerr")
     dense_data = snana_fixture("salt3_fit_dense")
     model = read_fluxerr_model_file(
@@ -616,7 +607,7 @@ def test_salt3_fitter_hostnoise(snana_fixture, data_root):
     """FUDGE_HOSTNOISE_FILE parity: JAX's post-model per-epoch FLUXCAL_ERR_DATA
     equals SNANA's (OUTLIER) to float precision. Runs on a HOSTLIB sim, which has
     populated host surface brightness."""
-    from jax_snlc_fit.host_noise import read_hostnoise_file
+    from jax_snlc_fit.calibration import read_hostnoise_file
     hn = snana_fixture("salt3_fit_hostnoise")
     maps = read_hostnoise_file(str(data_root / "hostnoise" / "HOSTNOISE.DAT"))
     fmap = {b: i for i, b in enumerate(_LSST_BANDS)}
@@ -640,7 +631,7 @@ def test_salt3_fitter_errfudge_combined(snana_fixture, data_root):
     """Combined error-fudge parity: FLUXERRMODEL + FUDGE_FLUXERR_SCALE +
     FUDGE_MAG_ERROR in one run match SNANA's quadrature sum of ERR1-derived
     contributions (a multiplicative chain would scale the additive term too)."""
-    from jax_snlc_core.photometry.fluxerr_model import read_fluxerr_model_file
+    from jax_snlc_core.noise import read_fluxerr_model_file
     cb = snana_fixture("salt3_fit_errcombine")
     dense_data = snana_fixture("salt3_fit_dense")
     fe = read_fluxerr_model_file(
@@ -694,13 +685,13 @@ def test_fudge_magerr_model_zero_removes_the_model_covariance(snana_fixture):
     attached = for_fit(fitter, batch)
     photometry, n = attached.photometry, batch.n_sne
     npar = len(fitter.param_names)
-    bw = jax.vmap(functools.partial(fitter.band_weights, photometry))(
+    bw = jax.vmap(functools.partial(band_weights, fitter._compiled_settings, photometry))(
         batch.redshifts, attached.mw_att_obs)
     _, d_inv, V, _ = fitter._run_weights(
         fitter.model, photometry, None, jnp.zeros((n, npar)), jnp.ones((n, npar)),
         batch.mjd_offsets, batch.filter_indices, batch.observation_mask,
         batch.fluxcals, batch.fluxcalerrs, batch.redshifts, bw,
-        fitter._colour_fraction(fitter.model, photometry, batch.filter_indices,
+        colour_fraction(fitter._compiled_settings, fitter.model, photometry, batch.filter_indices,
                                 batch.redshifts, batch.observation_mask),
         attached.mw_att_obs, attached.mwxt_magerrs)
     mask = np.asarray(batch.observation_mask)
@@ -724,13 +715,13 @@ def test_fudge_mag_coverr_woodbury_block(snana_fixture):
     n, nf, npar = batch.n_sne, fitter.n_filters, len(fitter.param_names)
     attached = for_fit(fitter, batch)
     photometry = attached.photometry
-    bw = jax.vmap(functools.partial(fitter.band_weights, photometry))(
+    bw = jax.vmap(functools.partial(band_weights, fitter._compiled_settings, photometry))(
         batch.redshifts, attached.mw_att_obs)
     _, _, V, _ = fitter._run_weights(
         fitter.model, photometry, None, jnp.zeros((n, npar)), jnp.ones((n, npar)),
         batch.mjd_offsets, batch.filter_indices, batch.observation_mask,
         batch.fluxcals, batch.fluxcalerrs, batch.redshifts, bw,
-        fitter._colour_fraction(fitter.model, photometry, batch.filter_indices,
+        colour_fraction(fitter._compiled_settings, fitter.model, photometry, batch.filter_indices,
                                 batch.redshifts, batch.observation_mask),
         attached.mw_att_obs, attached.mwxt_magerrs)
     V = np.asarray(V)
@@ -933,7 +924,7 @@ def test_fitwin_trest_filter_is_per_band():
     c = cfg("  FITWIN_TREST_FILTER = 'gr -10.0 50.0'\n")
     assert c.fit.fitwin_trest_filter == {'g': (-10.0, 50.0),
                                                'r': (-10.0, 50.0)}
-    lo, hi = c.fit.fitwin_trest_bounds(filters)
+    lo, hi = fitwin_trest_bounds(c, filters)
     np.testing.assert_allclose(lo, [-10.0, -10.0, -15.0, -15.0])
     np.testing.assert_allclose(hi, [50.0, 50.0, 45.0, 45.0])
 
@@ -944,7 +935,7 @@ def test_fitwin_trest_filter_is_per_band():
     np.testing.assert_allclose(np.asarray(ehi), [[50.0, 50.0, 45.0, 45.0]])
 
     # unset: the scalar window stands, so behaviour is unchanged
-    assert cfg().fit.fitwin_trest_bounds(filters) is None
+    assert fitwin_trest_bounds(cfg(), filters) is None
     assert fitwin_trest_edges(cfg(), bands, filters) == (-15.0, 45.0)
 
     # SNANA aborts on a string that is not (filters, min, max) triplets
@@ -1001,7 +992,6 @@ def test_a_host_zpdf_the_spline_cannot_take_drops_only_that_event(snana_fixture)
     unless ABORT_ON_MISSING_QZPHOT = F, which skips it too (FITINI_PHOTOZ,
     :8468-8478).
     """
-    import dataclasses
     fx = snana_fixture("salt3_fit_dense")
     batch = load_and_batch_snana_fits(
         str(fx.root / "HEAD.FITS"), str(fx.root / "PHOT.FITS"),
@@ -1099,9 +1089,6 @@ def test_snana_table_redshift_columns_vs_snana(snana_fixture, repo_root,
     fixture shifts z by +0.01 and overrides VPEC_ERR 300 -> 150, both of which
     a table built from an uncorrected second load would miss.
     """
-    import os
-    import subprocess
-    import sys
     fx = snana_fixture("salt3_fit_zshift")
     vdir = tmp_path / "JAX_TEST_SALT3_FIT_ZSHIFT"
     vdir.mkdir()
@@ -1159,9 +1146,6 @@ def test_salt3_fitter_nfilt_snrmax_fit_stage(snana_fixture, repo_root, data_root
     nf>=2 and fits OK but fails the recount; the pinned CIDs survive to
     the FITRES.
     """
-    import os
-    import subprocess
-    import sys
     fx = snana_fixture("salt3_fit_select")
     vdir = tmp_path / "JAX_TEST_SALT3_FIT_SELECT"
     vdir.mkdir()
@@ -1224,9 +1208,6 @@ def test_nfilt_snrmax_counts_the_fudged_snr(snana_fixture, repo_root,
     post-peak epochs, where SNANA's own fit errors are unreliable (Bug 7),
     which would otherwise move events for reasons unrelated to the recount.
     """
-    import os
-    import subprocess
-    import sys
     fx = snana_fixture("salt3_fit_select")
     vdir = tmp_path / "JAX_TEST_SALT3_FIT_SELECT"
     vdir.mkdir()
@@ -1430,7 +1411,7 @@ def test_salt3_fitter_setpkmjd_clump(snana_fixture):
         filter_map={b: i for i, b in enumerate(_DES_BANDS)},
         fit_bands=_DES_BANDS, photflag_mskrej=(1024,),
         snfield_list=["C3", "E1", "S1", "S2", "C1", "C2", "X1"],
-        setpkmjd={"fmax_clump": True, "bazin": False, "mjdwin": 60.0,
+        setpkmjd={"fmax_clump": True, "log_snr_weight": False, "bazin": False, "mjdwin": 60.0,
                   "snrcut": 5.0, "snrcut_backup": 3.0,
                   "num_nobs_bins": 1, "min_bin_gain": 0.05,
                   "batch_size": 1000})
@@ -1580,7 +1561,7 @@ def test_salt_evaluation_agrees_with_the_generic_implementation(snana_fixture):
         names=fitter.param_names)
 
     z = jnp.asarray(batch.redshifts)[:1]
-    bw, _ = jax.vmap(functools.partial(fitter.band_weights, photometry),
+    bw, _ = jax.vmap(functools.partial(band_weights, fitter._compiled_settings, photometry),
                      in_axes=(0, None))(z, no_att)
     sed_params = model.sed_params_from_fit(params, z[0])
     flux_fast = model.evaluate(sed_params, mjds, fi, mask, bw[0], static_data)
@@ -1604,7 +1585,7 @@ def test_salt_evaluation_agrees_with_the_generic_implementation(snana_fixture):
     axes = coarse_grid_axes(config, model.get_fit_parameters())
     z_grid = jnp.linspace(0.2, 0.5, 4)
     mu_grid = config.fit.distance_modulus(z_grid)
-    bw_grid, _ = jax.vmap(functools.partial(fitter.band_weights, photometry),
+    bw_grid, _ = jax.vmap(functools.partial(band_weights, fitter._compiled_settings, photometry),
                           in_axes=(0, None))(z_grid, no_att)
     lengths = [len(v) for v in axes.values()]
 
@@ -1627,8 +1608,8 @@ def test_vmax_solves_for_the_redshift_of_the_magnitude_limit(snana_fixture):
     must return the limit; vol_Vmax is the comoving volume out to it. SNANA
     writes these to its ROOT SNFIT block and never to the text tables, so the
     defining property is what a bundled fixture can check."""
-    from jax_snlc_fit.vmax import (compute_vmax, dvdz_integral,
-                                   MAGDIF_CONVERGE, Z_NULL)
+    from jax_snlc_core.cosmology import comoving_volume_per_steradian
+    from jax_snlc_core.vmax import MAGDIF_CONVERGE, Z_NULL, compute_vmax
 
     fx = snana_fixture("salt3_fit_dense")
     config = fit_config(fx.root / "fit.nml")
@@ -1660,8 +1641,14 @@ def test_vmax_solves_for_the_redshift_of_the_magnitude_limit(snana_fixture):
     maglim = {"r": 23.0}
     cospar = (config.fit.h0_ref[0], config.fit.omat_ref[0], config.fit.olam_ref[0],
               config.fit.w0_ref[0], config.fit.wa_ref[0])
-    out = compute_vmax(fitter, results, attached, fit_mask, model_flux,
-                       maglim, cospar)
+    out = compute_vmax(
+        model, results.params, maglim, cospar, evaluate_flux=fitter.evaluate_flux,
+        mjds=mjds, reference_mjds=attached.reference_mjds,
+        redshifts=attached.redshifts, filter_indices=attached.filter_indices,
+        filter_names=attached.filter_names, fit_mask=fit_mask,
+        model_flux=model_flux, zp_fluxcal=attached.zp_fluxcal,
+        mw_att_obs=attached.mw_att_obs, photometry=attached.photometry,
+        snids=attached.snids)
 
     zmax = np.asarray(out["z_Vmax_r"])
     solved = zmax > Z_NULL
@@ -1693,7 +1680,8 @@ def test_vmax_solves_for_the_redshift_of_the_magnitude_limit(snana_fixture):
     # vol_Vmax is the all-sky comoving volume out to that redshift (:152)
     np.testing.assert_allclose(
         np.asarray(out["vol_Vmax_r"])[solved],
-        4.0 * np.pi * dvdz_integral(zmax[solved], cospar), rtol=1e-10)
+        4.0 * np.pi * comoving_volume_per_steradian(zmax[solved], *cospar),
+        rtol=1e-10)
 
 
 def test_pre_fit_adjust_reverts_an_adjustment_that_made_the_chi2_worse(
@@ -1715,11 +1703,10 @@ def test_pre_fit_adjust_reverts_an_adjustment_that_made_the_chi2_worse(
     fitter = build_fitter(config, build_fit_model(config), batch)
     batch = for_fit(fitter, batch)
     photometry, att = batch.photometry, batch.mw_att_obs
-    bw = jax.vmap(functools.partial(fitter.band_weights, photometry))(
+    bw = jax.vmap(functools.partial(band_weights, fitter._compiled_settings, photometry))(
         batch.redshifts, att)
     scales = fitter._scales(batch, None)
-    mask = batch.observation_mask & fitter.restlambda_mask(
-        photometry, batch.filter_indices, batch.redshifts)
+    mask = batch.observation_mask & restlambda_mask(fitter._compiled_settings, photometry, batch.filter_indices, batch.redshifts)
 
     def adjusted(start):
         """FITINI_ADJUST's output from ``start``, and ``start``, physical."""
@@ -1786,7 +1773,7 @@ def test_simfit_ideal_refits_a_prescaled_subset_on_true_flux(snana_fixture):
         {}, [], config.selection.mxevt_process, config.selection.mxevt_cuts)
     fitter = build_fitter(config, model, batch)
 
-    columns = ideal_fit(fitter, fitter.config, for_fit(fitter, batch))
+    columns = fitter.ideal_fit(fitter.config, for_fit(fitter, batch))
 
     assert {'x1_IDEAL', 'c_IDEAL', 'PKMJD_IDEAL'} <= set(columns)
     x1 = columns['x1_IDEAL']
@@ -2030,19 +2017,18 @@ def one_sn_flux(model, fitter, batch, sn, probe_z=False):
     # a per-epoch weight so no epoch's contribution cancels another's
     probe = jnp.asarray(np.linspace(0.3, 1.7, mjds.size))
     photometry = fitter_photometry(fitter, batch)
-    z_weights = fitter.z_grid_band_weights(photometry) if probe_z else None
+    z_weights = z_grid_band_weights(fitter._compiled_settings, photometry) if probe_z else None
     static_data = {**fitter.static_data, **photometry}
     # a unit attenuation row: no MW extinction
     no_att = jnp.ones_like(photometry['common_filter_wave_grid'])
-    fixed = fitter.band_weights(photometry, z0, no_att)
+    fixed = band_weights(fitter._compiled_settings, photometry, z0, no_att)
 
     def scalar(v):
         if probe_z:
             z = v[-1]
             def weights_dz(q):
                 return jax.jvp(
-                    lambda r: fitter.interpolated_band_weights(
-                        photometry, z_weights, r, no_att),
+                    lambda r: interpolated_band_weights(fitter._compiled_settings, photometry, z_weights, r, no_att),
                     (q,), (1.0,))
             ((bw, _bwe), (bwz, _bwez)), (_, (bwzz, _)) = jax.jvp(
                 weights_dz, (z,), (1.0,))
@@ -2122,3 +2108,74 @@ def test_lcplot_rebuilt_under_usesim_trueflux(snana_fixture, tmp_path):
     diff = compare_lcplots(fit_rows, rebuilt)
     assert diff["missing"] == 0 and diff["data_changed"] == 0, diff
     assert diff["flags"] == [], diff
+
+
+def test_text_version_uses_normal_fit_loading(snana_fixture):
+    """TEXT versions pass through ordinary discovery, calibration and fit cuts."""
+    from jax_snlc_fit.calibration import read_kcor
+    from jax_snlc_fit.loader import discover_inputs, load, read_shared_files
+
+    text_root = snana_fixture('salt3_fit_text').root
+    config = fit_config(snana_fixture('salt3_fit_select').root / 'fit.nml',
+                        version_photometry='JAX_TEST_SALT3_FIT_TEXT',
+                        private_data_path=str(text_root))
+    directories, _ = discover_inputs(config)
+    model = build_fit_model(config)
+    batch, _, _, _ = load(config, model, read_kcor(config), directories,
+                          read_shared_files(config))
+    assert set(np.asarray(batch.snids).astype(int)) == {26, 61, 77, 84, 116, 148}
+    assert batch.survey == 'DES'
+    assert batch.sim_truth is not None
+    assert np.isfinite(np.asarray(batch.fluxcals)[batch.observation_mask]).all()
+
+
+@pytest.mark.parametrize('photoz', [False, True])
+def test_fitting_workflow_writes_precomputed_vmax(snana_fixture, tmp_path, photoz):
+    """The normal fitting workflow carries the core Vmax results into FITRES."""
+    from jax_snlc_core.snana_files import read_fitres
+    from jax_snlc_fit.run import _inputs, fit_dataset
+    from jax_snlc_fit.loader import load, read_shared_files
+    from jax_snlc_fit.fitter import prepare
+
+    root = snana_fixture('salt3_fit_dense').root
+    version = 'JAX_TEST_SALT3_FIT_DENSE'
+    _stage_version(tmp_path, version, root)
+    path = tmp_path / 'vmax.FITRES'
+    config = fit_config(
+        root / 'fit.nml', private_data_path=str(tmp_path), max_fit=4,
+        batch_size=4, n_fit_iterations=1, maglim_vmax={'r': 23.0},
+        dofit_photoz=photoz, lfixpar_all=True,
+        initial={'zPHOT': 0.3} if photoz else {},
+        output_name=str(path), require_docana=False)
+    # This checks output wiring, so evaluate fixed parameters without optimisation.
+    sim_dirs, _, kcor, model = _inputs(config)
+    shared = read_shared_files(config)
+    loaded = load(config, model, kcor, sim_dirs, shared)
+    batch = loaded[0]
+    fitter = prepare(config, model, kcor, batch)
+    results, table = fit_dataset(fitter, fitter.with_fit_settings(config), kcor, shared,
+                                prepared_data=loaded)
+    written = read_fitres(path).df
+    assert len(written) == results.n_sne == 4
+    for name in ('mag', 'Trest', 'z', 'vol', 'NEP'):
+        column = f'{name}_Vmax_r'
+        np.testing.assert_allclose(written[column], table.df[column], rtol=1e-3, atol=1e-3)
+    assert (written['z_Vmax_r'] > 0).all()
+    assert (written['vol_Vmax_r'] > 0).all()
+
+    # SNANA VMAX_ANA uses SNLC_REDSHIFT, not fitted zPHOT (snlc_fit.F90:15127).
+    from jax_snlc_core.filters import filter_band
+    batch = fitter.as_fitted(config, batch)
+    flux, _ = fitter.evaluate_model(batch, results.params)
+    bands = [i for i, name in batch.filter_names.items() if filter_band(name) == 'r']
+    mask = np.asarray(results.observation_mask) & np.isin(batch.filter_indices, bands)
+    best = np.argmax(np.where(mask, flux, -np.inf), axis=1)
+    mjds = np.asarray(batch.reference_mjds)[:, None] + np.asarray(batch.mjd_offsets)
+    redshift = batch.redshifts
+    expected = (mjds[np.arange(4), best] - np.asarray(results.params['PKMJD'])) / (1 + redshift)
+    np.testing.assert_allclose(table.df['Trest_Vmax_r'], expected, atol=1e-5)
+    if photoz:
+        # Ensure this fixture distinguishes fitted-z from the input-z regression.
+        fitted_phase = ((mjds[np.arange(4), best] - np.asarray(results.params['PKMJD']))
+                       / (1 + results.params['zPHOT']))
+        assert not np.allclose(expected, fitted_phase, atol=1e-5)

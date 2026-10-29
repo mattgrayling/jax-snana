@@ -1,13 +1,15 @@
 """Unit tests for the cosmology distance-modulus calculator."""
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.cosmology import (
-    transverse_comoving_distance,
-    distance_modulus,
-    distance_modulus_to_redshift,
-)
+from jax_snlc_core.cosmology import (_comoving_integral, distance_modulus,
+                                     distance_modulus_to_redshift, eq_to_gal,
+                                     hubble_parameter, load_hz_map,
+                                     transverse_comoving_distance)
+from jax_snlc_core.logging import SNANAError
 
 
 HUBBLE_DISTANCE_MPC = 2.998e5 / 70.0  # c/H0 with H0=70
@@ -23,20 +25,25 @@ def test_angular_diameter_distance_peaks():
     assert 0 < max_idx < len(da) - 1
 
 
-
-
 def test_load_hz_map_rejects_table_short_of_z_max(tmp_path):
     """SNANA's Hzfun_interp delegates to interp_1DFUN, which aborts outside
     the table (sntools_cosmology.c:512-522); a table ending below the
     configured redshift maximum is fatal at load."""
-    from jax_snlc_core.physics.cosmology import load_hz_map
-    from jax_snlc_core.utils.error_handling import SNANAError
     f = tmp_path / "HZFUN.DAT"
     f.write_text("0.0 70.0\n0.5 80.0\n1.0 95.0\n")
     z, e = load_hz_map(str(f), 70.0, z_max=0.9)
     assert float(z[-1]) == 1.0
     with pytest.raises(SNANAError, match="ends at z"):
         load_hz_map(str(f), 70.0, z_max=1.5)
+
+
+def test_hz_map_reads_a_repeated_redshift_from_the_lower_bin():
+    """Hzfun_interp is interp_1DFUN (sntools_cosmology.c:513-522), which
+    takes the lowest bin holding z, so at a redshift the table repeats E(z)
+    is the end of the bin below, and between nodes it is linear."""
+    hz_map = (jnp.asarray([0.0, 0.5, 0.5, 1.0]), jnp.asarray([1.0, 2.0, 3.0, 4.0]))
+    e = [float(hubble_parameter(z, 0.3, 0.0, 0.7, hz_map=hz_map)) for z in (0.25, 0.5, 0.75)]
+    assert e == [1.5, 2.0, 3.5]
 
 
 def test_transverse_distance_flat_threshold_matches_snana():
@@ -81,8 +88,6 @@ def test_hz_map_integral_tracks_a_structured_table():
     the integral must follow SNANA's dense midpoint rule (Hzinv_integral,
     sntools_cosmology.c:352-397), checked against the exact integral of the
     same piecewise-linear table."""
-    from jax_snlc_core.physics.cosmology import _comoving_integral
-    import jax.numpy as jnp
     zt = np.linspace(0.0, 4.0, 401)
     et = 1.0 + 0.6 * zt + 0.05 * np.sin(40.0 * zt)
     hz_map = (jnp.asarray(zt), jnp.asarray(et))
@@ -105,3 +110,33 @@ def test_hz_map_integral_tracks_a_structured_table():
                                        hz_map=hz_map))
         ref = exact(z)
         assert abs(got - ref) / ref < 5e-5, (z, got, ref)
+
+
+def test_eq_to_gal_matches_snana_slaeqgal():
+    """Galactic coordinates as SNANA's slaEqgal gives them (sntools.c:4409),
+    the rotation SNANA uses for the CMB dipole and the dust map; the
+    values are slaEqgal's own output for these positions."""
+    snana = np.array([(0.0, 0.0, 96.337269649876, -60.188551749437),
+                      (150.1, 2.2, 236.813654194253, 42.102645909687),
+                      (52.6, -27.9, 223.614399451310, -54.902734147399),
+                      (335.0, -60.0, 330.381477351645, -48.264381386836)])
+    l, b = eq_to_gal(snana[:, 0], snana[:, 1])
+    np.testing.assert_allclose(l, snana[:, 2], rtol=0, atol=1e-8)
+    np.testing.assert_allclose(b, snana[:, 3], rtol=0, atol=1e-8)
+
+
+def test_eq_to_gal_after_precision_changes():
+    """Scalar and compiled vector rotations use the current precision."""
+    compiled = jax.jit(eq_to_gal)
+    for double in (True, False, True):
+        with jax.enable_x64(double):
+            dtype = np.float64 if double else np.float32
+            tolerance = 1e-8 if double else 2e-5
+            for ra, dec in [(0., 0.), (np.array([0.]), np.array([0.]))]:
+                for rotate in (eq_to_gal, compiled):
+                    longitude, latitude = rotate(ra, dec)
+                    assert longitude.dtype == latitude.dtype == dtype
+                    np.testing.assert_allclose(longitude, 96.337269649876,
+                                               rtol=0, atol=tolerance)
+                    np.testing.assert_allclose(latitude, -60.188551749437,
+                                               rtol=0, atol=tolerance)

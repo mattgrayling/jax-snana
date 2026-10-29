@@ -1,44 +1,59 @@
-"""SNANA fit-input parser.
+"""Fit input: an SNANA namelist or YAML file, command-line overrides, or
+Python settings, turned into one checked FitConfig.
 
-Three steps, in order:
+The SNANA route takes three steps, in order:
 
-    read_keys(path)   -> the input's keys, verbatim (both namelist sections)
-    apply_overrides   -> raw -> raw, replaying command-line tokens as input lines
-    build(raw)        -> a FitConfig, in one interpretation pass
+    read_fit_input(path) -> the input's keys, aliases resolved
+    apply_overrides      -> raw -> raw, replaying command-line tokens as input lines
+    build(raw)           -> a FitConfig, in one interpretation pass
 
-`parse_fit_input_file` runs all three and reports keys the build never read.
+`parse_fit_input_file` runs them through `build_file_config`, which also
+reports keys the build never read. A YAML input takes named settings and
+goes through `build_config` instead.
 
 &SNLCINP and &FITINP share no key names, so both sections flatten into one dict.
 YAML inputs use the same section names and flatten identically.
 
 `build` resolves paths and values but reads no data files: `known_keys`
-runs it a second time on a probe copy to learn which tokens are keys.
+runs it on an empty input to learn which tokens are keys.
+
+Python and command-line settings go through `build_config` directly. Every
+route produces the same FitConfig, and model construction and scientific
+validation do not depend on which syntax supplied it.
 """
 
-from collections.abc import Mapping
+import argparse
+import copy
+import dataclasses
 import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, get_type_hints
+from typing import (Any, Dict, List, Optional, Sequence, Tuple, Union, get_origin,
+                    get_type_hints)
 
 import yaml
 
-from jax_snlc_core.io import is_ignorefile
-from jax_snlc_core.models import (MODEL_REGISTRY,
-                                  model_input_keys, parse_model_input_value)
-from jax_snlc_core.physics.dust_laws import OPT_MWCOLORLAW_NAMES
-from jax_snlc_core.utils import sndata_root, snana_log as slog
-from jax_snlc_core.utils.config_tracking import UsedTrackingDict
-from jax_snlc_core.utils.cutwin import CUTVAL_OPEN
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.input_settings import convert
-from jax_snlc_fit.batch import SN_CUT_BAND_PREFIXES, SN_CUT_NAMES
-from jax_snlc_fit.io import HATS_PROPERTIES
-from jax_snlc_fit.config import Fit, FitConfig
+from jax_snlc_core import logging as log
+from jax_snlc_core.dust import OPT_MWCOLORLAW_NAMES
+from jax_snlc_core.input_settings import (UsedTrackingDict, add_settings, bootstrap_settings,
+                                          build_dataclass, convert, dataclass_settings,
+                                          derived_changes, mapping_tokens, merge_settings,
+                                          parsed_settings, supplied_values, value_type)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import (MODEL_REGISTRY, infer_model_type_from_path, model_input_keys,
+                                  parse_model_input_value)
+from jax_snlc_core.models.registry import model_input_declarations
+from jax_snlc_core.peak_time import (OPTMASK_SETPKMJD_BAZIN, OPTMASK_SETPKMJD_FLUXMAX,
+                                     OPTMASK_SETPKMJD_FLUXMAX2, OPTMASK_SETPKMJD_FLUXMAX3,
+                                     OPTMASK_SETPKMJD_NOABORT, OPTMASK_SETPKMJD_TRIGGER)
+from jax_snlc_core.snana_files import is_ignorefile
+from jax_snlc_core.utils import CUTVAL_OPEN
 
-from .inputs import (build_config, command_settings,
-                     declarations, merge_fit_settings, selected_model)
+from .config import (PRIOR_ZERRSCALE_UNSET, SN_CUT_BAND_PREFIXES, SN_CUT_NAMES, EarlyLC, Fit,
+                     FitConfig, RequireEpochs)
+from .parameters import parse_prior
 
 RECORD_CLASSES = get_type_hints(FitConfig)
 FIELD_RECORD = {name: record for record, owner in RECORD_CLASSES.items()
@@ -210,7 +225,8 @@ _LIST_COMMA = re.compile(r""",(?=(?:[^'"]*['"][^'"]*['"])*[^'"]*$)""")
 
 def _parse_value(value_str: str) -> Any:
     """A key's value: a scalar, or a list when it has several comma-separated
-    or whitespace-separated tokens. Quotes stripped, $ENV expanded."""
+    tokens. Quotes stripped, $ENV expanded. A blank-separated value stays one
+    string here; each key's reader splits it where the key takes a list."""
     value_str = value_str.strip().rstrip(",")
     parts = _LIST_COMMA.split(value_str)
     if len(parts) > 1:
@@ -340,11 +356,11 @@ def _int(raw, key, into, name=None):
 
 
 def _opt_vmax(raw, into) -> None:
-    """MAGLIM_VMAX / OPT_VMAX. Of the three declared OPT_VMAX bits only bit 7
-    (verbose) is honoured: bit 1 is tested once, in VMAX_INI's banner
-    (snlc_fit.F90:15057), and never read; bit 0 indexes PEAKMAG_OBS_MODEL by
-    Vmax list position where PEAKMAG_CALC fills it by survey-filter index
-    (:15240 against :14738)."""
+    """MAGLIM_VMAX / OPT_VMAX. Bit 0 is refused: SNANA indexes
+    PEAKMAG_OBS_MODEL by Vmax list position where PEAKMAG_CALC fills it by
+    survey-filter index (snlc_fit.F90:15240 against :14738). SNANA's other two
+    bits change no output, bit 1 being tested only in VMAX_INI's banner
+    (:15057) and bit 7 being verbosity, so the value is kept with no effect."""
     if "MAGLIM_VMAX" in raw:
         into["maglim_vmax"] = _filt_map(
             raw["MAGLIM_VMAX"], str(raw.get("FILTLIST_FIT", "") or ""))
@@ -381,13 +397,12 @@ def _allow_negflux(raw, into) -> None:
     marks = F "test only" (snana_manual.tex:11892)."""
     if "ALLOW_NEGFLUX_SALT2" not in raw:
         return
-    if not _truthy(raw["ALLOW_NEGFLUX_SALT2"]):
+    if not convert(raw["ALLOW_NEGFLUX_SALT2"], bool, "ALLOW_NEGFLUX_SALT2"):
         raise SNANAError(
             "ALLOW_NEGFLUX_SALT2 = F clamps the SED per wavelength inside the "
             "band integral, which SNANA documents as test only. jax implements "
             "the default (negatives allowed).",
             function_name="_allow_negflux")
-
 
 
 def _model_key_values(raw, model_type) -> Dict[str, Any]:
@@ -429,11 +444,6 @@ def _file(raw, key, into, as_list=False):
         _str(raw, key, into)
 
 
-def _truthy(value) -> bool:
-    """Fortran logical: T/.TRUE./1 are true."""
-    return str(value).strip().upper() in ("T", "TRUE", ".TRUE.", "1")
-
-
 def _filt(raw, key, into):
     """A SNANA filter string, mapped to {band: value} against FILTLIST_FIT."""
     if key in raw:
@@ -454,21 +464,10 @@ def _triplets(raw, key, cast, into, name=None):
         for i in range(0, len(toks), 3))
 
 
-def until_sentinel(values, floor):
-    """The leading run of a SNANA list, which ends at its first entry below
-    ``floor`` rather than skipping it."""
-    out = []
-    for value in values:
-        if value < floor:
-            break
-        out.append(value)
-    return out
-
-
 def _bool(raw, key, into, name=None):
-    """Fortran logical: T/.TRUE./1 are true."""
+    """``raw[key]`` read as a Fortran logical."""
     if key in raw:
-        into[name or key.lower()] = _truthy(raw[key])
+        into[name or key.lower()] = convert(raw[key], bool, key)
 
 
 def _pair(raw, key, into, name=None):
@@ -579,6 +578,17 @@ def _int_list(raw, key, into, name=None):
     # exact: a Rubin CID has 18 digits, past a float's 16
     if key in raw:
         into[name or key.lower()] = [int(v) for v in _as_list(raw[key])]
+
+
+def _until_sentinel(values, floor):
+    """The leading run of a SNANA list, which ends at its first entry below
+    ``floor`` rather than skipping it."""
+    out = []
+    for value in values:
+        if value < floor:
+            break
+        out.append(value)
+    return out
 
 
 def _str_list(raw, key, into, name=None, split_words=False):
@@ -749,46 +759,31 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     """
     kw: Dict[str, Any] = {}
 
-    _str(raw, "VERSION_PHOTOMETRY", kw)
-    _str(raw, "VERSION_PHOTOMETRY_WILDCARD", kw)
-    _str(raw, "PRIVATE_DATA_PATH", kw)
-    _str(raw, "KCOR_FILE", kw, "kcor_file")
-    _str(raw, "FITMODEL_NAME", kw)
-    _str(raw, "FILTLIST_FIT", kw)
-    _int(raw, "MXLC_FIT", kw, "mxlc_fit")
-
     # jax-only keys
-    _bool(raw, "DOUBLE_PRECISION", kw)
-    _int(raw, "BATCH_SIZE", kw)
-    _int(raw, "NUM_NOBS_BINS", kw)
-    _flt(raw, "MIN_BIN_GAIN", kw)
-    _flt(raw, "LEAKAGE_CUT", kw)
-    _bool(raw, "FLUXCAL_BASELINE_CORRECT", kw)
-    _str(raw, "OUTPUT_NAME", kw)
-    _int(raw, "MAX_FIT", kw)
-    _int(raw, "MAXITER_ROUND1", kw)
-    _int(raw, "MAXITER_ROUND2", kw)
-    _str(raw, "MODEL_TYPE", kw)
     if "PHOTOMETRY_COLUMNS" in raw:
         toks = str(raw["PHOTOMETRY_COLUMNS"]).split()
         kw["photometry_columns"] = dict(
             toks[i:i + 2] for i in range(0, len(toks), 2))
 
+    # SNANA forces E(B-V) only above -0.001 (snana.F90:17209); its default,
+    # -9, leaves it off
+    if "MWEBV_FORCE" in raw:
+        force = float(raw["MWEBV_FORCE"])
+        kw["mwebv_force"] = force if force > -0.001 else None
     _int_list(raw, "SNTYPE_LIST", kw)
-    _int_list(raw, "SNCID_LIST", kw)
+    # a numeric CID list ends at its first entry below 1 (DO WHILE
+    # SNCID_LIST(i) >= 1, snana.F90:11888)
+    for key in ("SNCID_LIST", "SNCID_IGNORE"):
+        if key in raw:
+            kw[key.lower()] = _until_sentinel([int(v) for v in _as_list(raw[key])], 1)
     _str_list(raw, "SNCCID_LIST", kw, split_words=True)
-    _str(raw, "SNCID_LIST_FILE", kw)
     _str_list(raw, "SNFIELD_LIST", kw, split_words=True)
-    _int_list(raw, "SNCID_IGNORE", kw)
     _str_list(raw, "SNCCID_IGNORE", kw, split_words=True)
-    _str(raw, "SNCID_IGNORE_FILE", kw)
-    _int_list(raw, "SNTYPE_IGNORE", kw)
-    _int(raw, "MXEVT_PROCESS", kw)
-    _int(raw, "MXEVT_CUTS", kw)
-    _flt(raw, "SIM_PRESCALE", kw)
+    # ends at the first negative entry (snana.F90:5915)
+    if "SNTYPE_IGNORE" in raw:
+        kw["sntype_ignore"] = _until_sentinel(
+            [int(v) for v in _as_list(raw["SNTYPE_IGNORE"])], 0)
     _prior_windows(raw, kw)
-    _int(raw, "OPT_PRIOR", kw)
-    _int(raw, "OPT_PRIOR_AV", kw)
     _filt(raw, "MAGOBS_SHIFT_ZP", kw)
     if "MAGOBS_SHIFT_ZP_PARAMS" in raw:
         vals = [float(v) for v in _as_list(raw["MAGOBS_SHIFT_ZP_PARAMS"])]
@@ -799,7 +794,6 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
         kw["magobs_shift_primary_params"] = tuple(
             vals + [0.0] * (3 - len(vals)))[:3]
     _filt(raw, "FILTER_LAMSHIFT", kw)
-    _str(raw, "SNRMAX_FILTERS", kw)
     if "FILTER_REPLACE" in raw:
         toks = str(raw["FILTER_REPLACE"]).split()
         if len(toks) != 3 or toks[1] != "->":
@@ -812,20 +806,7 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
                 f"N({toks[0]}) != N({toks[2]}).",
                 function_name="FILTER_REPLACE")
         kw["filter_replace"] = dict(zip(toks[0], toks[2]))
-    _int(raw, "PHOTFLAG_DETECT", kw)
-    _flt(raw, "FLUXERRCALC_ZPTERR", kw)
-    # MJD_TRIGGER is derived after SET_PEAKMJD (snana.F90:17493 vs :17217)
-    _int(raw, "PHOTFLAG_TRIGGER", kw)
     _pair(raw, "PEAKMJD_SANITY", kw)
-    _flt(raw, "REDSHIFT_FINAL_SHIFT", kw)
-    _flt(raw, "HOSTGAL_ZPHOT_SHIFT", kw)
-    _flt(raw, "HOSTGAL_ZSPEC_SHIFT", kw)
-    _flt(raw, "VPEC_ERR_OVERRIDE", kw)
-    _int(raw, "OPT_VPEC_COR", kw)
-    _flt(raw, "ZTOL_HELIO2CMB", kw, "ztol_helio2cmb")
-    _bool(raw, "USE_SNHOST_ZPHOT", kw)
-    _bool(raw, "USE_SNHOST_QZPHOT", kw)
-    _flt(raw, "SNMAGRMS_FOR_PHOTOZ", kw)
     if "PHOTFLAG_MSKREJ" in raw:
         kw["photflag_mskrej"] = tuple(
             int(float(v)) for v in _as_list(raw["PHOTFLAG_MSKREJ"]))
@@ -833,7 +814,7 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
         bits = [int(float(v)) for v in
                 _as_list(raw["PHOTFLAG_BITLIST_REJECT"])]
         mask = 0
-        for bit in until_sentinel(bits, 0):
+        for bit in _until_sentinel(bits, 0):
             mask |= 1 << bit
         # replaces element 1 of PHOTFLAG_MSKREJ (snana.F90:5856-5861)
         rest = tuple(kw.get("photflag_mskrej", ())[1:])
@@ -844,18 +825,6 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     # SCALE_COVAR <= 0 only disables the model error (snlc_fit.F90:7161)
     if "SCALE_COVAR" in raw and float(raw["SCALE_COVAR"]) <= 0.0:
         kw["use_model_magerr"] = False
-    _bool(raw, "ABORT_ON_NOEPOCHS", kw)
-    _bool(raw, "ABORT_ON_BADQZPHOT", kw)
-    _bool(raw, "ABORT_ON_MISSING_QZPHOT", kw)
-    _bool(raw, "ABORT_ON_TRESTCUT", kw)
-    _bool(raw, "ABORT_ON_NOPKMJD", kw)
-    _bool(raw, "RESTORE_WRONG_VPEC", kw)
-    _str(raw, "MINOS", kw)
-    _bool(raw, "MINOS_ERRMAX_BAD", kw)
-    _bool(raw, "LFIXPAR_ALL", kw)
-    _bool(raw, "LFIXPAR_ADJUST", kw)
-    _int(raw, "REQUIRE_DOCANA", kw)
-    _int(raw, "FLUXERRMODEL_OPTMASK", kw)
 
     cutwin: Dict[str, Tuple[float, float]] = {}
     epoch_cutwin: Dict[str, Tuple[float, float]] = {}
@@ -892,7 +861,6 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     _read_require_epochs(raw, kw)
     _read_earlylc(raw, kw)
 
-
     if "PRIVATE_VARNAME_READLIST" in raw:
         kw["private_varname_readlist"] = tuple(
             str(v) for v in _as_list(raw["PRIVATE_VARNAME_READLIST"]))
@@ -927,12 +895,8 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
         kw["jobsplit"] = (vals[0], vals[1])
     if "SIM_TEMPLATE_INDEX_LIST" in raw:
         # stops at the first non-positive entry (PARSE_INTLIST)
-        templates = []
-        for v in _as_list(raw["SIM_TEMPLATE_INDEX_LIST"]):
-            if int(float(v)) <= 0:
-                break
-            templates.append(int(float(v)))
-        kw["sim_template_index_list"] = templates
+        kw["sim_template_index_list"] = _until_sentinel(
+            [int(float(v)) for v in _as_list(raw["SIM_TEMPLATE_INDEX_LIST"])], 1)
 
     # SNCUT_<X> sets the CUTWIN lower edge (snana.F90:1441)
     fit_bands = str(raw.get("FILTLIST_FIT", "") or "")
@@ -947,11 +911,6 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     if epoch_cutwin:
         kw["epoch_cutwin"] = epoch_cutwin
 
-    _int(raw, "OPT_SETPKMJD", kw)
-    _flt(raw, "MJDWIN_SETPKMJD", kw)
-    _flt(raw, "SNRCUT_SETPKMJD", kw)
-    _flt(raw, "SHIFT_SETPKMJD", kw)
-
     for key in ("MAGCOR_FILE", "SIM_MAGCOR_FILE", "NONLINEARITY_FILE",
                 "EPOCH_IGNORE_FILE",
                 "FUDGE_HOSTNOISE_FILE", "FLUXERRMODEL_FILE",
@@ -965,20 +924,11 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
                      for key, name in _FUDGE_FLUXCAL_KEYS.items() if key in raw}
     if fudge_fluxcal:
         kw["fudge_fluxcal"] = fudge_fluxcal
-    _flt(raw, "FUDGE_DATAERR_SCALE", kw)
-    _flt(raw, "FUDGE_MODELERR_SCALE", kw)
-    _flt(raw, "FUDGE_MAGERR_MODEL", kw)
-    _flt(raw, "FUDGEALL_ITER1_MAXFRAC", kw)
-    _flt(raw, "FUDGEALL_MAXFRAC", kw)
-    _flt(raw, "FUDGE_FITERR_MAXFRAC", kw)
-    _int(raw, "FUDGE_FITERR_MAXITER", kw)
     _tuple(raw, "FUDGE_FITERR_TREST", kw)
     _tuple(raw, "FUDGE_FITERR_RESTLAM", kw)
-    _str(raw, "FUDGE_FITERR_PASSBANDS", kw)
     if "FUDGE_MAG_COVERR" in raw:
         kw["fudge_mag_coverr"] = _filt_map(raw["FUDGE_MAG_COVERR"])
 
-    _int(raw, "OPT_MWEBV", kw)
     _int(raw, "OPT_MWCOLORLAW", kw)
     _flt(raw, "RV_MWCOLORLAW", kw)
     # SNANA's unset values
@@ -995,34 +945,19 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     if "PARLIST_MWCOLORLAW" in raw:
         kw["parlist_mwcolorlaw"] = tuple(
             float(v) for v in _as_list(raw["PARLIST_MWCOLORLAW"]))
-    _flt(raw, "MWEBV_SCALE", kw)
-    _flt(raw, "MWEBV_SHIFT", kw)
-    _flt(raw, "MWEBV_FORCE", kw)
 
     kw["sntable"] = parse_sntable_list(str(raw.get("SNTABLE_LIST", "DEFAULT")))
     # MXLC_PLOT loses to mxlc:N (snana.F90:6692).
     if "mxlc" not in kw["sntable"] and "MXLC_PLOT" in raw:
         kw["sntable"]["mxlc"] = int(float(raw["MXLC_PLOT"]))
-    _str(raw, "TEXTFILE_PREFIX", kw)
 
     usesim = [generic for key, generic in _USESIM_PARAM_KEYS.items()
-              if _truthy(raw.get(key))]
+              if key in raw and convert(raw[key], bool, key)]
     if usesim:
         kw["usesim_params"] = usesim
-    _bool(raw, "USESIM_INIVAL", kw, "usesim_inival")
-    _bool(raw, "USESIM_TRUEFLUX", kw, "usesim_trueflux")
-    _bool(raw, "USESIM_SNIA", kw, "usesim_snia")
-    _bool(raw, "USESIM_NONIA", kw, "usesim_nonia")
-    _int(raw, "SIMFIT_IDEAL_PRESCALE", kw, "simfit_ideal_prescale")
     _allow_negflux(raw, kw)
-    _bool(raw, "ENABLE_MAGSHIFT", kw)
-    _bool(raw, "ENABLE_WAVESHIFT", kw)
     _opt_sncid_list(raw, kw)
     _opt_vmax(raw, kw)
-    _bool(raw, "CHECK_CRAZYFITERR", kw, "check_crazyfiterr")
-    _bool(raw, "SKIP_PHOTOZ_INIT", kw, "skip_photoz_init")
-    _bool(raw, "ABORT_ON_DUPLCID", kw, "abort_on_duplcid")
-    _flt(raw, "QUANTILE_ZERRMIN", kw, "quantile_zerrmin")
 
     for key in ("H0_REF", "OMAT_REF", "OLAM_REF", "W0_REF", "WA_REF"):
         _cospar(raw, key, kw)
@@ -1033,26 +968,17 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     _filt_window(raw, "FITWIN_TREST_FILTER", kw, "fitwin_trest_filter")
     _pair(raw, "FITWIN_MJD", kw)
     _read_fitwin(raw, kw)
-    _flt(raw, "DELCHI2_REJECT", kw)
-    _flt(raw, "SIGNOISE_REJECT", kw)
 
-    # OPT_COVAR_FLUX=2 unsupported; validate warns
+    # OPT_COVAR_FLUX=2 unsupported; _warn_unimplemented_values warns
     if "OPT_COVAR_FLUX" in raw:
         kw["use_offdiag_covariance"] = int(float(raw["OPT_COVAR_FLUX"])) != 0
-    _int(raw, "OPT_COVAR_MWXTERR", kw)
-    _int(raw, "OPT_COVAR_LCFIT", kw)
 
-    _bool(raw, "DOFIT_PHOTOZ", kw)
-    _int(raw, "OPT_PHOTOZ", kw)
-    _flt(raw, "PRIOR_ZERRSCALE", kw)
     # SNANA applies no prior for a scale of 9 or more (snlc_fit.F90:4910);
     # namelists write 100 or 1000 to switch it off
     if "PRIOR_MUERRSCALE" in raw:
         scale = float(raw["PRIOR_MUERRSCALE"])
         kw["prior_muerrscale"] = scale if scale < 9.0 else None
     _pair(raw, "PHOTOZ_BOUND", kw)
-    _flt(raw, "PHOTODZ_REJECT", kw)
-    _flt(raw, "PHOTODZ1Z_REJECT", kw)
     _pair(raw, "PHOTOZ_ITER1_LAMRANGE", kw)
     # coarse-grid colour and shape axes (snlc_fit.F90:606-617)
     coarse_grid = {}
@@ -1072,7 +998,7 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     _int(raw, "SCALE_NBIN_COURSE_PHOTOZ", kw, "scale_nbin_course")
 
     _int(raw, 'OPT_CHI2_SIGMA', kw)
-    if _truthy(raw.get('DOCHI2_SIGMA')):
+    if 'DOCHI2_SIGMA' in raw and convert(raw['DOCHI2_SIGMA'], bool, 'DOCHI2_SIGMA'):
         kw['opt_chi2_sigma'] = 1
 
     _read_inival_inistp(raw, kw)
@@ -1094,20 +1020,17 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     for name, annotation in types.items():
         key = name.upper()
         if key in raw and name not in kw:
-            kw[name] = convert(raw[key], annotation, key)
+            value = raw[key]
+            # a Fortran namelist separates an array's values by blanks too
+            if (isinstance(value, str)
+                    and get_origin(value_type(annotation)) in (list, tuple)):
+                value = value.split()
+            kw[name] = convert(value, annotation, key)
     config = build_config(merge_fit_settings(kw, settings or {}))
     config.model._model_key_values = {**model_values, **config.model._model_key_values}
     config.output._unsupported = table_warnings
     return config
 
-
-# The spellings every model shares; model-specific ones are declared by the
-# parameter that carries them (fit_spec.snana_parameter_aliases).
-_UNIVERSAL_PARAM_SPELLINGS = {
-    'PEAKMJD': 'PKMJD',
-    'DPEAKMJD': 'PKMJD',           # grid axis is t0 offsets
-    'PHOTOZ': 'zPHOT',
-}
 
 # USESIM_<x> -> generic parameter (snlc_fit.F90:1135-1140)
 _USESIM_PARAM_KEYS = {
@@ -1120,138 +1043,6 @@ _USESIM_PARAM_KEYS = {
     'USESIM_DLMAG': 'DLMAG',
     'USESIM_REDSHIFT': 'PHOTOZ',
 }
-
-_UNSUPPORTED_PARAM_KEYS = {
-    'AVRV': 'selects fitting the AV/RV ratio in place of RV, which is not supported',
-    'SHAPE2': 'selects a second light-curve shape parameter, which is not supported',
-}
-
-
-def resolve_parameter_key(suffix: str, param_names, aliases) -> str:
-    """Map an ``INIVAL_``/``INISTP_``/``PRIOR_`` suffix onto one of the
-    model's parameters.
-
-    The parameter's own name wins, so a model is always addressable by name.
-    ``aliases`` is :func:`~jax_snlc_fit.fit_spec.snana_parameter_aliases` of
-    the model, which lets an input written in SNANA's slot spellings still
-    resolve.
-    """
-    if suffix.upper() in _UNSUPPORTED_PARAM_KEYS:
-        raise SNANAError(
-            f"{suffix} {_UNSUPPORTED_PARAM_KEYS[suffix.upper()]}.",
-            function_name="resolve_parameter_key")
-
-    by_lower = {n.lower(): n for n in param_names}
-    if suffix.lower() in by_lower:
-        return by_lower[suffix.lower()]
-
-    for snana in (aliases.get(suffix.upper()),
-                   _UNIVERSAL_PARAM_SPELLINGS.get(suffix.upper())):
-        if snana is not None and snana.lower() in by_lower:
-            return by_lower[snana.lower()]
-
-    raise SNANAError(
-        f"{suffix} is not a parameter of this model. It fits: "
-        f"{', '.join(param_names)}.",
-        function_name="resolve_parameter_key")
-
-
-def resolve_fitwin_windows(config, model, param_names, aliases) -> dict:
-    """``FITWIN_`` suffixes -> the FITRES column each cuts on, checked here so a
-    misspelt suffix aborts before any fit runs.
-
-    ``SHAPE_ERR`` becomes ``x1_ERR`` under SALT: the base name resolves the
-    same way ``INIVAL_``/``INISTP_`` do, then to the column the model writes that
-    parameter as (BayeSN's Ds is MU_LCFIT), and the _ERR / _ERRz1 suffix rides
-    along. A base naming a column directly (SALT's mB, which no parameter
-    owns) is taken as it is. ``PROB``, ``ZPULL`` and ``COV_OFFDIAG`` name
-    derived quantities rather than columns and pass through unchanged.
-    """
-    derived = {'PROB', 'ZPULL', 'COV_OFFDIAG'}
-    pairs = model.fitres_param_columns(param_names)
-    by_lower = {column.lower(): column for _, column in pairs}
-
-    def column_of(name):
-        """The parameter's own column where it has one, else the column it
-        is written as (SALT's amplitude owns x0 and the derived mB)."""
-        columns = [column for owner, column in pairs if owner == name]
-        return name if name in columns else columns[0]
-
-    resolved = {}
-    for suffix, window in config.selection.fitwin.items():
-        upper = suffix.upper()
-        if upper in derived:
-            resolved[upper] = window
-            continue
-        base, _, form = suffix.partition('_')
-        if form and form.upper() not in ('ERR', 'ERRZ1'):
-            base, form = suffix, ''
-        try:
-            column = column_of(resolve_parameter_key(base, param_names, aliases))
-        except SNANAError:
-            if base.lower() not in by_lower:
-                raise SNANAError(
-                    f"FITWIN_{suffix} names no fitted quantity. Available: "
-                    f"{', '.join([*by_lower.values(), *sorted(derived)])}, "
-                    f"each with _ERR and _ERRz1.",
-                    function_name="FITWIN") from None
-            column = by_lower[base.lower()]
-        resolved[f"{column}_{form.upper()}" if form else column] = window
-    return resolved
-
-
-def resolve_usesim_columns(config, fit_parameters, param_names, aliases):
-    """(parameter name -> ``SIM_`` truth column, pinned names) for the
-    ``USESIM_*`` keys in effect. USESIM_INIVAL seeds without pinning, so it
-    contributes columns but no pinned names."""
-    columns = {}
-    pinned = []
-    for generic in config.model.usesim_params:
-        name = resolve_parameter_key(generic, param_names, aliases)
-        spec = fit_parameters.get(name)
-        if spec is None or 'sim_truth' not in spec:
-            raise SNANAError(
-                f"USESIM_{generic} resolves to '{name}', which declares no "
-                f"simulated-truth column, so there is nothing to fit against.",
-                function_name="resolve_usesim_columns")
-        columns[name] = spec['sim_truth']
-        pinned.append(name)
-
-    if config.model.usesim_inival:
-        for name, spec in fit_parameters.items():
-            if 'sim_truth' in spec:
-                columns.setdefault(name, spec['sim_truth'])
-
-    return columns, pinned
-
-
-def resolve_parameter_keys(model_config, param_names, aliases) -> dict:
-    """The ``INIVAL_``/``INISTP_``/``PRIOR_`` dicts with their suffixes
-    resolved to parameter names, so no generic spelling survives past the
-    layer that parses them. Returns {attr: resolved dict}; the input is
-    untouched."""
-    resolved = {}
-    for attr in ('inival', 'initial', 'fixed', 'bounds', 'inistp', 'inival_gridsearch', 'priors',
-                 'coarse_grid'):
-        raw = getattr(model_config, attr)
-        resolved[attr] = {resolve_parameter_key(s, param_names, aliases): v
-                          for s, v in raw.items()} if raw else raw
-    return resolved
-
-
-def validate_inival_bounds(config, fit_parameters) -> None:
-    """Abort on a starting value outside its parameter's declared bounds."""
-    for name, value in config.model.inival.items():
-        spec = fit_parameters.get(name)
-        # only absolute bounds can be checked here
-        if not spec or 'bounds' not in spec:
-            continue
-        lo, hi = spec['bounds']
-        if not lo <= value <= hi:
-            raise SNANAError(
-                f"INIVAL for {name} is {value}, outside its bounds "
-                f"({lo}, {hi}).",
-                function_name="validate_inival_bounds")
 
 
 # FITWIN_ suffixes read elsewhere in build(), as the epoch cuts they are
@@ -1277,55 +1068,6 @@ def _fitwin_pair(value) -> Tuple[float, float]:
     vals = _as_list(value)
     return (float(vals[0]),
             float(vals[1]) if len(vals) > 1 else _FITWIN_OPEN)
-
-
-# The Trest-family cuts a photo-z fit relaxes before fitting and re-applies
-# after (snlc_fit.F90:3289-3312). 'trest' is an epoch cut, the rest per-SN.
-PHOTOZ_TREST_CUTS = ('trest', 'trestmin', 'trestmax', 't0gapmax', 'tgapmax')
-
-
-def check_photoz_trest_cuts(config):
-    """INISTP_PHOTOZ=1 leaves the rest frame undetermined (snlc_fit.F90:3289),
-    so a rest-frame cut is refused unless ABORT_ON_TRESTCUT is off. ``config``
-    is resolved against the model (:func:`resolved_config`), and is checked
-    before any data are read."""
-    if not (config.photoz.dofit_photoz
-            and config.model.inistp.get('zPHOT') == 1.0):
-        return
-    named = [n for n in PHOTOZ_TREST_CUTS if n in config.selection.cutwin
-             or n in config.selection.epoch_cutwin]
-    if named and config.fit.abort_on_trestcut:
-        raise SNANAError(
-            f"CUTWIN_{', CUTWIN_'.join(n.upper() for n in named)} cut "
-            f"on the rest frame, which INISTP_PHOTOZ=1 leaves "
-            f"undetermined until the fit. Override with "
-            f"ABORT_ON_TRESTCUT = F.",
-            function_name="ABORT_ON_CUTWIN_TREST")
-
-
-def trest_zcut(edge: int, z: float, trest: float) -> float:
-    """Loosen one edge of a rest-frame cut for a trial redshift: edge 1 goes
-    below ``trest``, edge 2 above (TRESTzCUT, snlc_fit.F90:3661)."""
-    z1 = 1.0 + z
-    if edge == 1:
-        return trest * (1.0 / z1 if trest >= 0.0 else z1)
-    return trest * (z1 if trest >= 0.0 else 1.0 / z1)
-
-
-def relax_photoz_trest_cuts(config, cutwin, epoch_cutwin):
-    """``cutwin`` and ``epoch_cutwin`` with the Trest-family cuts widened for
-    the fit, and the nominal ones, which are re-tested after it
-    (PHOTOZ_SAVECUT, snlc_fit.F90:3703)."""
-    z = config.photoz.photoz_bound[1]
-    nominal = {name: window for store in (cutwin, epoch_cutwin)
-               for name, window in store.items() if name in PHOTOZ_TREST_CUTS}
-
-    def widened(store):
-        return {name: ((trest_zcut(1, z, lo), trest_zcut(2, z, hi))
-                       if name in PHOTOZ_TREST_CUTS else (lo, hi))
-                for name, (lo, hi) in store.items()}
-
-    return widened(cutwin), widened(epoch_cutwin), nominal
 
 
 def _read_require_epochs(raw: UsedTrackingDict, kw: dict) -> None:
@@ -1364,8 +1106,6 @@ def _read_earlylc(raw: UsedTrackingDict, kw: dict) -> None:
     if "EARLYLC_STRING" not in raw:
         return
     toks = [str(t) for t in _as_list(raw["EARLYLC_STRING"])]
-    from .config import EarlyLC
-    from jax_snlc_core.utils.input_settings import dataclass_settings, convert
     early = {}
     types, _ = dataclass_settings(EarlyLC)
     names = {name.upper(): name for name in types}
@@ -1386,8 +1126,8 @@ def _read_fitwin(raw: UsedTrackingDict, kw: dict) -> None:
     """Collect the FITWIN_ windows applied to the finished fit.
 
     The suffix names a FITRES column (or one of its _ERR / _ERRz1 forms), which
-    only the model can resolve, so it is carried raw and resolved in
-    jax_snlc_fit.run.
+    only the model can resolve, so it is carried raw and resolved by
+    :func:`~jax_snlc_fit.parameters.resolve_fitwin_windows`.
     """
     windows = {}
     iter1 = {}
@@ -1431,13 +1171,12 @@ def _read_inival_inistp(raw: UsedTrackingDict, kw: dict) -> None:
 
 
 # warnings belong here: build() runs twice
-def validate(cfg: FitConfig, raw: Dict[str, Any]) -> None:
+def _warn_unimplemented_values(raw: Dict[str, Any]) -> None:
     """Warn about recognised settings whose value jax does not implement."""
     if "OPT_COVAR_FLUX" in raw and int(float(raw["OPT_COVAR_FLUX"])) == 2:
-        slog.warn(logger, "CONFIG",
-                  "OPT_COVAR_FLUX=2 (recompute covariance inside the fit loop) "
-                  "is not implemented; using the frozen covariance of =1")
-
+        log.warn(logger, "CONFIG",
+                 "OPT_COVAR_FLUX=2 (recompute covariance inside the fit loop) "
+                 "is not implemented; using the frozen covariance of =1")
 
 
 def _requests_nothing(key, value) -> bool:
@@ -1447,7 +1186,7 @@ def _requests_nothing(key, value) -> bool:
         return False
     text = str(_as_list(value)[0] if isinstance(value, list) else value).strip()
     if isinstance(inert, bool):
-        return _truthy(text) is inert
+        return convert(text, bool, key) is inert
     if isinstance(inert, str):
         return text.strip("'\"") == inert
     if inert is _IGNORE_FILENAMES:
@@ -1479,8 +1218,8 @@ def _warn_unrecognized_keys(raw: UsedTrackingDict, typed_keys: set) -> None:
         if k not in raw.used and k not in _INERT_KEYS
         and not any(k.startswith(p) for p in _OPEN_KEY_PREFIXES))
     if unknown:
-        slog.warn(logger, "CONFIG",
-                  f"Unrecognized SNANA input key(s) ignored: {', '.join(unknown)}")
+        log.warn(logger, "CONFIG",
+                 f"Unrecognized SNANA input key(s) ignored: {', '.join(unknown)}")
 
 
 def known_keys() -> set:
@@ -1557,66 +1296,46 @@ def apply_overrides(raw: UsedTrackingDict,
     return lines
 
 
-def resolve_version_dir(version: str,
-                        private_data_path: Optional[str] = None) -> str:
-    """Locate the VERSION_PHOTOMETRY data dir
-    (getInfo_PHOTOMETRY_VERSION, sntools.c:5440): an SNANA version, or a
-    Rubin HATS catalogue."""
-    root = sndata_root()
-    private = (None if is_ignorefile(private_data_path)
-               else Path(os.path.expandvars(private_data_path)))
+def _split_command_tokens(tokens, settings, input_format):
+    """Command-line ``tokens``, named options and SNANA-style overrides in
+    any mix, as (SNANA-style tokens, named settings). The named options are
+    parsed for the model they select: a named ``--model-type`` or
+    ``--fitmodel-name``, else the input's own, with its SNANA-style overrides
+    applied. A YAML input takes named options only."""
+    types, owners, _ = declarations()
+    selectors, snana_tokens = bootstrap_settings(
+        tokens, types, owners, *model_input_declarations('fit'), readers=INPUT_READERS)
+    selection = UsedTrackingDict(settings)
+    if input_format == 'snana' and snana_tokens:
+        apply_overrides(selection, group_override_tokens(snana_tokens, known_keys()))
+    model_key = 'FITMODEL_NAME' if input_format == 'snana' else 'fitmodel_name'
+    type_key = 'MODEL_TYPE' if input_format == 'snana' else 'model_type'
+    model_type = selectors.get('model_type') or selected_model({
+        'fitmodel_name': selectors.get('fitmodel_name') or selection.get(model_key),
+        'model_type': None if selectors.get('fitmodel_name') else selection.get(type_key)})
+    parser = argument_parser(model_type)
+    args, snana_tokens = parser.parse_known_args(tokens)
+    if snana_tokens and (input_format == 'yaml'
+                         or any(token.startswith('--') for token in snana_tokens)):
+        parser.error('unrecognized arguments: ' + ' '.join(snana_tokens))
+    types, _, _ = declarations(model_type)
+    return snana_tokens, parsed_settings(args, types, readers=INPUT_READERS)
 
-    dirs = []
-    if private:
-        dirs.append(private)
-        dirs.append(private / version)
+
+def build_file_config(settings, input_format, overrides=()):
+    """Apply overrides to already-read input, then build its configuration.
+    ``overrides`` are command-line tokens (:func:`_split_command_tokens`), or
+    a mapping of SNANA keys or of named settings."""
+    snana_mapping = (input_format == 'snana' and isinstance(overrides, Mapping)
+                     and _snana_names(overrides))
+    if isinstance(overrides, Mapping):
+        snana_tokens, named = (), ({} if snana_mapping else overrides)
     else:
-        dirs.append(root / "lcmerge" / version)
-        if "_" in version:
-            prefix = version.split("_")[0]
-            dirs.append(root / "lcmerge" / prefix / version)
-
-    sim_paths = []
-    list_file = root / "SIM" / "PATH_SNDATA_SIM.LIST"
-    if list_file.is_file():
-        for tok in list_file.read_text().split():
-            p = os.path.expandvars(tok)
-            if "$" in p:  # undefined env var: skip (getList_PATH_SNDATA_SIM)
-                continue
-            sim_paths.append(Path(p))
-    sim_paths.append(root / "SIM")
-    for p in sim_paths:
-        if private and p == private:
-            continue
-        dirs.append(p / version)
-
-    found = [d for d in dirs if (d / f"{version}.LIST").is_file()
-             or (d / HATS_PROPERTIES).is_file()]
-    if not found:
-        checked = "\n  ".join(str(d) for d in dirs)
-        raise SNANAError(
-            f"Could not find SNANA version '{version}'; checked:\n  {checked}",
-            function_name="resolve_version_dir")
-    if len(found) > 1:
-        raise SNANAError(
-            f"Found {len(found)} copies of VERSION='{version}': "
-            f"{[str(d) for d in found]}; only one unique version allowed",
-            function_name="resolve_version_dir")
-    return str(found[0])
-
-
-def build_file_config(settings, input_format, overrides=(), *, named_settings=None):
-    """Apply overrides to already-read input, then build its configuration."""
+        snana_tokens, named = _split_command_tokens(overrides, settings, input_format)
     if input_format == 'yaml':
-        extra = (overrides if isinstance(overrides, Mapping)
-                 else command_settings(overrides, settings))
-        return build_config(merge_fit_settings(settings, extra, named_settings or {}))
+        return build_config(merge_fit_settings(settings, named))
 
     raw = UsedTrackingDict(settings)
-    mapping = isinstance(overrides, Mapping)
-    snana_mapping = mapping and _snana_names(overrides)
-    named_overrides = (mapping and not snana_mapping) or (not mapping and any(
-        token.startswith('--') for token in overrides))
     if snana_mapping:
         supplied = _flatten_sections(dict(overrides))
         known = known_keys()
@@ -1624,19 +1343,13 @@ def build_file_config(settings, input_format, overrides=(), *, named_settings=No
         if unknown:
             raise SNANAError(f"Unknown SNANA override keys: {', '.join(unknown)}")
         raw.update(supplied)
-    elif overrides and not named_overrides:
-        apply_overrides(raw, group_override_tokens(overrides, known_keys()))
-    extra = {}
-    if named_overrides:
-        extra = (overrides if isinstance(overrides, Mapping)
-                 else command_settings(overrides, {
-                     'model_type': raw.get('MODEL_TYPE'),
-                     'fitmodel_name': raw.get('FITMODEL_NAME')}))
+    elif snana_tokens:
+        apply_overrides(raw, group_override_tokens(snana_tokens, known_keys()))
     typed_keys = set(raw)
     _check_rejected_keys(raw)
-    cfg = build(raw, settings=merge_fit_settings(extra, named_settings or {}))
+    cfg = build(raw, settings=merge_fit_settings(named))
     _warn_unrecognized_keys(raw, typed_keys)
-    validate(cfg, raw)
+    _warn_unimplemented_values(raw)
     return cfg
 
 
@@ -1645,3 +1358,271 @@ def parse_fit_input_file(input_file: Union[str, Path],
     """Read fit settings and apply command-line or mapping overrides."""
     input_format, settings = read_fit_input(input_file)
     return build_file_config(settings, input_format, overrides)
+
+
+def declarations(model_type=None):
+    """Find configurable fields on their owners, including the selected model."""
+    types, owners, groups = {}, {}, {}
+    for group, owner in get_type_hints(FitConfig).items():
+        for name, annotation in dataclass_settings(owner)[0].items():
+            if name.startswith('_'):
+                continue
+            if name in types:
+                raise SNANAError(f"Input {name!r} is declared by more than one component")
+            types[name], owners[name], groups[name] = annotation, owner, group
+    if model_type:
+        if model_type not in MODEL_REGISTRY:
+            raise SNANAError(f"Unknown model type {model_type!r}; choose from {tuple(MODEL_REGISTRY)}")
+        owner = MODEL_REGISTRY[model_type]
+        for spec in model_input_keys(owner, 'fit').values():
+            name = spec.attribute
+            if name in types:
+                # Existing shared model settings have one configuration owner.
+                if types[name] != spec.kind:
+                    raise SNANAError(f"Conflicting declarations for {name}")
+                continue
+            types[name] = get_type_hints(owner, include_extras=True)[name]
+            owners[name], groups[name] = owner, '_model_key_values'
+    return types, owners, groups
+
+
+def selected_model(settings):
+    """Select a model class without opening its trained assets."""
+    return settings.get('model_type') or infer_model_type_from_path(
+        os.path.expandvars(settings.get('fitmodel_name') or ''))
+
+
+def configuration_values(config, *, supplied=True):
+    """Return detached flat inputs, including model-owned settings."""
+    values = {}
+    for field in dataclasses.fields(config):
+        record = getattr(config, field.name)
+        values.update({name: copy.deepcopy(getattr(record, name))
+                       for name in dataclass_settings(type(record))[0]})
+    model_values = config.model._model_key_values
+    for name, value in model_values.items():
+        values[name.lower()] = value
+    if supplied:
+        values = supplied_values(values, config.fit._derived_settings)
+    return values
+
+
+def supplied_configuration(config):
+    """Copy a config with linked-rule changes restored to their supplied values."""
+    result = copy.deepcopy(config)
+    for group in dataclasses.fields(result):
+        record = getattr(result, group.name)
+        values = supplied_values(dataclasses.asdict(record), result.fit._derived_settings)
+        for name, value in values.items():
+            setattr(record, name, value)
+    result.fit._derived_settings = {}
+    return result
+
+
+def merge_fit_settings(*sources):
+    """Merge fit inputs, matching cut quantities regardless of letter case.
+
+    Normalize each source before merging so later overrides replace the same
+    quantity even when its spelling differs between Python, YAML and SNANA.
+    """
+    normalized = []
+    for source in sources:
+        values = dict(source)
+        for name in ('cutwin', 'epoch_cutwin'):
+            if isinstance(values.get(name), Mapping):
+                values[name] = {str(key).lower(): value
+                                for key, value in values[name].items()}
+        normalized.append(values)
+    return merge_settings(*normalized)
+
+
+def build_config(settings=None, *, config=None):
+    """Build a typed configuration from supplied inputs without loading files."""
+    if settings is not None and not isinstance(settings, Mapping):
+        raise SNANAError('Fit settings must be a mapping')
+    values = merge_fit_settings(configuration_values(config) if config else {}, settings or {})
+    types, _, groups = declarations(selected_model(values))
+    unknown = values.keys() - types.keys()
+    if unknown:
+        raise SNANAError(f"Unknown fit settings: {', '.join(sorted(unknown))}")
+    records = {name: {} for name in get_type_hints(FitConfig)}
+    if config is not None:
+        for group, owner in get_type_hints(FitConfig).items():
+            record = getattr(config, group)
+            records[group].update({field.name: copy.deepcopy(getattr(record, field.name))
+                                   for field in dataclasses.fields(owner)
+                                   if field.name.startswith('_')})
+    model_values = {}
+    for name, value in values.items():
+        value = convert(value, types[name], name)
+        if groups[name] == '_model_key_values':
+            model_values[name.upper()] = value
+        else:
+            records[groups[name]][name] = value
+    if model_values:
+        records['model']['_model_key_values'] = model_values
+    result = FitConfig(**{group: owner(**records[group])
+                          for group, owner in get_type_hints(FitConfig).items()})
+    original = configuration_values(result, supplied=False)
+    resolve_settings(result)
+    resolved = configuration_values(result, supplied=False)
+    result.fit._derived_settings = derived_changes(original, resolved)
+    return result
+
+
+def resolve_settings(config):
+    """Apply the fitting rules shared by all input formats to a new config."""
+    for name, owner in (('earlylc', EarlyLC), ('require_epochs', RequireEpochs)):
+        values = getattr(config.selection, name)
+        if values is not None:
+            setattr(config.selection, name, dataclasses.asdict(build_dataclass(owner, values)))
+    fit, model, photoz = config.fit, config.model, config.photoz
+    if fit.minos is not None:
+        fit.minos = fit.minos.lower()
+        if fit.minos in ('none', 'null'):
+            fit.minos = None
+    if fit.minos not in (None, 'z', 'all'):
+        raise SNANAError("minos must be None, 'z', or 'all'")
+    if "lcplot" not in config.output.tables:
+        config.output.mxlc = 0
+    for name in ('batch_size', 'num_nobs_bins', 'n_fit_iterations'):
+        if getattr(fit, name) < 1:
+            raise SNANAError(f'{name} must be positive')
+    if photoz.scale_nbin_course <= 0:
+        raise SNANAError('scale_nbin_course must be positive')
+    if photoz.dofit_photoz and photoz.opt_photoz == 0:
+        photoz.opt_photoz = 1
+    if photoz.opt_photoz > 0:
+        photoz.dofit_photoz = True
+    if photoz.opt_photoz & 8:
+        photoz.opt_photoz |= 4
+    if photoz.opt_photoz & 2 and photoz.prior_zerrscale == PRIOR_ZERRSCALE_UNSET:
+        photoz.prior_zerrscale = 1.0
+    gaussian_mu_prior = photoz.prior_muerrscale is not None
+    flat_mu_prior = photoz.prior_dmu_range is not None
+    if gaussian_mu_prior and flat_mu_prior:
+        raise SNANAError('PRIOR_MUERRSCALE and PRIOR_DMU_RANGE are both distance '
+                         'priors; set one of them')
+    if (gaussian_mu_prior or flat_mu_prior) and not photoz.dofit_photoz:
+        raise SNANAError('the distance priors PRIOR_MUERRSCALE and PRIOR_DMU_RANGE '
+                         'apply only to photometric-redshift fits')
+    if photoz.dofit_photoz and any(name.upper() == 'DLMAG' and step == 0
+                                   for name, step in model.inistp.items()):
+        raise SNANAError(
+            "DOFIT_PHOTOZ with INISTP_DLMAG=0 requests a cosmology-constrained "
+            "amplitude, which is not implemented. Use a free amplitude.",
+            function_name="resolve_settings")
+    if fit.opt_chi2_sigma not in (0, 1):
+        raise SNANAError('opt_chi2_sigma must be 0 or 1')
+    if photoz.dofit_photoz:
+        fit.opt_chi2_sigma = 1
+    if not model.use_model_magerr:
+        model.fudge_modelerr_scale = 0.0
+        fit.use_offdiag_covariance = False
+    if model.lfixpar_all or model.lfixpar_adjust:
+        fit.maxiter_round1 = fit.maxiter_round2 = 0
+        if model.lfixpar_all:
+            fit.skip_grid_search = True
+    unknown_bits = config.data.opt_setpkmjd & ~(
+        OPTMASK_SETPKMJD_BAZIN | OPTMASK_SETPKMJD_NOABORT | OPTMASK_SETPKMJD_FLUXMAX
+        | OPTMASK_SETPKMJD_FLUXMAX2 | OPTMASK_SETPKMJD_FLUXMAX3 | OPTMASK_SETPKMJD_TRIGGER)
+    if unknown_bits:
+        logging.getLogger(__name__).warning(
+            "OPT_SETPKMJD=%s selects unimplemented bits %s; implemented: "
+            "1 (Bazin09), 4 (no abort), 8 (maximum flux), 16 (Fmax clump), "
+            "32 (Fmax clump weighted by log10 S/N), 64 (MJD_TRIGGER)",
+            config.data.opt_setpkmjd, unknown_bits)
+    if config.data.has_setpkmjd_trigger() and config.data.photflag_trigger == 0:
+        raise SNANAError('photflag_trigger is required when opt_setpkmjd selects MJD_TRIGGER')
+
+
+def read_cut_window_tokens(tokens):
+    """Read a CLI cut window using the same quantity names as SNANA inputs."""
+    return {str(name).lower(): value for name, value in mapping_tokens(tokens).items()}
+
+
+def read_prior_tokens(tokens):
+    """Read --prior PARAM DISTRIBUTION coefficient=value ... ."""
+    if len(tokens) == 1:
+        values = yaml.safe_load(tokens[0])
+        if isinstance(values, dict):
+            for prior in values.values():
+                if prior is not None:
+                    parse_prior(prior)
+            return values
+    if len(tokens) < 2:
+        raise SNANAError('--prior needs a parameter and a distribution')
+    name, form, *coefficients = tokens
+    if form.lower() in ('none', 'null'):
+        if coefficients:
+            raise SNANAError('Removing a prior takes no coefficients')
+        return {name: None}
+    values = {'distribution': form}
+    for coefficient in coefficients:
+        key, sep, value = coefficient.partition('=')
+        if not sep or key in values:
+            raise SNANAError(f'Invalid prior coefficient {coefficient!r}')
+        values[key] = yaml.safe_load(value)
+    parse_prior(values)
+    return {name: values}
+
+
+#: the command-line readers of the settings whose tokens are not KEY=VALUE pairs
+INPUT_READERS = {'cutwin': read_cut_window_tokens, 'epoch_cutwin': read_cut_window_tokens,
+                 'priors': read_prior_tokens}
+
+
+def argument_parser(model_type=None, *, input_file=False, add_help=True):
+    """Build argparse from component/model declarations, without model I/O."""
+    parser = argparse.ArgumentParser(description='Fit supernova light curves.',
+                                     allow_abbrev=False, add_help=add_help)
+    if input_file:
+        parser.add_argument('input_file', nargs='?')
+    parser.add_argument('--verbose', '-v', action='store_true')
+    types, owners, _ = declarations(model_type)
+    add_settings(parser, types, owners)
+    return parser
+
+
+def command_line_input(argv):
+    """The input file ``argv`` names, whether it asks for verbose logging,
+    and its other tokens, the overrides :func:`parse_fit_input_file` takes."""
+    types, owners, _ = declarations()
+    selectors, remaining = bootstrap_settings(
+        argv, types, owners, *model_input_declarations('fit'), readers=INPUT_READERS)
+    initial, _ = argument_parser(input_file=True, add_help=False).parse_known_args(remaining)
+    if initial.input_file is None:
+        parser = argument_parser(selectors.get('model_type'), input_file=True)
+        parser.parse_known_args(argv)  # --help lists the options and exits here
+        parser.error('an input file is required')
+    tokens = list(argv)
+    tokens.remove(initial.input_file)
+    return initial.input_file, initial.verbose, tokens
+
+
+def command_settings(tokens, file_settings):
+    """Resolve selectors first, then parse every selected-model option."""
+    selectors = argument_parser(add_help=False)
+    selected, _ = selectors.parse_known_args(tokens)
+    model_type = selected_model(merge_settings(file_settings, vars(selected)))
+    parser = argument_parser(model_type)
+    args = parser.parse_args(tokens)
+    types, _, _ = declarations(model_type)
+    return parsed_settings(args, types, readers=INPUT_READERS)
+
+
+def fitted_model_type(config):
+    """The fitted model's type, from MODEL_TYPE or FITMODEL_NAME."""
+    if config.model.fitmodel_name is None:
+        raise SNANAError(
+            "FITMODEL_NAME is required in the input file",
+            function_name="FITMODEL_NAME")
+    model_type = selected_model({'model_type': config.model.model_type,
+                                 'fitmodel_name': config.model.fitmodel_name})
+    if model_type is None:
+        raise SNANAError(
+            f"Cannot infer model type from FITMODEL_NAME "
+            f"'{config.model.fitmodel_name}'. Set MODEL_TYPE "
+            f"({', '.join(MODEL_REGISTRY)}).",
+            function_name="FITMODEL_NAME")
+    return model_type

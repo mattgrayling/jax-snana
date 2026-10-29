@@ -1,5 +1,6 @@
 """Exercise public input and execution contracts independently of numerical parity."""
 
+from contextlib import chdir
 from dataclasses import asdict
 
 import jax
@@ -10,14 +11,21 @@ import yaml
 
 from jax_create_cov import compute_covariance
 from jax_create_cov.config import CreateCovConfig
-from jax_create_cov.config_parser import build_config as covariance_config
+from jax_create_cov.config import build_config as covariance_config
 from jax_salt2mu import fit_distances
-from jax_salt2mu.inputs import build_config as distance_config
-from jax_snlc_core.utils import SNANAError
+from jax_salt2mu.config import build_config as distance_config
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit import LightCurveFitter
 from jax_snlc_sim import parse_input, prepare, simulate
-from jax_wfit import fit_cosmology, WFITConfig
-from jax_wfit.config_parser import build as cosmology_config
+from jax_wfit import WFITConfig, fit_cosmology
+from jax_wfit.config import build as cosmology_config
+
+
+@pytest.fixture(autouse=True)
+def temporary_working_directory(tmp_path):
+    """Run each API in an empty directory to detect unintended output files."""
+    with chdir(tmp_path):
+        yield
 
 
 @pytest.fixture
@@ -93,8 +101,7 @@ def test_cosmology_method_is_inferred_again_after_overrides():
 
 @pytest.mark.parametrize('stage', ['distance', 'covariance', 'cosmology'])
 @pytest.mark.parametrize('form', ['keywords', 'mapping', 'yaml', 'config'])
-def test_analysis_input_forms_run_without_writing(stage, form, repo_root, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_analysis_input_forms_run_without_writing(stage, form, repo_root, tmp_path):
     if stage == 'distance':
         function, builder = fit_distances, distance_config
         values = dict(datafile=[str(repo_root / 'tests/fixtures/snana/bbc_des_beams/DATA.FITRES')],
@@ -138,8 +145,7 @@ def test_analysis_input_forms_run_without_writing(stage, form, repo_root, tmp_pa
 @pytest.mark.parametrize('stage', ['simulation', 'fitter', 'distance', 'covariance', 'cosmology'])
 @pytest.mark.parametrize('active', [False, True])
 def test_conflicting_precision_fails_before_execution(stage, active, active_precision,
-                                                      repo_root, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+                                                      repo_root, tmp_path):
     request = not active
     with pytest.raises(SNANAError, match='active JAX precision'):
         if stage == 'simulation':
@@ -173,28 +179,23 @@ def test_covariance_omitted_and_matching_precision_preserve_process(active, prec
     {'simgen_dump': True, 'simgen_dumpall_columns': []},
 ])
 def test_simulation_setup_modes_fail_before_resources_or_files(settings, snana_fixture,
-                                                               tmp_path, monkeypatch):
+                                                               tmp_path):
     source = snana_fixture('salt3_fit_select').input_file
     config = parse_input(source, settings)
+    # Resource loading would fail on this missing survey; setup rejection must
+    # happen first, without creating any output.
+    config.survey.simlib_file = str(tmp_path / 'missing.SIMLIB')
     before = asdict(config)
-    monkeypatch.chdir(tmp_path)
-
-    def unexpected_build(*args):
-        pytest.fail('Rejected modes must not load simulation resources')
-
-    monkeypatch.setattr('jax_snlc_sim.run.build_simulation', unexpected_build)
     with pytest.raises(SNANAError, match='setup-only mode'):
         simulate(config)
     assert not list(tmp_path.iterdir())
     assert asdict(config) == before
 
 
-def test_prepare_still_runs_requested_simlib_dump(snana_fixture, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_prepare_still_runs_requested_simlib_dump(snana_fixture, tmp_path):
     simulator = prepare(snana_fixture('salt3_fit_select').input_file,
                                       simlib_dump=1)
-    resources = simulator
-    assert resources is None and simulator is None
+    assert simulator is None
     assert len(list(tmp_path.glob('SIMLIB_DUMP_AVG_*.TEXT'))) == 1
 
 
@@ -202,9 +203,7 @@ def test_prepare_still_runs_requested_simlib_dump(snana_fixture, tmp_path, monke
 @pytest.mark.parametrize('precision_setting', [None, False])
 @pytest.mark.parametrize('active', [False])
 def test_python_stages_run_in_single_precision(stage, precision_setting, active,
-                                               active_precision, repo_root, tmp_path,
-                                               monkeypatch):
-    monkeypatch.chdir(tmp_path)
+                                               active_precision, repo_root, tmp_path):
     settings = {} if precision_setting is None else {'double_precision': precision_setting}
     if stage == 'simulation':
         results, selection, _ = simulate(

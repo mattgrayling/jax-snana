@@ -6,17 +6,15 @@ from pathlib import Path
 from typing import Dict
 
 import numpy as np
+from astropy.io.fits import Card
 from isal import igzip_threaded
 
-from jax_snlc_core.io.snana_table import SNANA_VERSION_STRING
-from jax_snlc_core.photometry.filter_system import filter_band
-from jax_snlc_core.utils import snana_log as slog
-
-from jax_snlc_core.utils.error_handling import SNANAError
-
-from jax_snlc_sim.output.tables import (
-    MXCHAR_CCID,
-    filters_string, mw_option_keys, sim_model_name, subsurvey_flag)
+from jax_snlc_core import logging as log
+from jax_snlc_core.filters import filter_band
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SNANA_VERSION_STRING
+from jax_snlc_sim.output.tables import (MXCHAR_CCID, filters_string, mw_option_keys,
+                                        sim_model_name, subsurvey_flag)
 
 # threads for the output gzip
 GZIP_THREADS = 8
@@ -30,10 +28,6 @@ _CODE_IVERSION = 29
 # A FITS file is a whole number of 2880-byte blocks, header and data alike.
 _BLOCK = 2880
 _CARD = 80
-# longest quoted string one card holds
-_MAX_STRING = 68
-# Keywords beyond this go on a HIERARCH card.
-_SHORT_KEYWORD = 8
 
 # WRITE_MASK bits (sndata.h:51-61)
 _WRITE_MASK_SIM_SNANA = 4
@@ -63,58 +57,10 @@ _TFORM = {
 
 
 def _card(key, value, comment=''):
-    """One 80-character header card.
-
-    A keyword beyond the eight characters FITS allows goes on a HIERARCH card,
-    which is what SNANA's own headers carry for names like WRITE_MASK_HEAD. A
-    string value too long for one card needs CONTINUE cards, which
-    ``_string_cards`` produces; truncating it silently here would corrupt the
-    header, so it aborts instead.
-    """
-    if isinstance(value, str):
-        if len(value) > _MAX_STRING:
-            raise SNANAError(
-                f"FITS header value for {key} is {len(value)} characters, "
-                f"beyond the {_MAX_STRING} a single card holds",
-                function_name="_card")
-        text = f"'{value:<8}'"
-    elif isinstance(value, bool):
-        text = 'T' if value else 'F'
-    elif isinstance(value, (int, np.integer)):
-        text = str(int(value))
-    else:
-        text = f"{float(value):.8G}"
-
-    if len(key) > _SHORT_KEYWORD:
-        body = f"HIERARCH {key} = {text}"
-    elif isinstance(value, str):
-        body = f"{key:<8}= " + text.ljust(20)
-    else:
-        body = f"{key:<8}= {text:>20}"
-    card = f"{body} / {comment}" if comment else body
-    if len(card) > _CARD:
-        raise SNANAError(
-            f"FITS card for {key} needs {len(card)} characters, beyond the "
-            f"{_CARD} a card holds", function_name="_card")
-    return card.ljust(_CARD).encode('ascii')
-
-
-def _string_cards(key, value):
-    """The cards for a string value: one, or a run of CONTINUE cards for a
-    value beyond one card, the long-string convention the LONGSTRN key
-    declares and SNANA writes its file paths with."""
-    head = (f"HIERARCH {key} = " if len(key) > _SHORT_KEYWORD
-            else f"{key:<8}= ")
-    room = _CARD - len(head) - 2
-    if len(value) <= room:
-        return [_card(key, value)]
-    cards, rest = [], value
-    while rest:
-        chunk, rest = rest[:room - 1], rest[room - 1:]
-        text = f"'{chunk}&'" if rest else f"'{chunk}'"
-        cards.append(f"{head}{text}".ljust(_CARD).encode('ascii'))
-        head, room = 'CONTINUE  ', _CARD - 12
-    return cards
+    """Encode FITS cards, including HIERARCH names and CONTINUE strings."""
+    if len(key) > 8:
+        key = f'HIERARCH {key}'
+    return Card(key, value, comment).image.encode('ascii')
 
 
 def _write_header(fh, cards):
@@ -130,8 +76,7 @@ def _write_primary(fh, keywords):
              _card('NAXIS', 0, 'number of array dimensions'),
              _card('EXTEND', True)]
     for key, value in keywords.items():
-        cards += (_string_cards(key, value) if isinstance(value, str)
-                  else [_card(key, value)])
+        cards.append(_card(key, value))
     _write_header(fh, cards)
 
 
@@ -249,8 +194,8 @@ _ROWS_PER_WRITE = 1 << 20
 def _write_bintable(fh, columns, extname, group_sizes=None, marker=None):
     """A BINTABLE extension holding ``columns``, written straight to ``fh``.
 
-    The TFORM repeat count and the blank TUNIT match what SNANA's own writer
-    emits. With ``group_sizes``, a marker row follows each group of that many
+    Columns carry explicit TFORM repeat counts and empty TUNIT strings.
+    With ``group_sizes``, a marker row follows each group of that many
     rows, as SNANA closes each event's epochs and each spectrum's bins: the
     columns ``marker`` names take its values, and every other column is zero.
     Classifiers such as SuperNNova split the light curves at those rows.
@@ -309,7 +254,7 @@ def write_head_fits(keywords, file_prefix, output_dir: str, columns) -> Path:
     with open(output_file, 'wb') as fh:
         _write_primary(fh, keywords)
         _write_bintable(fh, columns, 'Header')
-    slog.line(logger, f"wrote {output_file}", indent=2)
+    log.line(logger, f"wrote {output_file}", indent=2)
     return output_file
 
 
@@ -322,7 +267,7 @@ def write_phot_fits(keywords, file_prefix, output_dir: str, columns,
     with open(output_file, 'wb') as fh:
         _write_primary(fh, keywords)
         _write_bintable(fh, columns, 'Photometry', obs_counts, marker)
-    slog.line(logger, f"wrote {output_file}", indent=2)
+    log.line(logger, f"wrote {output_file}", indent=2)
     return output_file
 
 
@@ -433,8 +378,8 @@ def write_spec_fits(config, keywords, kcor_filter_names, file_prefix,
         _write_bintable(fh, flux_cols, 'SPECTRO_FLUX', nbin_arr,
                         dict.fromkeys(flux_cols, _EOE_MARKER))
 
-    slog.line(logger, f"SPEC.FITS: {n_spec} spectra, {total_flux_rows} flux rows -> {output_file}",
-              indent=2)
+    log.line(logger, f"SPEC.FITS: {n_spec} spectra, {total_flux_rows} flux rows "
+             f"-> {output_file}", indent=2)
     return output_file
 
 

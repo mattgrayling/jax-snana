@@ -6,11 +6,10 @@ the dust profile (AV / EBV_HOST) is exp + half-Gaussian and owns its keys.
 
 import pytest
 
-from jax_snlc_sim.distributions import GenExpHalfGauss, GenGaussAsym
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import MODEL_REGISTRY
-from jax_snlc_sim.config_parser import (_build_distributions, _spell_population_keys,
-                                        _spellings)
+from jax_snlc_sim.inputs import _build_distributions, _spell_population_keys, _spellings
+from jax_snlc_sim.distributions import GenExpHalfGauss, GenGaussAsym
 from jax_snlc_sim.population import declared_population, population_spellings
 
 
@@ -24,7 +23,7 @@ def spelled(raw):
 @pytest.mark.parametrize('named', [False, True])
 def test_subpop_coefficients_override_shared_population(named):
     from dataclasses import asdict, replace
-    from jax_snlc_sim.config_parser import _build_subpops
+    from jax_snlc_sim.inputs import _build_subpops
 
     inherited = GenGaussAsym(
         peak=0.2, sigma=(0.8, 1.1), range=(-3.0, 3.0),
@@ -60,7 +59,7 @@ def test_subpop_coefficients_override_shared_population(named):
 
 def test_subpop_peak_updates_named_population_peakrange():
     from dataclasses import replace
-    from jax_snlc_sim.config_parser import _build_subpops
+    from jax_snlc_sim.inputs import _build_subpops
 
     inherited = GenGaussAsym(peak=0.2, sigma=(0.8, 1.1), range=(-3., 3.),
                             peakrange=(-0.1, 0.4), prob_expon_rewgt=2.)
@@ -77,7 +76,7 @@ def test_subpop_peak_updates_named_population_peakrange():
 @pytest.mark.parametrize('parameter, spelling', [('AV', 'AV_HOST'), ('EBV_HOST', 'EBV')])
 def test_subpop_dust_coefficient_inherits_named_population(parameter, spelling):
     from dataclasses import replace
-    from jax_snlc_sim.config_parser import _build_subpops
+    from jax_snlc_sim.inputs import _build_subpops
 
     inherited = GenExpHalfGauss(exp_tau=0.3, peak=0.1, sigma=0.4, ratio=0.2,
                                 range=(0., 2.), prob_expon_rewgt=1.5)
@@ -200,7 +199,7 @@ def test_av_halfgauss_without_range_is_no_dust():
 
 
 def test_av_and_ebv_host_mutually_exclusive():
-    from jax_snlc_sim.config_parser import _build_populations
+    from jax_snlc_sim.inputs import _build_populations
 
     distributions = build({
         'GENTAU_AV': 0.4, 'GENRANGE_AV': [0.0, 3.0],
@@ -263,7 +262,7 @@ def test_genpdf_map_takes_either_dust_spelling(tmp_path):
     ('ngrid', 'GENGRID', -1), ('ngrid', 'GENGRID', 101),
 ])
 def test_gaussian_constraints_are_shared_by_input_formats(field, legacy, value):
-    from jax_snlc_sim.config_parser import _parse_gengauss_asym
+    from jax_snlc_sim.inputs import _parse_gengauss_asym
     from jax_snlc_sim.population import distribution_from_settings
     messages = []
     for read in (

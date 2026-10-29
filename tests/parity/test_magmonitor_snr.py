@@ -13,10 +13,11 @@ fudged path is exercised by the live test that appends FUDGESCALE_FLUXERR.
 
 import numpy as np
 from astropy.io import fits
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
 from replay_snana_dump import build_override_parameters
+
+from jax_snlc_core.snana_files import load_snana_dump
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 _COL = 'SIM_SNRMAG22'
 # Measured agreement is 6.6e-08 median / 8.4e-07 worst -- float32 round-off on
@@ -66,7 +67,7 @@ def test_magmonitor_snr_parity(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources,
                                          head_columns=head_cols)
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "MM", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "MM", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana = _monitor_by_epoch(fx.head_fits, fx.phot_fits)
     jax_dir = tmp_path / "MM"

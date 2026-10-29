@@ -25,8 +25,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim import run as sim_run
 
 
 def _write_fluxerr_model_with_redcov(out: Path, *, redcov: float) -> None:
@@ -432,3 +432,124 @@ ENDMAP:
                 f"{emp:.3f}, expected ~0 (no REDCOV for this group; "
                 f"n_pairs={counts_b[i, j]})"
             )
+
+
+def _write_input_with_shared_field_redcov(tmp_path, band):
+    """A sim input whose FLUXERRMODEL file gives ``band`` a REDCOV entry in
+    two field groups that both hold the SIMLIB field TOY_A."""
+    fluxerr = tmp_path / "REDCOV_OVERLAP.DAT"
+    _write_fluxerr_model_with_redcov(fluxerr, redcov=0.3)
+    text = fluxerr.read_text()
+    redcov_line = next(line for line in text.splitlines() if line.startswith("REDCOV: "))
+    fluxerr.write_text(text.replace(redcov_line, (
+        "DEFINE_FIELDGROUP: GROUP_A  TOY_A\nDEFINE_FIELDGROUP: GROUP_AB  TOY_A+TOY_B\n"
+        f"REDCOV(GROUP_A): {band}:0.200\nREDCOV(GROUP_AB): {band}:0.300")))
+    inp = tmp_path / "input.input"
+    _write_input(inp, fluxerr, seed=22222, snrmin_redcov=0.0)
+    return inp
+
+
+def test_redcov_groups_sharing_an_observed_field_abort(tmp_path):
+    """SNANA looks up an epoch's REDCOV entry as it simulates the epoch, and
+    aborts when its band and field match more than one entry
+    (INDEX_REDCOV_FLUXERRMODEL, snlc_sim.c:28090). Two groups that both hold
+    the observed field TOY_A, each with a g entry, load and then abort on
+    the first g epoch in TOY_A."""
+    inp = _write_input_with_shared_field_redcov(tmp_path, "g")
+    with pytest.raises(SNANAError,
+                       match="NMATCH=2 REDCOV entries for BAND='g' and FIELD='TOY_A'"):
+        _run_sim(inp, n_sne=20, seed=33333)
+
+
+def test_redcov_overlap_in_a_band_the_model_cannot_generate_is_not_fatal(tmp_path):
+    """SNANA generates no epoch in a band the model does not cover at the
+    event's redshift (OBSFLAG_GEN, snlc_sim.c:13881-13885, :27604), so those
+    epochs never look up a REDCOV entry. At z = 1.2-1.4 the u band lies below
+    the SALT3 surfaces' 2000 A edge: the u epochs observed in TOY_A, where
+    two entries overlap, are not generated and the run completes."""
+    inp = _write_input_with_shared_field_redcov(tmp_path, "u")
+    inp.write_text(inp.read_text().replace("GENRANGE_REDSHIFT:   0.05  0.30",
+                                           "GENRANGE_REDSHIFT:   1.20  1.40"))
+    resources, results = _run_sim(inp, n_sne=20, seed=33333)
+    u_in_toy_a = ((np.asarray(results["observation_schedule"]["filter_indices"]) == 0)
+                  & (np.asarray(results["parameters"]["field_idx"])[:, None] == 0))
+    assert u_in_toy_a.any()
+    assert np.isnan(np.asarray(results["fluxcals"])[u_in_toy_a]).all()
+
+
+def test_redcov_override_replaces_the_files_entries(tmp_path):
+    """FLUXERRMODEL_REDCOV replaces the file's REDCOV keys, which SNANA then
+    neither reads nor checks, and NONE turns REDCOV off
+    (sntools_fluxErrModels.c:121-126, :150, :440). The file here defines g
+    twice for all fields, which on its own aborts."""
+    fluxerr = tmp_path / "REDCOV_TWICE.DAT"
+    _write_fluxerr_model_with_redcov(fluxerr, redcov=0.3)
+    fluxerr.write_text(fluxerr.read_text().replace("REDCOV: ", "REDCOV: g:0.200\nREDCOV: ", 1))
+    inp = tmp_path / "input.input"
+    _write_input(inp, fluxerr, seed=22222, snrmin_redcov=0.0)
+    with pytest.raises(SNANAError, match="Cannot define g-ALL"):
+        sim_run.prepare(str(inp), n_sne=5, random_seed=1)
+    base = inp.read_text()
+    inp.write_text(base + "FLUXERRMODEL_REDCOV:  r:0.500\n")
+    sim = sim_run.prepare(str(inp), n_sne=5, random_seed=1)
+    assert sim.fluxerr_n_factors == 1 and sim.fluxerr_has_redcov
+    inp.write_text(base + "FLUXERRMODEL_REDCOV:  NONE\n")
+    sim = sim_run.prepare(str(inp), n_sne=5, random_seed=1)
+    assert sim.fluxerr_n_factors == 0 and not sim.fluxerr_has_redcov
+
+
+def test_fluxerrmodel_file_without_maps_turns_the_model_off(tmp_path):
+    """With NMAP_FLUXERRMODEL = 0 the simulation skips the whole
+    FLUXERRMODEL block, REDCOV included (snlc_sim.c:28035), so a file
+    holding only REDCOV leaves the noise model off."""
+    fluxerr = tmp_path / "REDCOV_ONLY.DAT"
+    fluxerr.write_text("REDCOV: g:0.300,r:0.300\n")
+    inp = tmp_path / "input.input"
+    _write_input(inp, fluxerr, seed=22222, snrmin_redcov=0.0)
+    sim = sim_run.prepare(str(inp), n_sne=5, random_seed=1)
+    assert not sim.fluxerr_enabled
+    assert not sim.fluxerr_has_redcov
+
+
+@pytest.mark.parametrize('kind', ['map', 'redcov'])
+@pytest.mark.parametrize('usage', ['out_of_model', 'used', 'not_scheduled'])
+def test_overlapping_fluxerr_entries_are_checked_only_when_used(tmp_path, kind, usage):
+    """The same u-band overlap loads at any redshift, but aborts only when
+    the model generates u epochs. Zero REDCOV still counts as an entry."""
+    fluxerr = tmp_path / 'overlap.dat'
+    if kind == 'map':
+        contents = ''.join(
+            f'MAPNAME: {name}\nBAND: u\nFIELD: TOY_A\n'
+            'VARNAMES: PSF ERRSCALE\nROW: 0.5 1.5\nROW: 3.0 1.5\nENDMAP:\n'
+            for name in ['A', 'B'])
+    else:
+        contents = ('DEFINE_FIELDGROUP: GROUP_A TOY_A\n'
+                    'DEFINE_FIELDGROUP: GROUP_AB TOY_A+TOY_B\n'
+                    'REDCOV(GROUP_A): u:0.0\nREDCOV(GROUP_AB): u:0.0\n'
+                    'MAPNAME: A\nBAND: ALL\nVARNAMES: PSF ERRSCALE\n'
+                    'ROW: 0.5 1.5\nROW: 3.0 1.5\nENDMAP:\n')
+    fluxerr.write_text(contents)
+    inp = tmp_path / 'input.input'
+    _write_input(inp, fluxerr)
+    redshifts = '1.20  1.40' if usage == 'out_of_model' else '0.05  0.10'
+    text = inp.read_text().replace('0.05  0.30', redshifts)
+    if usage == 'not_scheduled':
+        simlib = tmp_path / 'no_u.SIMLIB'
+        source = Path(__file__).parents[1] / 'fixtures/data/simlib/JAX_TEST_LSST.SIMLIB'
+        simlib.write_text(source.read_text().replace(' u ', ' Y '))
+        text = text.replace('$JAX_TEST_FIXTURE_ROOT/simlib/JAX_TEST_LSST.SIMLIB', str(simlib))
+    inp.write_text(text)
+    sim = sim_run.prepare(str(inp), n_sne=20, random_seed=33333, keep_rejected_events=True)
+    if usage == 'used':
+        name = 'FLUXERRMODEL maps' if kind == 'map' else 'REDCOV entries'
+        with pytest.raises(SNANAError, match=f"NMATCH=2 {name} for BAND='u' and FIELD='TOY_A'"):
+            sim_run.run_simulation(sim)
+    else:
+        results, _, _ = sim_run.run_simulation(sim)
+        u = ((np.asarray(results['observation_schedule']['filter_indices']) == 0)
+             & (np.asarray(results['parameters']['field_idx'])[:, None] == 0))
+        if usage == 'not_scheduled':
+            assert not u.any()
+        else:
+            assert u.any()
+            assert np.isnan(np.asarray(results['fluxcals'])[u]).all()

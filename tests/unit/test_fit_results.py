@@ -3,8 +3,8 @@
 import jax.numpy as jnp
 import numpy as np
 
+from jax_snlc_fit.fitter import BatchFitResult
 from jax_snlc_fit.uncertainties import errors_from_chi2
-from jax_snlc_fit.fit_results import BatchFitResult
 
 
 def _make_result(n=4, photoz=False) -> BatchFitResult:
@@ -175,7 +175,8 @@ def test_take_negative_indices_preserves_matching_outcomes():
 def test_shared_postprocessing_applies_error_floor_and_covariance_repair():
     from types import SimpleNamespace
     from jax_snlc_fit.config import FitConfig
-    from jax_snlc_fit.run import errmax_bad, finish_fit
+    from jax_snlc_fit.fitter import LightCurveFitter
+    from jax_snlc_fit.uncertainties import errmax_bad
     from jax_snlc_fit.uncertainties import fix_covar_lcfit
 
     class Model:
@@ -195,7 +196,7 @@ def test_shared_postprocessing_applies_error_floor_and_covariance_repair():
     result.param_covariances = np.array(result.param_covariances)
     result.param_covariances[1, 0, 1] = result.param_covariances[1, 1, 0] = .1
     expected = fix_covar_lcfit(errmax_bad(config, fitter.fit_parameters, (), result, {}), model, 2)
-    actual, keep, codes, rows = finish_fit(fitter, config, None, result, {}, apply_selection=False)
+    actual, keep, codes, rows = LightCurveFitter.finish_fit(fitter, config, None, result, {}, apply_selection=False)
     np.testing.assert_allclose(actual.param_errors['x1'][0], .3)
     assert actual.param_errors['x1'][1] > .3
     assert not np.array_equal(actual.param_covariances[1], result.param_covariances[1])
@@ -216,38 +217,38 @@ def test_concatenate_empty_results_preserves_verdicts_in_either_order():
 
 def test_concatenate_rejects_inconsistent_nonempty_verdicts():
     import pytest
-    from jax_snlc_core.utils import SNANAError
+    from jax_snlc_core.logging import SNANAError
     first, second = _make_result(2), _make_result(1)
     first.iter1_verdicts = {'PROB': jnp.array([True, False])}
     with pytest.raises(SNANAError, match='different first-round verdicts'):
         BatchFitResult.concatenate([first, second])
 
 
-def test_shared_verdict_reaches_python_and_file_outputs(monkeypatch):
+def test_shared_verdict_reaches_python_and_file_outputs():
+    """Fit validity (non-finite parameters, no epochs) is decided once and both
+    the Python outcomes and the written selection read it."""
     from types import SimpleNamespace
     import pandas as pd
     from jax_snlc_fit.config import FitConfig
-    from jax_snlc_fit.run import finish_fit, select
-    from jax_snlc_fit.python import _outcomes
-    from jax_snlc_fit.batch import ERRFLAG_MNFIT_NAN, ERRFLAG_FITPREP_NOEPOCHS, ERRFLAG_FIT_CUTS
+    from jax_snlc_fit.fitter import LightCurveFitter
+    from jax_snlc_fit.cuts import select
+    from jax_snlc_fit.fitter import _outcomes
+    from jax_snlc_fit.batch import ERRFLAG_MNFIT_NAN, ERRFLAG_FITPREP_NOEPOCHS
     result = _make_result(5)
     result.params['x1'] = np.array([0., np.nan, np.inf, 0., 0.])
     result.observation_mask = np.array(result.observation_mask)
     result.observation_mask[3] = False
     fitter = SimpleNamespace(fit_parameters={'x1': {}, 'c': {}}, held_params=())
-    monkeypatch.setattr('jax_snlc_fit.run.post_fit_cuts', lambda *a: (
-        np.array([True, True, True, True, False]), np.zeros(5, dtype=int), []))
-    for apply_selection in (False, True):
-        actual, keep, codes, _ = finish_fit(fitter, FitConfig(), None, result, {},
-                                           apply_selection=apply_selection, fitwins={})
-        np.testing.assert_array_equal(keep, [True, False, False, False, not apply_selection])
-        np.testing.assert_array_equal(codes, [0, ERRFLAG_MNFIT_NAN, ERRFLAG_MNFIT_NAN,
-            ERRFLAG_FITPREP_NOEPOCHS, ERRFLAG_FIT_CUTS if apply_selection else 0])
-        outcomes = _outcomes(pd.DataFrame({'snid': result.snids}), actual, [], keep, codes)
-        np.testing.assert_array_equal(outcomes.reason, codes)
-        np.testing.assert_array_equal(outcomes.status == 'accepted', keep)
-        _, selected, _ = select(result, actual, None, keep, codes)
-        np.testing.assert_array_equal(selected.snids, result.snids[keep])
+    actual, keep, codes, _ = LightCurveFitter.finish_fit(fitter, FitConfig(), None, result, {},
+                                       apply_selection=False, fitwins={})
+    np.testing.assert_array_equal(keep, [True, False, False, False, True])
+    np.testing.assert_array_equal(codes, [0, ERRFLAG_MNFIT_NAN, ERRFLAG_MNFIT_NAN,
+                                          ERRFLAG_FITPREP_NOEPOCHS, 0])
+    outcomes = _outcomes(pd.DataFrame({'snid': result.snids}), actual, [], keep, codes)
+    np.testing.assert_array_equal(outcomes.reason, codes)
+    np.testing.assert_array_equal(outcomes.status == 'accepted', keep)
+    _, selected, _ = select(result, actual, None, keep, codes)
+    np.testing.assert_array_equal(selected.snids, result.snids[keep])
 
 
 def test_reorder_profiles():
@@ -265,7 +266,7 @@ def test_reorder_profiles():
 
 def test_minos_bad_errors():
     from jax_snlc_fit.config_parser import build
-    from jax_snlc_fit.run import errmax_bad
+    from jax_snlc_fit.uncertainties import errmax_bad
 
     result = _make_result(2)
     specs = {'x1': {'errmax_bad': .2, 'inistp': .5}}
@@ -280,7 +281,7 @@ def test_minos_bad_errors():
 
 def test_minos_asymmetric_floor():
     from jax_snlc_fit.config_parser import build
-    from jax_snlc_fit.run import errmax_bad
+    from jax_snlc_fit.uncertainties import errmax_bad
 
     result = _make_result(2)
     result.minos_errors = {'x1': jnp.array([[.01, .3], [.01, .02]]),
@@ -299,7 +300,7 @@ def test_minos_asymmetric_floor():
 
 def test_concatenate_rejects_mixed_uncertainty_metadata():
     import pytest
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     for field in ('minos_errors', 'minos_status', 'error_flags'):
         first, second = _make_result(2), _make_result(2)

@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_salt2mu.scatter import _median
+from jax_salt2mu.map_kernels import _median
 
 
 @pytest.mark.parametrize('dtype', [np.float32, np.float64])

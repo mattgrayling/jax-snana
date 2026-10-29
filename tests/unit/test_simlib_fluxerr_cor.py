@@ -7,13 +7,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.photometry.noise import (
-    Epoch, _fluxerr_model_sqscales, _noise_model_single_observation,
-    noise_variances,
-)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.noise import fluxerr_model_sqscales, noise_variances
+from jax_snlc_sim.photometry import Epoch, _noise_model_single_observation
 from jax_snlc_sim.simulation import Instrument
-from jax_snlc_sim.survey.simlib_reader import _build_fluxerr_cor_map, read_simlib
+from jax_snlc_sim.simlib import _build_fluxerr_cor_map, read_simlib
 
 
 def _write_simlib(extra_header_lines=""):
@@ -126,13 +124,15 @@ def _call_noise(snr_grid=None, scale_per_filter=None,
     )
     for key, value in overrides.items():
         (raw if key in raw else settings)[key] = value
-    variances = noise_variances(
-        raw['fluxcal'], raw['zptavg'], raw['zpterr'], raw['gain'], raw['nea'],
-        raw['skysig'], raw['readnoise'], raw['template_skysig'],
-        raw['template_readnoise'], raw['template_zpt'], raw['fluxgal_pe'],
-        smearflag_zeropt=0, zp_fluxcal=Instrument.zp_fluxcal)
-    epoch = Epoch(variances=variances, **{
-        k: raw[k] for k in Epoch._fields if k != 'variances'})
+    variances = dict(zip(
+        ('flux_pe', 'npe_over_fluxcal', 'sqsig_S', 'sqsig_SZ', 'sqsig_T',
+         'sqsig_calc_data', 'snr_calc_szt', 'snr_calc_st'),
+        noise_variances(
+            raw['fluxcal'], raw['zptavg'], raw['zpterr'], raw['gain'], raw['nea'],
+            raw['skysig'], raw['readnoise'], raw['template_skysig'],
+            raw['template_readnoise'], raw['template_zpt'], raw['fluxgal_pe'], 0.0,
+            smearflag_zeropt=0, zp_fluxcal=Instrument.zp_fluxcal)))
+    epoch = Epoch(**variances, **{k: raw[k] for k in Epoch._fields if k not in variances})
     # [:4] drops the MAGMONITOR_SNR column, which these tests do not exercise
     return _noise_model_single_observation(epoch, **settings)[:4]
 
@@ -184,7 +184,7 @@ def test_fluxerrmodel_file_auto_sets_bit_32(tmp_path, lsst_kcor_path,
         "DNDZ: POWERLAW 2.5E-5 1.5\n"
         "RANSEED: 12345\n"
     )
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     cfg = parse_snana_input_file(str(inp))
     assert cfg.survey.simlib_mskopt & 32
 
@@ -353,12 +353,30 @@ def test_fluxerr_sqscale_exact_one_bumped_to_1p001():
     (snlc_sim.c:28059-28062); the DATA side is not bumped. A masked-off map
     leaves scale 1, so the bump applies there too."""
     one = jnp.array(1.0)
-    sqt, sqd = _fluxerr_model_sqscales(
+    sqt, sqd = fluxerr_model_sqscales(
         one, one, one, one, one, jnp.array(10.0), jnp.array(100.0), True)
     assert float(sqt) == pytest.approx(1.001**2, rel=1e-6)
     assert float(sqd) == pytest.approx(1.0)
-    sqt_masked, sqd_masked = _fluxerr_model_sqscales(
+    sqt_masked, sqd_masked = fluxerr_model_sqscales(
         jnp.array(1.7), one, one, jnp.array(0.0), jnp.array(0.0),
         jnp.array(10.0), jnp.array(100.0), True)
     assert float(sqt_masked) == pytest.approx(1.001**2, rel=1e-6)
     assert float(sqd_masked) == pytest.approx(1.0)
+
+
+def test_zero_point_jitter_scales_the_difference_flux():
+    """SNANA's zero-point jitter scales the SN's search flux less its own
+    flux in the template (snlc_sim.c:27842-27849): an SN as bright in the
+    template as in the search image gets none, while without a template it
+    gets the jitter of its whole flux, and the jitter variance goes as the
+    square of the difference flux."""
+    def jitter_variance(template_fluxcal):
+        _, _, sqsig_S, sqsig_SZ, *_ = noise_variances(
+            fluxcal=1000.0, zptavg=30.0, zpterr=0.02, gain=1.5, nea=20.0, skysig=10.0,
+            readnoise=5.0, template_skysig=0.0, template_readnoise=0.0,
+            template_zpt=30.0, fluxgal_pe=0.0, template_fluxcal=template_fluxcal,
+            smearflag_zeropt=1, zp_fluxcal=27.5)
+        return sqsig_SZ - sqsig_S
+    assert jitter_variance(1000.0) == 0.0
+    assert jitter_variance(0.0) > 0.0
+    assert jitter_variance(500.0) == pytest.approx(0.25 * jitter_variance(0.0), rel=1e-12)

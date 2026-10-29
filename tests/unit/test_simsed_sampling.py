@@ -5,9 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.models.simsed_model import (
-    KEYWORD_BAGGAGE, KEYWORD_CONTINUOUS, SIMSEDModel,
-)
+from jax_snlc_core.models.simsed import KEYWORD_BAGGAGE, KEYWORD_CONTINUOUS, SIMSEDModel
 from jax_snlc_sim.distributions import GenGaussAsym
 from jax_snlc_sim.population import Population
 

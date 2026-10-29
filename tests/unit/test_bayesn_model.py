@@ -7,8 +7,8 @@ ulp-level drift (rtol 1e-12): XLA codegen differs by 1 ulp across platforms
 dust-multiply reorder (extinction applied caller-side, after m0_scale).
 """
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from jax_snlc_core.models import build_model
@@ -129,7 +129,7 @@ def test_mskopt_scatter_bit_combinations(bayesn_fit_setup):
 def test_mskopt_ambiguous_bits_fatal(bayesn_fit_setup):
     """bit1 with bit2/4, both time modes, or both wavelength modes abort
     (genmag_BAYESN.c:461-468, :487-500)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     _, model = bayesn_fit_setup
     try:
         for mskopt in (1 | 2, 1 | 4, 1 | 6, 32 | 64, 512 | 1024):
@@ -217,7 +217,7 @@ def test_filter_centre_limits_come_from_the_yaml(bayesn_fit_setup):
 
 def test_host_law_configuration(data_root, tmp_path):
     from jax_snlc_fit.config_parser import build
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
 
     path = str(data_root / 'models' / 'BAYESN.W22')
     config = build({'FITMODEL_NAME': path, 'HOST_COLORLAW': 'CCM89'})
@@ -235,7 +235,7 @@ def test_host_law_configuration(data_root, tmp_path):
 
 
 def test_unavailable_bayesn_options(bayesn_fit_setup, data_root):
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     with pytest.raises(SNANAError, match='UVLAM_EXTRAPFLUX'):
         build_model(str(data_root / 'models' / 'BAYESN.W22'),
@@ -280,7 +280,7 @@ def test_dimensions_are_optional(repo_root, tmp_path, model_name):
                                   "L_SIGMA_EPSILON"])
 def test_inconsistent_dimensions_are_rejected(data_root, tmp_path, key):
     import yaml
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     data = yaml.safe_load((data_root / "models/BAYESN.W22/BAYESN.YAML").read_text())
     for size_key in ("N_LAM", "N_TAU", "N_SIG"):

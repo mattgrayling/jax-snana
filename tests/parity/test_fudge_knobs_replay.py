@@ -11,12 +11,13 @@ ours works via both the input key and RANSYSTPAR_SIGSCALE_FLUXERR2.
 """
 
 import numpy as np
+from _replay_helpers import load_jax_phot, load_snana_phot
 from astropy.io import fits
+from replay_snana_dump import build_override_parameters
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from replay_snana_dump import build_override_parameters  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
-from _replay_helpers import load_snana_phot, load_jax_phot  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def test_fudge_knobs_replay(snana_fixture, tmp_path):
@@ -35,7 +36,7 @@ def test_fudge_knobs_replay(snana_fixture, tmp_path):
     override = build_override_parameters(dump.columns, simulation, resources, head_columns=head_cols)
 
     results, sel, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-    sim_run.save_snana_outputs(sim, results, "FUDGE", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "FUDGE", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
 
     snana_phot = load_snana_phot(fx.head_fits, fx.phot_fits)
     jax_phot = load_jax_phot(tmp_path / "FUDGE", "FUDGE")

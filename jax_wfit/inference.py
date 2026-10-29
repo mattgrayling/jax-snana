@@ -11,11 +11,11 @@ from numpyro.diagnostics import summary as numpyro_summary
 from numpyro.infer import MCMC, NUTS
 from numpyro.infer.initialization import init_to_value
 
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_core.utils.newton_lm import newton_lm
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.optimiser import newton_lm
 
 from .config import WFITConfig
-from .data import HubbleDiagram
+from .hubble import HubbleDiagram
 from .likelihood import evaluate_likelihood
 
 #: Convergence: the Newton step still to take, inv(H) g, as a fraction of the
@@ -575,16 +575,6 @@ def _make_grid_evaluator(
     return jax.jit(jax.vmap(evaluate))
 
 
-def _grid_chunk_chi2(
-    evaluator: Any,
-    coordinates: dict[str, np.ndarray],
-    names: tuple[str, ...],
-) -> tuple[np.ndarray, np.ndarray]:
-    sn, total = evaluator(
-        *(jnp.asarray(coordinates[name]) for name in names))
-    return np.asarray(sn), np.asarray(total)
-
-
 def _iter_grid_chunks(axes: dict[str, np.ndarray], chunk_size: int):
     names = tuple(axes)
     shape = tuple(axes[name].size for name in names)
@@ -636,7 +626,8 @@ def fit_grid(
     }
     realisation_indices = np.arange(realisation_count)
     for start, coordinates, _ in _iter_grid_chunks(axes, chunk_size):
-        chi2_sn, chi2 = _grid_chunk_chi2(evaluator, coordinates, names)
+        chi2_sn, chi2 = evaluator(*(jnp.asarray(coordinates[name]) for name in names))
+        chi2_sn, chi2 = np.asarray(chi2_sn), np.asarray(chi2)
         full_chi2[start:start + chi2.shape[0], :] = chi2
         if full_chi2_sn is not None:
             full_chi2_sn[start:start + chi2.shape[0], :] = chi2_sn

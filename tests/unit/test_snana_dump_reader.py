@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.snana_dump_reader import SnanaDumpData, load_snana_dump
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SnanaDumpData, load_snana_dump
 
 
 def _write_dump(tmp_path, lines):

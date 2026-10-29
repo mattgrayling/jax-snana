@@ -5,8 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.survey.lensing_probmap import read_lensing_probmap
-from jax_snlc_sim.sampler import _sample_lensdmu
+from jax_snlc_sim.lensing import _sample_lensdmu, read_lensing_probmap
 
 
 @pytest.fixture(scope="module")

@@ -17,10 +17,10 @@ The population is what the event is:
     - the GENMAG_OFF_GLOBAL grey offset (:func:`draw_grey_offset`)
 
 Choosing the host galaxy and everything that follows from it is
-:mod:`jax_snlc_sim.host_association`.
+:mod:`jax_snlc_sim.hostlib.association`.
 
 Sampling holds no state: every random quantity's per-SN keys come from
-:mod:`jax_snlc_sim.random_streams`, so the same SN draws the same values
+:mod:`jax_snlc_core.random`, so the same SN draws the same values
 regardless of batch boundaries and streams never interfere. The per-field
 and dN/dz tables read here are built once by ``build_simulation``.
 """
@@ -33,81 +33,28 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.utils import SNANA_NULLFLOAT
-from jax_snlc_core.utils.interp import eval_genpoly
-from jax_snlc_core.physics.cosmology import (
-    cosmo_params, distance_modulus, zcmb_to_zhelio,
-    cos_sep_cmb_apex, ANISOTROPY_V04_PARS,
-)
-from jax_snlc_sim.distributions import (
-    GenExpHalfGauss, make_sampler, make_zshift_sampler, pdf_exp_halfgauss,
-    pdf_gengauss_asym, sample_truncated_gaussian)
-from jax_snlc_core.io.sfd_reader import ebv_on_device
-from jax_snlc_core.io.host_properties import canonical_property_name
-from jax_snlc_sim.random_streams import event_keys, run_key, stream_key
-from jax_snlc_sim.survey.simlib_reader import ZMIN_SIMLIB_REGEN, header_column
-from jax_snlc_sim.genpdf_reader import make_genpdf_sampler, pdf_genpdf
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.cosmology import (ANISOTROPY_V04_PARS, cos_sep_cmb_apex, cosmo_params,
+                                     distance_modulus, zcmb_to_zhelio)
+from jax_snlc_core.dust import ebv_on_device
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SNANA_NULLFLOAT, canonical_property_name
+from jax_snlc_core.utils import LIGHT_KM
+from jax_snlc_sim.population import HOST_DUST_PARAMETERS
+from jax_snlc_sim.distributions import (GenExpHalfGauss,
+                                        pdf_exp_halfgauss, pdf_gengauss_asym,
+                                        sample_exp_halfgauss, sample_gengauss_asym,
+                                        sample_truncated_gaussian)
+from jax_snlc_sim.genpdf import pdf_genpdf, sample_genpdf, sample_genpdf_conditional
+from jax_snlc_sim.lensing import lensing_offset
 from jax_snlc_sim.population import component_names, stream_name
-from jax_snlc_sim.simulation import HOST_DUST_PARAMETERS
+from jax_snlc_sim.scatter import (draw_phase_scatter, draw_coherent_scatter,
+                                   draw_filter_scatter, draw_model_scatter,
+                                   scale_model_scatter)
+from jax_snlc_core.random import event_keys
+from jax_snlc_sim.simlib import ZMIN_SIMLIB_REGEN, draw_simlib_entry, simlib_field_index
 from jax_snlc_sim.zvariation import REDSHIFT, shift_array
 
 logger = logging.getLogger(__name__)
-
-
-def simlib_job_start(config, n_fields: int) -> int:
-    """LIBID offset giving this submit_batch_jobs job its own SIMLIB slice.
-
-    SIMLIB_findStart (snlc_sim.c:19092-19121): job k starts
-    ``(JOBID_SHIFT-1) * NLIBID/NJOBTOT`` entries in, so N parallel jobs read
-    disjoint slices instead of all starting at the first entry. The GENTYPE term
-    staggers which job reads which slice across models. Applied only for a
-    batched run over a pool of more than 100 entries, and never together with
-    SIMLIB_IDSTART, which sets its own start.
-
-    ``n_fields`` is the post-pruning count; SNANA uses the raw NLIBID header,
-    since it slices before reading. Only the union of the jobs matters, and that
-    is the same either way. A property of the job rather than of one
-    simulation, so it draws off the run's root key (:func:`run_key`) whatever
-    key a simulation is given.
-    """
-    run = config.run
-    njobtot, jobid = run.njobtot, run.jobid
-    if njobtot <= 0 or n_fields <= 100 or config.survey.simlib_idstart > 0:
-        return 0
-
-    gentype = config.rates.gentype
-    shift = (jobid + gentype - 1) % njobtot + 1 if gentype > 0 else jobid
-    slice_len = n_fields // njobtot
-
-    # Spread the start within the slice when the job cannot consume it all.
-    spare = slice_len - run.ngentot_lc
-    if run.ngentot_lc > 0 and spare > 5:
-        key = stream_key(run_key(config), 'SIMLIB_JOB_START')
-        spare = int(jax.random.randint(key, (), 0, spare))
-    else:
-        spare = 0
-    return (shift - 1) * slice_len + spare
-
-
-def simlib_field_index(key, global_indices, n_fields: int,
-                       nrepeat: int, maxranstart: int, batch_start: int = 0):
-    """Per-SN SIMLIB entry index from the global SN index.
-
-    With no start option the cycle begins at the first LIBID
-    (SIMLIB_findStart, snlc_sim.c:19139-19147); MAXRANSTART draws a random
-    start off the root ``key``, and IDSTART/batch handling arrives via
-    ``batch_start``.
-    """
-    if maxranstart > 0:
-        bound = min(maxranstart, n_fields)
-        start = jax.random.randint(stream_key(key, 'SIMLIB_MAXRANSTART'), (),
-                                   0, bound)
-    else:
-        start = 0
-    start = start + batch_start
-    return (start + jnp.asarray(global_indices) // nrepeat) % n_fields
 
 
 @partial(jax.jit, static_argnums=(1,))
@@ -325,12 +272,6 @@ def draw_mwebv(simulator, params: Dict[str, jnp.ndarray], *,
     return {'mwebv': mwebv, 'mwebv_err': mwebv_err, 'sim_mwebv': mwebv_smear}
 
 
-def anisotropy_pars(cosmology):
-    """V04 dipole parameters when ANISOTROPY_MODELNAME is set, else None."""
-    return (ANISOTROPY_V04_PARS
-            if cosmology.anisotropy_modelname else None)
-
-
 def anisotropy_cos_sep(simulator, ra, dec):
     """Per-SN cos(angle to the CMB apex) at the SN's position (gen_dLmag
     takes the SN's galactic coords, snlc_sim.c:17626)."""
@@ -375,25 +316,11 @@ def assign_simlib_field(simulator, global_indices, redshifts, *,
             simulator.field_start_index)
     else:
         blocks = global_indices // s.simlib_nrepeat
-        field_indices = _draw_simlib_entry(
+        field_indices = draw_simlib_entry(
             simulator.simlib_windows, redshifts,
             event_keys(key, 'SIMLIB_ENTRY', blocks))
     return (field_indices,
             *field_coords(simulator, {'field_idx': field_indices}))
-
-
-def _draw_simlib_entry(windows, redshifts, keys):
-    """An entry per event among those whose CUTWIN_REDSHIFT window holds the
-    redshift: a window with probability proportional to its entry count,
-    then an entry within it."""
-    lo, hi = jnp.asarray(windows['lo']), jnp.asarray(windows['hi'])
-    count = jnp.asarray(windows['count'], dtype=jnp.float32)
-    accept = (redshifts[:, None] >= lo) & (redshifts[:, None] <= hi)
-    cumulative = jnp.cumsum(jnp.where(accept, count, 0.0), axis=1)
-    u = jax.vmap(lambda k: jax.random.uniform(k, shape=(2,)))(keys)
-    window = jnp.argmax(cumulative > u[:, :1] * cumulative[:, -1:], axis=1)
-    within = jnp.floor(u[:, 1] * count[window]).astype(jnp.int32)
-    return jnp.asarray(windows['order'])[jnp.asarray(windows['start'])[window] + within]
 
 
 def _entry_gengauss(field_data, name, field_indices):
@@ -553,7 +480,7 @@ def _sample_population_parameter(simulator, redshifts, host_properties,
         raise SNANAError(
             f"{param_name} not configured: no distribution or GENPDF found. "
             f"Check that the input file or GENPDF_FILE defines this parameter.")
-    keys = keys_for(stream_name(param_name, dict(simulator.model._population)))
+    keys = keys_for(stream_name(param_name, dict(simulator.model.configured_population)))
 
     genpdf = pop.genpdf
     if genpdf is not None:
@@ -571,10 +498,10 @@ def _sample_population_parameter(simulator, redshifts, host_properties,
                         f"variable '{cv_name}' not in host_properties. "
                         f"Available: {list(host_properties.keys())}")
                 cond_arrays.append(host_properties[cv_name])
-            sampler = make_genpdf_sampler(genpdf)
-            return jax.vmap(sampler)(keys, *cond_arrays)
-        sampler = make_genpdf_sampler(genpdf)
-        return jax.vmap(sampler)(keys)
+            return jax.vmap(
+                lambda key, *values: sample_genpdf_conditional(key, genpdf, *values)
+            )(keys, *cond_arrays)
+        return jax.vmap(lambda key: sample_genpdf(key, genpdf))(keys)
 
     per_class = [_draw(param_name, dist, shifts, keys, redshifts,
                        host_properties, drawn)
@@ -619,10 +546,16 @@ def _population_weight(simulator, param_name, value, host_properties,
 def _draw(param_name, dist, shifts, keys, redshifts, host_properties, drawn):
     """One component's draw, with the shifts on it applied."""
     if not shifts:
-        return jax.vmap(make_sampler(dist))(keys)
+        sample = (sample_exp_halfgauss if isinstance(dist, GenExpHalfGauss)
+                  else sample_gengauss_asym)
+        return jax.vmap(lambda key: sample(key, dist))(keys)
     arrays, active = _shift_arrays(param_name, shifts, redshifts,
                                    host_properties, drawn)
-    return jax.vmap(make_zshift_sampler(dist, active))(keys, *arrays)
+    if isinstance(dist, GenExpHalfGauss):
+        return jax.vmap(lambda key, *values: sample_exp_halfgauss(key, dist, values))(
+            keys, *arrays)
+    return jax.vmap(lambda key, *values: sample_gengauss_asym(key, dist, values, active))(
+        keys, *arrays)
 
 
 def _subpop_weights(simulator, redshifts, host_properties, n_sne):
@@ -709,7 +642,8 @@ def distance_modulus_at(simulator, redshifts, redshifts_helio,
     """The distance modulus per SN, with the dipole anisotropy at the SN's
     position (gen_dLmag, snlc_sim.c:17626)."""
     omega_m, _omega_k, omega_l, hubble_distance, w0, wa = cosmo_params(simulator.cosmology)
-    _aniso = anisotropy_pars(simulator.cosmology)
+    _aniso = (ANISOTROPY_V04_PARS
+              if simulator.cosmology.anisotropy_modelname else None)
     _cs = anisotropy_cos_sep(simulator, ra, dec)
     return jax.vmap(lambda z, zh, vp, cs: distance_modulus(
         z, zh, omega_m, omega_l, hubble_distance, w0, wa, vp,
@@ -774,7 +708,7 @@ def _simlib_header_override(simulator, sample_param, field_indices, keys_for):
         gengauss = _entry_gengauss(field_data, name, field_indices)
         if gengauss is not None:
             lo, hi, sigma = gengauss
-            stream = stream_name(name, dict(simulator.model._population))
+            stream = stream_name(name, dict(simulator.model.configured_population))
             drawn = jax.vmap(sample_truncated_gaussian)(
                 keys_for('SIMLIB_' + stream), 0.5 * (lo + hi), sigma, sigma, lo, hi)
             val = jnp.where(jnp.isfinite(lo), drawn.astype(val.dtype), val)
@@ -785,63 +719,6 @@ def _simlib_header_override(simulator, sample_param, field_indices, keys_for):
     return sample_with_override
 
 
-def lensing_offset(simulator, redshifts, keys, host_properties):
-    """The weak-lensing mu offset (gen_distanceMag,
-    snlc_sim.c:17510-17519): WEAKLENS_DSIGMADZ wins over
-    WEAKLENS_PROBMAP_FILE, which wins over the host's HOSTLIB WEAKLENS_DMU
-    column; zero with none of them. ``host_properties`` is None before the
-    host is drawn."""
-    if simulator.lensing.dsigmadz > 1.0e-8:
-        return (redshifts * simulator.lensing.dsigmadz
-                * jax.vmap(jax.random.normal)(keys))
-    if simulator.lensing_probmap is not None:
-        return _sample_lensdmu(simulator.lensing_probmap.z_bins,
-                                simulator.lensing_inv_cdf, redshifts, keys)
-    if host_properties is not None and 'WEAKLENS_DMU' in host_properties:
-        return host_properties['WEAKLENS_DMU']
-    return jnp.zeros_like(redshifts)
-
-
-def _draw_phasecor_scatter(instrument, phasecor_L, keys, clip):
-    """Phase-correlated coherent scatter (GENMAG_SMEAR_ADDPHASECOR).
-
-    Pre-draws correlated per-phase-grid scatter; epoch interpolation happens
-    later in simulate_lightcurves. None when the model is not configured.
-    """
-    if phasecor_L is None:
-        return None
-    n_grid = instrument.phasecor_n_grid
-    normals = jax.vmap(
-        lambda k: jax.random.truncated_normal(k, *clip, shape=(n_grid,)))(keys)
-    # row-wise reduce, not a matmul: bits independent of the batch size
-    L = phasecor_L
-    return jax.vmap(lambda z: jnp.sum(L * z[None, :], axis=1))(normals)
-
-
-def _draw_coherent_magsmear(model, keys):
-    """GENMAG_SMEAR: one gaussian per SN, applied later as a grey shift
-    (snlc_sim.c genmodelSmear). Truncated at SIGMACLIP_MAGSMEAR, as SNANA's
-    getRan_GaussClip rejection sampling does."""
-    genmag_smear = model.genmag_smear
-    if genmag_smear <= 1e-4:
-        return None
-    clip_lo, clip_hi = model.sigmaclip_magsmear
-    return genmag_smear * jax.vmap(
-        lambda k: jax.random.truncated_normal(k, clip_lo, clip_hi))(keys)
-
-
-def _draw_filter_magsmear(model, survey, keys):
-    """GENMAG_SMEAR_FILTER: one clipped gaussian per (SN, filter), added to
-    that filter's epochs (snlc_sim.c:29904)."""
-    if not model.genmag_smear_filter:
-        return None
-    clip_lo, clip_hi = model.sigmaclip_magsmear
-    n_filt = len(survey.photometry.transmissions)
-    return jax.vmap(
-        lambda k: jax.random.truncated_normal(
-            k, clip_lo, clip_hi, shape=(n_filt,)))(keys)
-
-
 def _draw_redshift_smear(rates, keys):
     """Observed-redshift smear normals (GENSIGMA_REDSHIFT / GENBIAS_REDSHIFT,
     snlc_sim.c:17405)."""
@@ -850,35 +727,6 @@ def _draw_redshift_smear(rates, keys):
                     or rates.genbias_redshift != 0.0)):
         return None
     return jax.vmap(jax.random.normal)(keys)
-
-
-def _draw_gensmear_model(model, simulator, batch_n_sne, keys):
-    """GENMAG_SMEAR_MODELNAME randoms; correlation and interpolation are
-    applied at SED time. GENSMEAR_RANGauss_FIX pins every draw to a constant
-    for reproducibility (sntools_genSmear.c:307)."""
-    if simulator.gensmear is None:
-        return None
-    n_ran = simulator.gensmear_n_randoms
-    ran_fix = model.gensmear_rangauss_fix
-    if ran_fix > -99.0:
-        return jnp.full((batch_n_sne, n_ran), float(ran_fix))
-    clip_lo, clip_hi = model.sigmaclip_magsmear
-    return jax.vmap(
-        lambda k: jax.random.truncated_normal(
-            k, clip_lo, clip_hi, shape=(n_ran,)))(keys)
-
-
-def _apply_gensmear_scale(model, gensmear_arr, model_params):
-    """GENMAG_SMEAR_SCALE scales the GENMAG_SMEAR_MODELNAME smear only
-    (sntools_genSmear.c:415-418): a global scalar, or poly(c|x1) evaluated per
-    SN, which is why it runs once the model parameters exist."""
-    if gensmear_arr is None:
-        return None
-    poly = model.genmag_smear_scale_poly
-    if poly is not None and poly[0] in model_params:
-        scale = eval_genpoly([float(c) for c in poly[1]], model_params[poly[0]])
-        return gensmear_arr * scale[:, None]
-    return gensmear_arr * model.genmag_smear_scale
 
 
 def _draw_peak_mjd(simulator, field_indices, peak_keys,
@@ -1053,15 +901,16 @@ def draw_model(simulator, params,
     sample_param, wgt_population = _parameter_sampler(
         simulator, redshifts, host_properties, keys_for, subpop_index, drawn)
 
-    _phasecor_grid_arr = _draw_phasecor_scatter(
-        simulator.instrument, simulator.phasecor_cholesky_L,
+    _phasecor_grid_arr = draw_phase_scatter(
+        simulator.phasecor_cholesky_L,
         keys_for('PHASECOR'), simulator.model_settings.sigmaclip_magsmear)
-    _magsmear_arr = _draw_coherent_magsmear(simulator.model_settings, keys_for('MAGSMEAR_COH'))
-    _magsmear_filter_arr = _draw_filter_magsmear(
-        simulator.model_settings, simulator, keys_for('MAGSMEAR_FILTER'))
+    _magsmear_arr = draw_coherent_scatter(simulator.model_settings, keys_for('MAGSMEAR_COH'))
+    _magsmear_filter_arr = draw_filter_scatter(
+        simulator.model_settings, len(simulator.photometry.transmissions),
+        keys_for('MAGSMEAR_FILTER'))
     _zsmear_arr = _draw_redshift_smear(simulator.rates, keys_for('ZSMEAR'))
-    _gensmear_arr = _draw_gensmear_model(
-        simulator.model_settings, simulator, batch_n_sne, keys_for('GENSMEAR'))
+    _gensmear_arr = draw_model_scatter(
+        simulator.model_settings, simulator.gensmear, keys_for('GENSMEAR'))
 
     model_sample = sample_param
     if simulator.survey.use_simlib_salt2:
@@ -1071,7 +920,7 @@ def draw_model(simulator, params,
     # the population draws in declaration order, which is the order a
     # VARIATION may read them in; then what the model makes of them
     sed_model = simulator.model
-    declared = [name for name, _ in sed_model._population]
+    declared = [name for name, _ in sed_model.configured_population]
     model_params = {
         name: model_sample(name) for name in
         sed_model.drawn_parameters(simulator.model_settings.populations)}
@@ -1087,7 +936,7 @@ def draw_model(simulator, params,
     if undrawn:
         raise _missing_population(undrawn[0])
 
-    _gensmear_arr = _apply_gensmear_scale(simulator.model_settings, _gensmear_arr, model_params)
+    _gensmear_arr = scale_model_scatter(simulator.model_settings, _gensmear_arr, model_params)
 
     model = {
         'wgt_population': wgt_population(),
@@ -1140,45 +989,3 @@ def draw_grey_offset(simulator, params,
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),
                        params['sim_redshift_cmb'].shape[0])
-
-
-def _sample_lensdmu(z_bins, inv_cdf, redshifts, keys):
-    """Sample weak-lensing deltaMU per SN via the pre-inverted CDF.
-
-    Fully vectorised: a single ``map_coordinates`` call over all SNe.
-    Below/above the map's z-range, deltaMU scales by z / z_edge.
-    """
-    ran1 = jax.vmap(jax.random.uniform)(keys)
-    ran1 = jnp.clip(ran1, 1e-8, 1.0 - 1e-8)
-    iz = jnp.interp(redshifts, jnp.asarray(z_bins), jnp.arange(len(z_bins)))
-    iq = ran1 * (inv_cdf.shape[1] - 1)
-    coords = jnp.stack([iz, iq], axis=0)
-    dmu = jax.scipy.ndimage.map_coordinates(
-        inv_cdf, coords, order=1, mode='nearest')
-    z_min = z_bins[0]
-    z_max = z_bins[-1]
-    dmu = jnp.where(redshifts < z_min, dmu * (redshifts / z_min), dmu)
-    dmu = jnp.where(redshifts > z_max, dmu * (redshifts / z_max), dmu)
-    return dmu
-
-
-def apply_lensdmu_smear(simulator, params: Dict[str, jnp.ndarray], *,
-                        key) -> None:
-    """WEAKLENS_DMUERR_FRAC: the reported lensing offset and its error.
-
-    gen_lensDMU_smear draws ``lensDMU_smear = lensDMU + |lensDMU * FRAC| * G``
-    and the data file reports it with ``LENSDMU_ERR = |lensDMU * FRAC|``
-    (sntools_weaklens.c:256-276, snlc_sim.c:12938, :25422-25423). SIM_LENSDMU
-    keeps the unsmeared truth. SNANA smears after the HOSTLIB WEAKLENS_DMU
-    override, so this runs once host association is done, and it burns a
-    random only when the fraction is set.
-    """
-    lensdmu = jnp.asarray(params['lensdmu'])
-    frac = simulator.lensing.dmuerr_frac
-    err = jnp.abs(lensdmu * frac)
-    params['lensdmu_err'] = err
-    if frac <= 0.0:
-        params['lensdmu_smear'] = lensdmu
-        return
-    keys = event_keys(key, 'LENSDMU_SMEAR', params['sn_global_idx'])
-    params['lensdmu_smear'] = lensdmu + err * jax.vmap(jax.random.normal)(keys)

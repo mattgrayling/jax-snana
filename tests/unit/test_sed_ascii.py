@@ -1,14 +1,14 @@
 """Unit tests for the 3-column SED ASCII reader."""
 
-DAYS = (-150.0, 500.0)
-
 import gzip
 
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.sed_ascii import SED_WAVELENGTH_RANGE, read_sed_file
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models.sed_model import SED_WAVELENGTH_RANGE, read_sed_file
+
+DAYS = (-150.0, 500.0)
 
 
 def _write_sed(path, phases, waves, flux_2d):

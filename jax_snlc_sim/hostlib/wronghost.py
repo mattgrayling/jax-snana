@@ -15,16 +15,16 @@ wrong redshift.
 Reference: SNANA sntools_wronghost.c:213 (gen_zHOST)
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import logging
 from typing import NamedTuple, Tuple
 
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.utils.interp import eval_genpoly
-from jax_snlc_core.utils import SNANAError, snana_log as slog
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_core.utils import eval_genpoly
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +105,9 @@ def read_wronghost_file(path: str, zmin: float, zmax: float) -> WrongHostTable:
             f"inside [{zmin}, {zmax}], so no wrong host can be drawn.",
             function_name="read_wronghost_file")
 
-    slog.line(logger, f"WRONGHOST_FILE: {path}")
-    slog.line(logger, f"Polynomial coefficients: {poly_coeffs}", indent=2)
-    slog.line(logger, f"Table entries: {len(ztrue)} (in z=[{zmin:.3f}, {zmax:.3f}])", indent=2)
+    log.line(logger, f"WRONGHOST_FILE: {path}")
+    log.line(logger, f"Polynomial coefficients: {poly_coeffs}", indent=2)
+    log.line(logger, f"Table entries: {len(ztrue)} (in z=[{zmin:.3f}, {zmax:.3f}])", indent=2)
 
     return WrongHostTable(poly_coeffs=poly_coeffs, ztrue=ztrue, zmatch=zmatch,
                           z_range=(zmin, zmax))

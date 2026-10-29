@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from jax_snlc_fit.data_loader import _magcor_values
+from jax_snlc_fit.calibration import magcor_values
 
 
 def test_magcor_rounding_repeated_epochs_and_missing_keys():
@@ -16,6 +16,6 @@ def test_magcor_rounding_repeated_epochs_and_missing_keys():
                    ('missing', 55000., 'g'): .1}
     expected = np.array([corrections.get((cid, round(float(mjd), 3), band), 0.)
                          for cid, mjd, band in zip(cids, mjds, bands)])
-    np.testing.assert_array_equal(_magcor_values(corrections, cids, mjds, bands),
+    np.testing.assert_array_equal(magcor_values(corrections, cids, mjds, bands),
                                   expected)
-    np.testing.assert_array_equal(_magcor_values(corrections, cids[:0], mjds[:0], bands[:0]), [])
+    np.testing.assert_array_equal(magcor_values(corrections, cids[:0], mjds[:0], bands[:0]), [])

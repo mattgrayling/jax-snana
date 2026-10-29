@@ -17,17 +17,15 @@ Two parity tests + one pure-JAX unit test:
   proximity to the parity tests it complements).
 """
 
-from jax_snlc_core.utils.error_handling import SNANAError
 from pathlib import Path
-
-from jax_snlc_core.io.fits_path import open_text
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import open_text
+from jax_snlc_sim import run as sim_run
 
 
 def _parse_dump_column(path: Path, column: str) -> np.ndarray:
@@ -275,14 +273,14 @@ def _saturate_fail(filter_idx, valid, saturated, saturate_ranges,
     """
     from dataclasses import replace
     from jax_snlc_sim.simulation import Cuts
-    from jax_snlc_sim.survey.cutwin import make_jax_cutwin
+    from jax_snlc_sim.cutwin import cutwin_all, prepare_cutwin
 
     cutwin = replace(Cuts(), saturate_ranges=saturate_ranges,
                      nosaturate_ranges=nosaturate_ranges)
-    fn = make_jax_cutwin(cutwin, filter_names, byfield_masks=())
+    arrays, options = prepare_cutwin(cutwin, filter_names, byfield_masks=())
     n_sne, max_obs = filter_idx.shape
     zeros = jnp.zeros((n_sne, max_obs), dtype=jnp.float32)
-    _, fails, _ = fn(zeros, zeros, filter_idx, valid, zeros, valid,
+    _, fails, _ = cutwin_all(arrays, options, zeros, zeros, filter_idx, valid, zeros, valid,
                      jnp.zeros((n_sne, len(filter_names)), dtype=jnp.float32),
                      jnp.zeros(n_sne, dtype=jnp.int32), saturated)
     return fails['SATURATE']

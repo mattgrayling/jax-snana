@@ -11,20 +11,20 @@ import shutil
 from dataclasses import replace
 
 import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
-from jax_create_cov import build_covariance, create_covariance, load_config
-from jax_create_cov import hubble, inputs, output
+from jax_create_cov import (build_covariance, compute_covariance, create_covariance,
+                            covariance, load_config)
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 from jax_wfit.blinding import blinding_statuses
 from jax_wfit.config import WFITConfig
-from jax_wfit.data import (hubble_diagram_from_covariance,
-                           load_hubble_diagrams, stack_arrays)
+from jax_wfit.hubble import hubble_diagram_from_covariance, load_hubble_diagrams, stack_arrays
 from jax_wfit.inference import fit_laplace
 from jax_wfit.priors import prepare_priors
 from jax_wfit.run import run_wfit
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils import SNANAError
 
 _FIXTURE = os.path.join("tests", "fixtures", "snana", "create_cov")
 
@@ -47,14 +47,14 @@ def _fit(diagrams):
 @pytest.fixture(scope="module")
 def cov_result():
     config = load_config(os.path.join(_FIXTURE, "input.yml"))
-    files = inputs.grid_files(config)
-    submit_info = inputs.read_submit_info(config.input_dir)
-    diagrams = {name: hubble.load_hubble_diagram(path, config.mode)
+    files = covariance.grid_files(config)
+    submit_info = covariance.read_submit_info(config.input_dir)
+    diagrams = {name: covariance.load_hubble_diagram(path, config.mode)
                 for name, path in files.items()}
     return build_covariance(
         diagrams,
-        inputs.sys_scales("FITOPT", submit_info, config.sys_scales),
-        inputs.sys_scales("MUOPT", submit_info, config.sys_scales),
+        covariance.sys_scales("FITOPT", submit_info, config.sys_scales),
+        covariance.sys_scales("MUOPT", submit_info, config.sys_scales),
         config.covopts, cosmology=config.cosmology, isdata_real=0,
     )
 
@@ -93,7 +93,7 @@ def test_in_memory_diagram_matches_the_file_route(mode, tmp_path):
     config = load_config(os.path.join(_FIXTURE, "input.yml"))
     config.outdir, config.mode = tmp_path, mode
     create_covariance(config)
-    info = yaml.safe_load((tmp_path / output.INFO_YML_FILENAME).read_text())
+    info = yaml.safe_load((tmp_path / covariance.INFO_YML_FILENAME).read_text())
     _, _, covtot_inv_name = info["COVOPTS"][0].split()
 
     wfit = WFITConfig()
@@ -109,6 +109,34 @@ def test_in_memory_diagram_matches_the_file_route(mode, tmp_path):
     for name in ("redshift", "mu", "muerr"):
         np.testing.assert_array_equal(np.asarray(getattr(held, name)),
                                       np.asarray(getattr(from_file, name)))
+
+
+@pytest.mark.parametrize("row_labels", [[2, 1], ["high", "low"]])
+def test_binned_input_labels_survive_covariance_output(row_labels, tmp_path):
+    """Numeric and text labels stay with their bins through sorting, covariance
+    output and conversion for the cosmology fit."""
+    frame = pd.DataFrame({"zHD": [0.2, 0.1], "MU": [40., 38.],
+                          "MUREF": [40., 38.], "MUERR": [0.2, 0.1]})
+    frame["ROW"] = row_labels
+    original = frame.copy()
+    result = compute_covariance(
+        diagrams={"FITOPT000_MUOPT000": frame},
+        fitopt_scales={0: ("DEFAULT", 1.)},
+        muopt_scales={0: ("DEFAULT", 1.)},
+        cosmology={"omega_matter": .315, "omega_lambda": .685},
+        isdata_real=0, write=True, outdir=tmp_path)
+    saved = read_fitres(str(tmp_path / covariance.HD_FILENAME)).df
+    expected_labels = [str(label) for label in reversed(row_labels)]
+    np.testing.assert_array_equal(saved["ROW"].astype(str), expected_labels)
+    np.testing.assert_allclose(saved["zHD"], [0.1, 0.2])
+    np.testing.assert_allclose(saved["MU"], [38., 40.])
+    np.testing.assert_allclose(saved["MUERR"], [0.1, 0.2])
+    for frame_for_fit in (result.hubble_diagram, saved):
+        diagram = hubble_diagram_from_covariance(
+            frame_for_fit, result.covtot_inv("ALL"), result.isdata_real,
+            source="<test>")
+        np.testing.assert_array_equal(diagram.cid, expected_labels)
+    pd.testing.assert_frame_equal(frame, original)
 
 
 def test_run_wfit_validates_the_config_on_the_diagrams_path(cov_result):
@@ -146,7 +174,7 @@ def test_create_covariance_reads_an_uncompressed_grid(tmp_path):
                      input_dir=tmp_path / "bbc", outdir=tmp_path / "out")
 
     result = create_covariance(config)
-    info = yaml.safe_load((tmp_path / "out" / output.INFO_YML_FILENAME).read_text())
+    info = yaml.safe_load((tmp_path / "out" / covariance.INFO_YML_FILENAME).read_text())
 
     assert result.version_photometry
     assert info["BBC_INFO_FILE"] == str(tmp_path / "bbc" / "SUBMIT.INFO")
@@ -159,7 +187,7 @@ def test_wfit_discovers_the_outputs_through_info_yml(tmp_path):
     config.outdir = tmp_path
     create_covariance(config)
 
-    info = yaml.safe_load((tmp_path / output.INFO_YML_FILENAME).read_text())
+    info = yaml.safe_load((tmp_path / covariance.INFO_YML_FILENAME).read_text())
     assert info["ISDATA_REAL"] == 0
     assert info["SIZE_HD"] > 0
 
@@ -185,7 +213,7 @@ def test_info_yml_reports_the_files_that_were_written(tmp_path):
     config.write_mask_cov = 1 | 2
     create_covariance(config)
 
-    info = yaml.safe_load((tmp_path / output.INFO_YML_FILENAME).read_text())
+    info = yaml.safe_load((tmp_path / covariance.INFO_YML_FILENAME).read_text())
     for entry in info["COVOPTS"].values():
         _, covsys_name, covtot_inv_name = entry.split()
         for name in (covsys_name, covtot_inv_name):
@@ -195,7 +223,7 @@ def test_info_yml_reports_the_files_that_were_written(tmp_path):
 
 @pytest.mark.parametrize("prior", ["cmb", "bao"])
 @pytest.mark.parametrize("truth_source", ["explicit", "file", "files"])
-def test_pipeline_simulation_priors_match_cli(tmp_path, monkeypatch, prior, truth_source):
+def test_pipeline_simulation_priors_match_cli(tmp_path, prior, truth_source):
     """Both entry points fit the same written HD and covariance with truth."""
     from jax_pipeline import Cosmology, Covariance, Fit
     from wfit import main
@@ -211,51 +239,58 @@ def test_pipeline_simulation_priors_match_cli(tmp_path, monkeypatch, prior, trut
                 "double_precision": True, "ompri": 0.315, "dompri": 0.9}
     args = ["-double_precision", "1", "--method", "grid",
             "-omsteps", "11", "-wsteps", "15", "-ompri", "0.315", "-dompri", "0.9"]
-    if prior == "cmb":
-        settings.update(cmb=True, cmb_sim=True, sigma_Rcmb=0.006)
-        args += ["--cmb", "--cmb-sim", "--sigma-Rcmb", "0.006"]
-    else:
-        root = tmp_path / "sndata" / "models" / "BAO"
-        root.mkdir(parents=True)
-        (root / "DESI_2024_mean.dat").write_text("0.5 13.0 DM_over_rd\n")
-        (root / "DESI_2024_cov.dat").write_text("0.04\n")
-        monkeypatch.setenv("SNDATA_ROOT", str(root.parent.parent))
-        settings.update(bao="DESI_2024", bao_sim="DESI_2024")
-        args += ["--bao", "DESI_2024", "--bao-sim", "DESI_2024"]
-    if truth_source == "explicit":
-        settings.update(om_sim=0.315, w0_sim=-1.0, wa_sim=0.0)
-        args += ["--om-sim", "0.315", "-w0_sim", "-1.0", "-wa_sim", "0.0"]
-    else:
-        truth_paths = []
-        for i in range(len(labels) if truth_source == "files" else 1):
-            path = tmp_path / f"truth{i}.yml"
-            path.write_text("MUSHIFT: 0.0\nOMEGA_MATTER: 0.315\n"
-                            "OMEGA_LAMBDA: 0.685\nw0_LAMBDA: -1.0\nwa_LAMBDA: 0.0\n")
-            truth_paths.append(str(path))
-        settings["truth_info"] = truth_paths if truth_source == "files" else truth_paths[0]
-        args += ["--truth-info", *truth_paths]
-    stage = Cosmology("cosmology", covariance=covariance, covopts=labels, overrides=settings)
-    stage_dir = tmp_path / "stage"
-    stage_dir.mkdir()
-    actual = stage.run({"covariance": held}, stage_dir)
+    previous_root = os.environ.get("SNDATA_ROOT")
+    try:
+        if prior == "cmb":
+            settings.update(cmb=True, cmb_sim=True, sigma_Rcmb=0.006)
+            args += ["--cmb", "--cmb-sim", "--sigma-Rcmb", "0.006"]
+        else:
+            root = tmp_path / "sndata" / "models" / "BAO"
+            root.mkdir(parents=True)
+            (root / "DESI_2024_mean.dat").write_text("0.5 13.0 DM_over_rd\n")
+            (root / "DESI_2024_cov.dat").write_text("0.04\n")
+            os.environ["SNDATA_ROOT"] = str(root.parent.parent)
+            settings.update(bao="DESI_2024", bao_sim="DESI_2024")
+            args += ["--bao", "DESI_2024", "--bao-sim", "DESI_2024"]
+        if truth_source == "explicit":
+            settings.update(om_sim=0.315, w0_sim=-1.0, wa_sim=0.0)
+            args += ["--om-sim", "0.315", "-w0_sim", "-1.0", "-wa_sim", "0.0"]
+        else:
+            truth_paths = []
+            for i in range(len(labels) if truth_source == "files" else 1):
+                path = tmp_path / f"truth{i}.yml"
+                path.write_text("MUSHIFT: 0.0\nOMEGA_MATTER: 0.315\n"
+                                "OMEGA_LAMBDA: 0.685\nw0_LAMBDA: -1.0\nwa_LAMBDA: 0.0\n")
+                truth_paths.append(str(path))
+            settings["truth_info"] = truth_paths if truth_source == "files" else truth_paths[0]
+            args += ["--truth-info", *truth_paths]
+        stage = Cosmology("cosmology", covariance=covariance, covopts=labels, overrides=settings)
+        stage_dir = tmp_path / "stage"
+        stage_dir.mkdir()
+        actual = stage.run({"covariance": held}, stage_dir)
 
-    # Run the real CLI entry point, including argument parsing and file loading.
-    inverse_files = {entry.split()[0]: entry.split()[2]
-                     for entry in info["COVOPTS"].values()}
-    hd = str(covariance_config.outdir / info["HD"])
-    cli_input = tmp_path / "cli_input.yaml"
-    cli_input.write_text(yaml.safe_dump({
-        "covariance_kind": "total_inverse",
-        "covariance": [str(covariance_config.outdir / inverse_files[label]) for label in labels],
-    }))
-    cli_yaml = tmp_path / "cli.yaml"
-    assert main([*([hd] * len(labels)), "--config", str(cli_input),
-                 *args, "-cospar_yaml", str(cli_yaml),
-                 "-outfile_cospar", str(tmp_path / "cli.cospar")]) == 0
-    expected = yaml.safe_load(cli_yaml.read_text())["realisations"]
-    for label, result in zip(labels, expected):
-        assert actual[label]["parameters"] == result["parameters"]
-        assert actual[label]["input"]["simulation_truth"] == result["input"]["simulation_truth"]
+        # Run the real CLI entry point, including argument parsing and file loading.
+        inverse_files = {entry.split()[0]: entry.split()[2]
+                         for entry in info["COVOPTS"].values()}
+        hd = str(covariance_config.outdir / info["HD"])
+        cli_input = tmp_path / "cli_input.yaml"
+        cli_input.write_text(yaml.safe_dump({
+            "covariance_kind": "total_inverse",
+            "covariance": [str(covariance_config.outdir / inverse_files[label]) for label in labels],
+        }))
+        cli_yaml = tmp_path / "cli.yaml"
+        assert main([*([hd] * len(labels)), "--config", str(cli_input),
+                     *args, "-cospar_yaml", str(cli_yaml),
+                     "-outfile_cospar", str(tmp_path / "cli.cospar")]) == 0
+        expected = yaml.safe_load(cli_yaml.read_text())["realisations"]
+        for label, result in zip(labels, expected):
+            assert actual[label]["parameters"] == result["parameters"]
+            assert actual[label]["input"]["simulation_truth"] == result["input"]["simulation_truth"]
+    finally:
+        if previous_root is None:
+            os.environ.pop("SNDATA_ROOT", None)
+        else:
+            os.environ["SNDATA_ROOT"] = previous_root
 
 
 @pytest.mark.parametrize("in_input_file", [False, True])

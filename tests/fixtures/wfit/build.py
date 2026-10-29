@@ -121,8 +121,8 @@ def run_wfit_hdibc(workdir: Path, flags: list) -> tuple:
 
 def distance_modulus(z, omega_m, w0):
     """Flat wCDM distance modulus at H0 = 70, by the same quadrature as jax."""
-    from jax_snlc_core.physics.constants import LIGHT_KM
-    from jax_snlc_core.physics.cosmology import distance_modulus as mu_of_z
+    from jax_snlc_core.cosmology import distance_modulus as mu_of_z
+    from jax_snlc_core.utils import LIGHT_KM
 
     z = np.asarray(z)                       # a synthetic diagram: zHEL = zHD
     return np.asarray(mu_of_z(

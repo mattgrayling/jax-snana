@@ -9,14 +9,14 @@ import logging
 import sys
 
 from jax_create_cov.config import CreateCovConfig
-from jax_create_cov.config_parser import build_config
-from jax_create_cov.inputs import read_yaml
-from jax_snlc_core.utils.input_settings import (settings_parser, dataclass_settings,
-    parsed_settings, merge_settings, add_settings)
-from jax_create_cov.run import create_covariance
-from jax_snlc_core.utils import SNANAError, snana_log as slog
-from jax_snlc_core.utils.error_handling import aborting
-from jax_snlc_core.utils.precision import configure_precision
+from jax_create_cov.config import build_config
+from jax_create_cov.config import read_yaml
+from jax_create_cov.covariance import create_covariance
+from jax_snlc_core import logging as log
+from jax_snlc_core.input_settings import (add_settings, dataclass_settings, merge_settings,
+                                          parsed_settings, settings_parser)
+from jax_snlc_core.logging import SNANAError, aborting
+from jax_snlc_core.utils import configure_precision
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def config_from_args(argv=None) -> CreateCovConfig:
         values['mode'] = 'rebin'
     elif args.unbinned:
         values.update(mode='unbinned', rebin_bins=None, nbin_x1=0, nbin_c=0)
-    named_values = parsed_settings(named, types, owners)
+    named_values = parsed_settings(named, types, readers={})
     config = build_config(read_yaml(args.config), merge_settings(values, named_values))
     for value, key, flag in ((config.input_dir, "INPUT_DIR", "-i"),
                              (config.version, "VERSION", "-v"),
@@ -93,14 +93,14 @@ def config_from_args(argv=None) -> CreateCovConfig:
 def main(argv=None) -> int:
     logging.basicConfig(format="%(message)s", level=logging.INFO,
                         stream=sys.stdout)
-    slog.startup(logger, "create_covariance",
-                 sys.argv if argv is None else ["create_covariance"] + argv)
+    log.startup(logger, "create_covariance",
+                     sys.argv if argv is None else ["create_covariance"] + argv)
     config = config_from_args(argv)
     configure_precision(config.double_precision)
     result = create_covariance(config)
     logger.info(f"wrote {len(result.covariances)} covariance matrices "
                 f"to {config.outdir}")
-    slog.done(logger, "create_covariance")
+    log.done(logger, "create_covariance")
     return 0
 
 

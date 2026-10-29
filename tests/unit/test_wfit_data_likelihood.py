@@ -5,15 +5,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_snlc_core.physics.cosmology import distance_modulus
-
-_HUBBLE_DISTANCE_MPC = LIGHT_KM / 70.0
-from jax_snlc_core.utils import SNANAError
+from jax_create_cov.covariance import write_covariance_text
+from jax_snlc_core.cosmology import distance_modulus
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_covariance_text
+from jax_snlc_core.utils import LIGHT_KM
 from jax_wfit.config import WFITConfig
-from jax_wfit.data import load_hubble_diagrams, stack_arrays
+from jax_wfit.hubble import load_hubble_diagrams, stack_arrays
 from jax_wfit.likelihood import evaluate_likelihood, hdibc_observed_mu
 from jax_wfit.priors import prepare_priors
+
+_HUBBLE_DISTANCE_MPC = LIGHT_KM / 70.0
 
 
 def _write_hd(path: Path) -> None:
@@ -521,20 +523,17 @@ def test_covariance_npz_without_nsn_is_refused(tmp_path):
     N=8 is one of the sizes where N(N+1)/2 is itself square, so the old
     sqrt-reshape succeeded and returned a 6x6 matrix built from 8x8 data.
     """
-    from jax_wfit.data import _load_matrix
+    from jax_snlc_core.snana_files import read_covariance
 
     path = tmp_path / "cov.npz"
     np.savez(path, cov=np.arange(36, dtype=np.float32))
     with pytest.raises(SNANAError, match="no 'nsn'"):
-        _load_matrix(str(path))
+        read_covariance(path)
 
 
 def test_labelled_covariance_text_roundtrips(tmp_path):
     """--label_cov_rows appends a comment to each value line; wfit reads the
     first token only (wfit.c:2011), so the file still loads."""
-    from jax_create_cov.output import write_covariance_text
-    from jax_snlc_core.io.cov_matrix import read_covariance_text
-
     matrix = np.array([[4.0, 1.0], [1.0, 3.0]])
     rows = (np.array(["1234", "5678"]), np.array([10, 10]),
             np.array([0.1, 0.2]))
@@ -551,7 +550,7 @@ def test_labelled_covariance_text_roundtrips(tmp_path):
 def test_supplied_covariance_matches_file(tmp_path, kind, zmin,
                                           initial_scatter, scatter):
     from dataclasses import replace
-    from jax_wfit.run import _cut_supplied_diagram
+    from jax_wfit.hubble import cut_supplied_diagram
 
     hd_path, cov_path = tmp_path / "HD.M0DIF", tmp_path / "HD.COV"
     _write_hd(hd_path)
@@ -564,7 +563,7 @@ def test_supplied_covariance_matches_file(tmp_path, kind, zmin,
     original = load_hubble_diagrams(config)[0]
     target = replace(config, zmin=zmin, snrms=scatter)
     expected = load_hubble_diagrams(target)[0]
-    supplied = _cut_supplied_diagram(target, original)
+    supplied = cut_supplied_diagram(target, original)
     np.testing.assert_array_equal(supplied.cid, expected.cid)
     np.testing.assert_array_equal(supplied.raw_indices, expected.raw_indices)
     np.testing.assert_allclose(supplied.precision, expected.precision, rtol=1e-6)
@@ -572,15 +571,15 @@ def test_supplied_covariance_matches_file(tmp_path, kind, zmin,
         np.testing.assert_allclose(supplied.covariance, expected.covariance, rtol=1e-6)
         np.testing.assert_allclose(supplied.precision @ supplied.covariance,
                                    np.eye(supplied.n_rows), atol=1e-6)
-    repeated = _cut_supplied_diagram(target, supplied)
+    repeated = cut_supplied_diagram(target, supplied)
     np.testing.assert_array_equal(repeated.precision, supplied.precision)
     np.testing.assert_array_equal(repeated.raw_indices, supplied.raw_indices)
 
 
 @pytest.mark.parametrize('column', ['zHD', 'MU', 'MUERR'])
 def test_file_and_supplied_diagrams_reject_nonfinite_values(tmp_path, column):
-    from jax_wfit.data import HubbleDiagram
-    from jax_wfit.run import _cut_supplied_diagram
+    from jax_wfit.hubble import HubbleDiagram
+    from jax_wfit.hubble import cut_supplied_diagram
     values = dict(zHD=.1, MU=38., MUERR=.1)
     values[column] = np.nan
     path = tmp_path / 'bad.txt'
@@ -593,29 +592,27 @@ def test_file_and_supplied_diagrams_reject_nonfinite_values(tmp_path, column):
     with pytest.raises(SNANAError, match='non-finite required'):
         load_hubble_diagrams(config)
     with pytest.raises(SNANAError, match='non-finite required'):
-        _cut_supplied_diagram(config, diagram)
+        cut_supplied_diagram(config, diagram)
 
 
 @pytest.mark.parametrize('kind', ['diagonal', 'total', 'systematics', 'total_inverse'])
-def test_unchanged_prepared_diagram_reuses_precision(kind, monkeypatch):
-    from jax_wfit.data import HubbleDiagram
-    from jax_wfit.run import _cut_supplied_diagram
+def test_unchanged_prepared_diagram_reuses_precision(kind):
+    """Unchanged inputs retain their prepared arrays and still reject invalid weights."""
+    from jax_wfit.hubble import HubbleDiagram
+    from jax_wfit.hubble import cut_supplied_diagram
     precision = np.ones(2) * 100 if kind == 'diagonal' else np.eye(2) * 100
     covariance = np.eye(2) * .01 if kind in ('total', 'systematics') else None
     diagram = HubbleDiagram(cid=np.array(['A', 'B']), redshift=np.array([.1, .2]),
         mu=np.array([38., 40.]), muerr=np.array([.1, .1]), precision=precision,
         covariance_kind=kind, covariance=covariance)
-    def unexpected(*args, **kwargs):
-        pytest.fail('An unchanged prepared diagram must not reconstruct its precision')
-    monkeypatch.setattr('jax_wfit.data._precision_from_covariance', unexpected)
-    assert _cut_supplied_diagram(WFITConfig(), diagram) is diagram
+    assert cut_supplied_diagram(WFITConfig(), diagram) is diagram
     precision.flat[0] = np.nan
     with pytest.raises(SNANAError, match='non-finite|finite'):
-        _cut_supplied_diagram(WFITConfig(), diagram)
+        cut_supplied_diagram(WFITConfig(), diagram)
 
 
 def test_covariance_identity_selection_reuses_storage():
-    from jax_wfit.data import selected_covariance
+    from jax_wfit.hubble import selected_covariance
     matrix = np.array([[2., .2], [.2, 3.]])
     assert selected_covariance(matrix, np.arange(2), 2) is matrix
     np.testing.assert_array_equal(selected_covariance(matrix, np.array([1, 0]), 2),
@@ -629,12 +626,23 @@ def test_covariance_identity_selection_reuses_storage():
 @pytest.mark.parametrize('precision', [np.array([[1., 2.], [2., 1.]]),
                                        np.ones((2, 2))])
 def test_prepared_diagram_rejects_indefinite_or_singular_precision(kind, precision):
-    from jax_wfit.data import HubbleDiagram
-    from jax_wfit.run import _cut_supplied_diagram
+    from jax_wfit.hubble import HubbleDiagram
+    from jax_wfit.hubble import cut_supplied_diagram
     diagram = HubbleDiagram(
         cid=np.array(['A', 'B']), redshift=np.array([.1, .2]),
         mu=np.array([38., 40.]), muerr=np.array([.1, .1]),
         precision=precision, covariance_kind=kind,
         covariance=np.eye(2) if kind != 'total_inverse' else None)
     with pytest.raises(SNANAError, match='positive definite'):
-        _cut_supplied_diagram(WFITConfig(), diagram)
+        cut_supplied_diagram(WFITConfig(), diagram)
+
+
+@pytest.mark.parametrize("value", ["", "   ", "invalid"])
+def test_invalid_data_flag_names_the_input(tmp_path, value):
+    """Malformed data flags raise a named input error rather than IndexError."""
+    path = tmp_path / "invalid_flag.M0DIF"
+    path.write_text(f"# ISDATA_REAL: {value}\n"
+                    "VARNAMES: CID zHD MU MUERR\nSN: A 0.1 38.0 0.1\n")
+    diagram = load_hubble_diagrams(WFITConfig(hubble_diagram=str(path)))[0]
+    with pytest.raises(SNANAError, match="ISDATA_REAL.*not an integer"):
+        _ = diagram.is_data_real

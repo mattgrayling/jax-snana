@@ -10,27 +10,28 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jax_snlc_core.io.fitres_reader import FitresTable, concat_tables, read_fitres_multi
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import standardised_model
-from jax_snlc_core.utils import group_equal
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.precision import require_precision
-from .config import (BBCConfig, MASK_BIASCOR_1DZAVG, MASK_BIASCOR_1DZWGT,
-                     MASK_BIASCOR_CELLMAP, ccprior_enabled, parval, resolve, resolve_blinding)
-from .tablevar import (EVENT_TYPE_DATA, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR,
-                       CUTBIT_DUPL, CUTBIT_IDSAMPLE, _convert_table, _conversion_key,
-                       _passthrough_column, isdata_real, output_varnames,
-                       select_tablevar, merge_duplicates, sample_coordinates, read_data_table,
-                       readonly_variables)
-from .samples import partition_idsamples, assign_to_samples
-from .biascor_build import BiasCorMaps, build_biascor_partitions, sample_counts
-from .biascor_apply import precompute_biascor
-from .biascor_1d import biascor_1d_grids, biascor_1d_data
-from .ccprior import build_ccprior
-from .fitter import pad_ccprior
+from jax_snlc_core.snana_files import FitresTable, concat_tables, read_fitres_multi
+from jax_snlc_core.utils import group_equal, require_precision
+
+from .biascor import (
+    biascor_1d_data, biascor_1d_grids, precompute_biascor, BiasCorMaps,
+    build_biascor_partitions, sample_counts
+)
+from .ccprior import build_ccprior, pad_ccprior
+from .config import (MASK_BIASCOR_1DZAVG, MASK_BIASCOR_1DZWGT, MASK_BIASCOR_CELLMAP, BBCConfig,
+                     ccprior_enabled, parval, resolve, output_path)
+from .blinding import resolve_blinding
 from .distances import bias_parameters
-from .output import output_path, write_passcuts_list
+from .tablevar import (
+    write_passcuts_list, CUTBIT_DUPL, CUTBIT_IDSAMPLE, EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR,
+    EVENT_TYPE_DATA, conversion_key, convert_table, passthrough_column, isdata_real,
+    merge_duplicates, output_varnames, read_data_table, readonly_variables, sample_coordinates,
+    select_tablevar
+)
+from .samples import assign_to_samples, partition_idsamples
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def preparation_step(name, keys):
         raise SNANAError(f"BBC {name} for cells {keys}: {message}",
                          function_name=name) from error
     logger.info("BBC shared preparation %s for cells %s", name, keys)
-    slog.kv(logger, "seconds", f"{name} {time.perf_counter() - started:.2f}")
+    log.kv(logger, "seconds", f"{name} {time.perf_counter() - started:.2f}")
 
 
 def read_cells(cells):
@@ -126,14 +127,14 @@ def prepare_biascor_maps(cells):
         for key in source_keys:
             config, tables, _ = cells[key]
             model = standardised_model(config.model_lcfit)
-            conversions[key] = (config.model_lcfit, _conversion_key(
+            conversions[key] = (config.model_lcfit, conversion_key(
                 EVENT_TYPE_BIASCOR, config, model, biascor=source,
                 ccprior=tables.get(EVENT_TYPE_CCPRIOR)))
         for conversion_keys in group_equal(conversions):
             config, tables, _ = cells[conversion_keys[0]]
             model = standardised_model(config.model_lcfit)
             with preparation_step("read_biascor", conversion_keys):
-                base = readonly_variables(_convert_table(
+                base = readonly_variables(convert_table(
                     source, EVENT_TYPE_BIASCOR, config, model, biascor=source,
                     ccprior=tables.get(EVENT_TYPE_CCPRIOR)))
             settings = {key: correction_config(cells[key][0]) for key in conversion_keys}
@@ -190,14 +191,14 @@ def prepare_ccpriors(cells, maps):
         for key in source_keys:
             config, tables, _ = cells[key]
             model = standardised_model(config.model_lcfit)
-            conversions[key] = (config.model_lcfit, _conversion_key(
+            conversions[key] = (config.model_lcfit, conversion_key(
                 EVENT_TYPE_CCPRIOR, config, model, biascor=tables.get(EVENT_TYPE_BIASCOR),
                 ccprior=source))
         for conversion_keys in group_equal(conversions):
             config, tables, _ = cells[conversion_keys[0]]
             model = standardised_model(config.model_lcfit)
             with preparation_step("read_ccprior", conversion_keys):
-                base = readonly_variables(_convert_table(
+                base = readonly_variables(convert_table(
                     source, EVENT_TYPE_CCPRIOR, config, model,
                     biascor=tables.get(EVENT_TYPE_BIASCOR), ccprior=source))
             requests = {key: (correction_config(cells[key][0]), id(maps[key]))
@@ -242,7 +243,7 @@ def prepare_data(cells, *, cosmology_widths=None):
     requests = {}
     for key, (config, tables, _) in cells.items():
         model = standardised_model(config.model_lcfit)
-        requests[key] = (id(tables[EVENT_TYPE_DATA]), config.model_lcfit, _conversion_key(
+        requests[key] = (id(tables[EVENT_TYPE_DATA]), config.model_lcfit, conversion_key(
             EVENT_TYPE_DATA, config, model, biascor=tables.get(EVENT_TYPE_BIASCOR),
             ccprior=tables.get(EVENT_TYPE_CCPRIOR)))
     result = {}
@@ -250,7 +251,7 @@ def prepare_data(cells, *, cosmology_widths=None):
         config, tables, text = cells[keys[0]]
         source = tables[EVENT_TYPE_DATA]
         with preparation_step("read_data", keys):
-            base = _convert_table(
+            base = convert_table(
                 source, EVENT_TYPE_DATA, config, standardised_model(config.model_lcfit),
                 biascor=tables.get(EVENT_TYPE_BIASCOR), ccprior=tables.get(EVENT_TYPE_CCPRIOR),
                 cosmology_width=(cosmology_widths[standardised_model(config.model_lcfit)]
@@ -277,7 +278,7 @@ def format_data(cells, data):
         source = tables[EVENT_TYPE_DATA]
         names = dict.fromkeys(name for key in keys for name in
                               output_varnames(source.varnames_by_file, cells[key][0]))
-        columns = {name: _passthrough_column(text if text is not None else source, name)
+        columns = {name: passthrough_column(text if text is not None else source, name)
                    for name in names}
         for values in columns.values():
             values.setflags(write=False)
@@ -305,7 +306,7 @@ def interpolate_corrections(cells, data, maps):
                 values = dict(mubias=mubias, valid=valid)
             else:
                 fval, nevt, ferr, scale, added, valid = precompute_biascor(
-                    tv, mapping, model, config.min_per_cell_biascor)
+                    tv, mapping, config.min_per_cell_biascor)
                 m0 = mapping.maps[0]
                 values = dict(fitparbias_nodes=fval, fitparbias_nevt=nevt,
                               fitparbias_err=ferr, mucovscale_nodes=scale, mucovadd_nodes=added,
@@ -353,8 +354,8 @@ def _force_dust_coefficients(biascor_tv, config, model) -> bool:
             value = parval(config, name)
             truth[sim_col] = np.full(biascor_tv.size, value, dtype=np.float32)
             forced.append(f"{sim_col} = {value:g} (p{model.nuisance_spec[name][3]})")
-    slog.warn(logger, "BBC", "Detected BS21 dust model for biasCor: every "
-              "event's " + ", ".join(forced))
+    log.warn(logger, "BBC", "Detected BS21 dust model for biasCor: every "
+             "event's " + ", ".join(forced))
     return True
 
 
@@ -365,8 +366,8 @@ def _report_biascor_duplicates(tv, model):
     key = np.stack([tv.zhd] + [np.asarray(tv.lcpar[n]) for n in names], axis=1)
     _, counts = np.unique(key, axis=0, return_counts=True)
     ndupl = int((counts > 1).sum())
-    slog.warn(logger, "BBC", f"check_duplicates_biascor: {ndupl} duplicate "
-                             f"(z, {', '.join(names)}) set(s) in the biasCor sample")
+    log.warn(logger, "BBC", f"check_duplicates_biascor: {ndupl} duplicate "
+             f"(z, {', '.join(names)}) set(s) in the biasCor sample")
 
 
 def correction_config(config):

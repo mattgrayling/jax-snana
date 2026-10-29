@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.wgtmap_reader import WgtMapData, read_wgtmap
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import MODEL_REGISTRY
-from jax_snlc_core.utils import SNANAError
-from jax_snlc_sim.hostlib.hostlib_selection import wgtmap_snvar_names
+from jax_snlc_core.snana_files import WgtMapData, read_wgtmap, read_wgtmap_varnames
+from jax_snlc_sim.hostlib.host_selection_weights import wgtmap_snvar_names
 from jax_snlc_sim.population import declared_population, population_spellings
 
 # what a SALT run declares: its population under each spelling, plus the
@@ -128,3 +128,30 @@ def test_duplicate_cell_aborts(tmp_path):
         "WGT: 9.0 2.0\n")
     with pytest.raises(SNANAError, match="appears"):
         read_wgtmap(str(path), SNVARS)
+
+
+@pytest.mark.parametrize('key', ['VARNAMES', 'VARNAMES_WGTMAP'])
+def test_varnames_reader_only_needs_header(tmp_path, key):
+    """Discover dimensions without parsing grid rows needed only by the full reader."""
+    path = tmp_path / 'header.WGTMAP'
+    path.write_text(f'{key}: LOGMASS x1 WGT SNMAGSHIFT # columns\n'
+                    'WGT: incomplete grid\n')
+    assert read_wgtmap_varnames(str(path)) == ['LOGMASS', 'x1']
+
+
+@pytest.mark.parametrize('header', ['', 'VARNAMES: LOGMASS', 'VARNAMES: WGT'])
+def test_both_readers_report_the_same_header_error(tmp_path, header):
+    """Both entry points use the same header rules and named errors."""
+    path = tmp_path / 'bad.WGTMAP'
+    path.write_text(header + '\n')
+    with pytest.raises(SNANAError) as names_error:
+        read_wgtmap_varnames(str(path))
+    with pytest.raises(SNANAError) as grid_error:
+        read_wgtmap(str(path), SNVARS)
+    assert str(names_error.value) == str(grid_error.value)
+
+
+def test_missing_wgtmap_raises_named_error(tmp_path):
+    """Header-only reads preserve the normal SNANA missing-file diagnostic."""
+    with pytest.raises(SNANAError, match='file not found'):
+        read_wgtmap_varnames(str(tmp_path / 'missing.WGTMAP'))

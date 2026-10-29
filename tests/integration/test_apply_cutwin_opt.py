@@ -14,6 +14,7 @@ import pytest
 
 
 from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_sim.output import save_snana_outputs
 
 
 def _patched_input(src: Path, dst: Path, *, opt: int, extra: str = "") -> Path:
@@ -168,7 +169,7 @@ def test_opt3_dump_rows_carry_snrmax(snana_fixture, tmp_path):
     inp = _patched_input(src, tmp_path / "opt3snr.input", opt=3)
     (simulation, resources, config, sim), results, sel, spectra_cache = _run(
         inp, n_sne=200, seed=4242)
-    sim_run.save_snana_outputs(sim, results, "O3", sel, spectra_cache=spectra_cache, output_dir=str(tmp_path))
+    save_snana_outputs(sim, results, "O3", sel, spectra_by_sn=spectra_cache, output_dir=str(tmp_path))
     lines = (tmp_path / "O3" / "O3.DUMP").read_text().splitlines()
     varnames = next(l.split()[1:] for l in lines if l.startswith("VARNAMES:"))
     rows = [l.split()[1:] for l in lines if l.startswith("SN:")]

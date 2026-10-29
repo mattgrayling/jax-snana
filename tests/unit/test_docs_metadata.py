@@ -1,36 +1,36 @@
 """Documentation metadata survives ordinary parser and declaration refactors."""
 
-import importlib.util
+import importlib
 import sys
 import textwrap
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("sphinx")
 
 
-def _load(name, path, monkeypatch):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
-    return module
+@pytest.fixture
+def extension():
+    from docs._ext import configtable
+    return configtable
 
 
 @pytest.fixture
-def extension(monkeypatch):
-    path = Path(__file__).resolve().parents[2] / "docs/_ext/configtable.py"
-    return _load("docs_metadata_extension", path, monkeypatch)
+def parser(tmp_path):
+    """Import a real Python source file through Python's normal module loader."""
+    module_name = 'metadata_parser_' + tmp_path.name
+    sys.path.insert(0, str(tmp_path))
 
-
-@pytest.fixture
-def parser(tmp_path, monkeypatch):
     def create(source):
-        path = tmp_path / "metadata_parser.py"
+        path = tmp_path / f'{module_name}.py'
         path.write_text(textwrap.dedent(source))
-        return _load("metadata_parser", path, monkeypatch)
-    return create
+        return importlib.import_module(module_name)
+
+    try:
+        yield create
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop(module_name, None)
 
 
 def test_comments_follow_python_syntax(extension):
@@ -96,7 +96,7 @@ def test_unsupported_metadata_is_reported(extension, parser):
         def parse(raw) -> Example:
             return _supplied(raw, make_spec(raw))
     ''')
-    with pytest.raises(ValueError, match=r"metadata_parser.parse:.*make_spec"):
+    with pytest.raises(ValueError, match=rf"{module.__name__}\.parse:.*make_spec"):
         extension._parser_keys(module.__name__, module.Example)
 
 
@@ -137,9 +137,9 @@ def test_explicit_filter_keys_are_not_repeated_as_aliases(extension):
 
 def test_bbc_documented_spellings_are_accepted(extension, tmp_path):
     from jax_salt2mu.config import BBCConfig
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
-    mapping = extension._parser_keys("jax_salt2mu.config_parser", BBCConfig)
+    mapping = extension._parser_keys("jax_salt2mu.config", BBCConfig)
     assert mapping["varname_pia"] == ["varname_pIa"]
     assert mapping["select_trueia"] == ["select_trueIa"]
     path = tmp_path / "bbc.input"

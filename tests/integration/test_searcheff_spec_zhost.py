@@ -16,8 +16,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim import run as sim_run
 
 
 def _patch_input(src: Path, dst: Path, replacements):

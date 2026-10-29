@@ -10,11 +10,18 @@ have no failure mode worth pinning.
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import chi2 as chi2_dist
 
-from jax_snlc_core.io.fits_path import open_text
-from jax_snlc_core.models import FittedModel, SNModel, SimulatedModel
-from jax_snlc_core.models.salt_model import compute_expected_x0_scale
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models import FittedModel, SimulatedModel, SNModel
+from jax_snlc_core.models.bayesn import BayeSNModel
+from jax_snlc_core.models.roles import PKMJD_PRIOR_FLARE, PKMJD_PRIOR_GRID
+from jax_snlc_core.models.salt import (ERRMAP_VALID_ERRSCALE, ERRMAP_VALID_VARIANCE,
+                                       SALTModel, _check_errmap_values,
+                                       compute_expected_x0_scale)
+from jax_snlc_core.models.sed_model import uvlam_extrapflux_sedmodel
+from jax_snlc_core.snana_files import open_text, read_two_column_file
+from jax_snlc_fit.parameters import FORMS
 
 
 class TinyModel(SNModel, SimulatedModel, FittedModel):
@@ -51,9 +58,6 @@ def test_t0_prior_is_gaussian_then_flares_then_saturates():
     """Gaussian on t0 with sigma=20d, blowing up beyond ±28d, and stopping
     once the offset leaves the ±30d grid — SNANA tabulates the prior over that
     range and CHI2_PRIOR clamps into its ends, so the flare cannot run away."""
-    from jax_snlc_fit.priors import FORMS
-    from jax_snlc_core.models.fitted import (PKMJD_PRIOR_FLARE,
-                                             PKMJD_PRIOR_GRID)
 
     def chi2(dt):
         return float(FORMS['gauss_flare'](jnp.array(dt), {
@@ -101,7 +105,6 @@ def test_snana_output_identity_defaults():
 
 def test_compute_fitprob_chi2_survival():
     """FITPROB is the survival probability of the data chi-square at NDOF."""
-    from scipy.stats import chi2 as chi2_dist
     m = TinyModel()
     for chi2, ndof in ((5.0, 4), (12.0, 7)):
         fp = float(m.compute_fitprob(chi_squared=np.array([chi2]),
@@ -113,7 +116,6 @@ def test_flat_prior_chi2_shape():
     """PRIOR_<p>_RANGE/_SIGMA: flat inside the range, rolling off outside as the
     fourth power of the offset in sigma -- SNANA forms (dif/sigma)**2 and stores
     its square (FITINI_FLATPRIOR, snlc_fit.F90:12062)."""
-    from jax_snlc_fit.priors import FORMS
 
     def chi2(value):
         return float(FORMS['flat_rolloff'](jnp.array(value),
@@ -180,7 +182,6 @@ def test_a_cut_grid_leaves_the_reported_support_alone(data_root):
     """`get_wavelength_range` is the support the grid was cut from, whatever
     the caller cut it to; SALT once reported the grid, which coincided with
     the support only while nothing cut it."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     whole = SALTModel.load(str(data_root / "models" / "SALT3.K21"), {})
     cut = SALTModel.load(str(data_root / "models" / "SALT3.K21"), {},
@@ -201,8 +202,6 @@ def test_absolute_and_relative_brightness_agree(data_root):
     error inside _amplitude_at_distance moves both sides equally and passes
     here; SNANA parity is what guards that.
     """
-    from jax_snlc_core.models.salt_model import SALTModel
-    from jax_snlc_core.models.bayesn_model import BayeSNModel
 
     salt = SALTModel.load(str(data_root / "models" / "SALT3.K21"), {})
     bayesn = BayeSNModel.load(str(data_root / "models" / "BAYESN.W22"), {})
@@ -260,11 +259,24 @@ def _uv_surface():
     bin 2 (2020 A). Surface B (M1-like) is negative out to bin 5 and first
     exceeds 1e-12 at bin 6 (2060 A), so its anchor sits redward of A's.
     """
-    from jax_snlc_core.models.base import uvlam_extrapflux_sedmodel
     waves = 2000.0 + 10.0 * np.arange(10)
     surf_a = np.array([[0.0, 0.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]])
     surf_b = np.array([[-1.0, -1.0, -0.5, -0.2, 0.0, 1e-13, 2.0, 3.0, 4.0, 5.0]])
     return uvlam_extrapflux_sedmodel, waves, surf_a, surf_b
+
+
+def test_uvlam_extrapflux_of_zero_or_below_is_off(data_root):
+    """SNANA extends the SED only for UVLAM_EXTRAPFLUX > 0
+    (genmag_SALT2.c:321), so 0 and the -9 its inputs write for off leave
+    SALT's surfaces on their native grid, as an unset key does."""
+    path = str(data_root / "models" / "SALT3.K21")
+    unset = SALTModel.load(path, {})
+    extended = SALTModel.load(path, {'UVLAM_EXTRAPFLUX': 1000.0})
+    assert float(extended.wavelengths[0]) < float(unset.wavelengths[0])
+    for value in (0.0, -9.0):
+        model = SALTModel.load(path, {'UVLAM_EXTRAPFLUX': value})
+        assert model.uvlam_extrapflux is None
+        np.testing.assert_array_equal(model.wavelengths, unset.wavelengths)
 
 
 def test_uvlam_extrap_surfaces_anchor_independently():
@@ -320,14 +332,13 @@ def test_uvlam_extrap_no_anchor_day_ramps_from_bin_zero():
     assert np.all(new_flat[0, :n_add] <= 1e-13)
 
 
-def test_uvlam_extrap_inactive_inputs_unchanged():
-    """uvlam < 0 and uvlam > waves[0] leave the surface untouched
-    (genmag_SEDtools.c:3244-3245)."""
+def test_uvlam_extrap_above_the_grid_leaves_the_surface():
+    """A UVLAM redward of the grid's blue edge leaves the surface untouched
+    (genmag_SEDtools.c:3245)."""
     fn, waves, surf_a, _ = _uv_surface()
-    for uvlam in (-9.0, 2005.0):
-        w, f = fn(uvlam, waves, surf_a)
-        np.testing.assert_array_equal(w, waves)
-        np.testing.assert_array_equal(f, surf_a)
+    w, f = fn(2005.0, waves, surf_a)
+    np.testing.assert_array_equal(w, waves)
+    np.testing.assert_array_equal(f, surf_a)
 
 
 def test_extrap_phase_method_defaults_to_sedflux():
@@ -340,7 +351,6 @@ def test_salt_colour_law_comes_from_the_info_file(data_root, tmp_path):
     """SNANA reads the colour law from SALT?.INFO alone, under either spelling
     of the key (genmag_SALT2.c:1253); the color_correction file is not read.
     SALT2.P18_UV2IR is the installed model whose two sources disagree."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     info = (src / "SALT3.INFO").read_text()
@@ -402,7 +412,6 @@ def test_salt_errmap_kcor_opt_0_leaves_out_the_colour_dispersion(data_root,
     """ERRMAP_KCOR_OPT: 0 in SALT?.INFO leaves the colour dispersion unread
     (read_SALT2colorDisp, genmag_SALT2.c:1047-1050), so it is in no error
     and the fit has no off-diagonal covariance."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     default = SALTModel.load(str(src), {})
@@ -417,7 +426,6 @@ def test_salt_errmap_bad_values_abort_unless_switched_off(data_root, tmp_path):
     """A variance value outside [-10, 500] more than 9 days inside the map's
     phase range aborts (check_BADVAL_SALT2errmap, genmag_SALT2.c:1602-1760)
     unless ERRMAP_BADVAL_ABORT: 0; at the phase edge it is not judged."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     with open_text(src / "salt3_lc_variance_0.dat") as stream:
@@ -442,8 +450,6 @@ def test_salt_errmap_bad_values_abort_unless_switched_off(data_root, tmp_path):
 def test_salt_errmap_single_phase_map_is_always_judged():
     """A map with one phase is judged whatever its phase, with no day-edge
     window (check_BADVAL_SALT2errmap, genmag_SALT2.c:1733-1735)."""
-    from jax_snlc_core.models.salt_model import (
-        ERRMAP_VALID_ERRSCALE, ERRMAP_VALID_VARIANCE, _check_errmap_values)
 
     phases = np.arange(-20.0, 51.0)
     variance = ("VAR0", "var.dat", phases, np.zeros((phases.size, 2)),
@@ -455,22 +461,31 @@ def test_salt_errmap_single_phase_map_is_always_judged():
 
 
 @pytest.mark.parametrize("line", ["5000.0\n", "5000.0 high\n"])
-def test_salt_colour_dispersion_line_without_two_numbers_aborts(tmp_path,
-                                                                line):
-    """A colour-dispersion data line must hold two numbers; rd2columnFile has
-    no defined reading of one that does not (sntools.c:7280-7312)."""
-    from jax_snlc_core.models.salt_model import _parse_color_dispersion_file
-
+def test_two_column_line_without_two_numbers_aborts(tmp_path, line):
+    """A two-column data line must hold two numbers; rd2columnFile has no
+    defined reading of one that does not (sntools.c:7280-7312)."""
     p = tmp_path / "salt3_color_dispersion.dat"
     p.write_text("# lam disp\n2000.0 0.1\n" + line)
     with pytest.raises(SNANAError, match="is not two numbers"):
-        _parse_color_dispersion_file(p)
+        read_two_column_file(p)
+
+
+def test_two_column_skips_what_rd2columnfile_skips(tmp_path):
+    """rd2columnFile skips a line of two characters or fewer, a line opening
+    with any of SNANA's comment characters (commentchar, sntools.c:7341)
+    and the DOCUMENTATION block (sntools.c:7280-7302)."""
+    p = tmp_path / "table.dat"
+    p.write_text("DOCUMENTATION:\n  note: x y\nDOCUMENTATION_END:\n"
+                 "! comment\n# 9.0 9.0\n% 9.0 9.0\n@ 9.0 9.0\n7\n\n"
+                 "0.1 2.0 extra\n0.2 3.0\n")
+    x, y = read_two_column_file(p)
+    np.testing.assert_array_equal(x, [0.1, 0.2])
+    np.testing.assert_array_equal(y, [2.0, 3.0])
 
 
 def test_salt_errmap_nan_is_read_as_zero(data_root, tmp_path):
     """rd_sedFlux reads a NaN value as zero (sntools.c:8520), so a NaN in an
     error map never reaches the bad-value check."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     with open_text(src / "salt3_lc_variance_0.dat") as stream:
@@ -487,7 +502,6 @@ def test_salt_error_maps_are_required(data_root, tmp_path):
     """Every SALT error map is required, as rd_sedFlux and rd2columnFile
     abort on a missing file; a colour dispersion that is empty or all zero
     aborts too (genmag_SALT2.c:1072-1085)."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     with pytest.raises(SNANAError, match="salt3_lc_covariance_01.dat"):
@@ -503,7 +517,6 @@ def test_salt_colour_dispersion_nan_aborts_and_third_surface_refused(
     """rd2columnFile keeps a NaN, which the bad-value check then counts
     (genmag_SALT2.c:1716-1727); a template_2 surface, which SNANA would read
     as x2*M2 (NSURFACE_SALT2), is refused."""
-    from jax_snlc_core.models.salt_model import SALTModel
 
     src = data_root / "models" / "SALT3.K21"
     with open_text(src / "salt3_color_dispersion.dat") as stream:

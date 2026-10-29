@@ -15,13 +15,13 @@ import pytest
 
 from jax_create_cov import apply_filter, load_config, parse_covopt
 from jax_create_cov.covariance import covsys_from_covfile
-from jax_create_cov.hubble import hubble_diagram_from
-from jax_create_cov.run import build_covariance
-from jax_snlc_core.utils import SNANAError
+from jax_create_cov.covariance import hubble_diagram_from
+from jax_create_cov.covariance import build_covariance
+from jax_snlc_core.logging import SNANAError
 
 
 def test_binned_covariance_row_order():
-    base = pd.DataFrame({"zHD": [.1, .2], "MU": [38., 40.],
+    base = pd.DataFrame({"ROW": [1, 2], "zHD": [.1, .2], "MU": [38., 40.],
                          "MUREF": [38., 40.], "MUERR": [.1, .1]})
     variant = base.iloc[::-1].reset_index(drop=True).copy()
     variant["MU"] += [.2, .1]
@@ -54,14 +54,13 @@ def test_covopt_scale_is_squared_in_covariance(tmp_path):
     this test checked `.scale == 1.2` and passed for months while the square was
     never applied anywhere.
     """
-    import pandas as pd
 
     from jax_create_cov.covariance import Contribution, covsys_from_covopt
 
     assert parse_covopt("[SCAT] [=DEFAULT,+SCAT,1.2]").scale == pytest.approx(1.2)
 
     base = pd.DataFrame({"MU": [38.0, 39.0], "MUREF": [38.0, 39.0]})
-    contribs = {"DEFAULT|SCAT": Contribution(diff=np.array([0.1, 0.2]))}
+    contribs = [Contribution("DEFAULT", "SCAT", diff=np.array([0.1, 0.2]))]
     plain = covsys_from_covopt(parse_covopt("[S] [,+SCAT]"), contribs, base)
     scaled = covsys_from_covopt(parse_covopt("[S] [,+SCAT,1.2]"), contribs, base)
 
@@ -101,7 +100,7 @@ def test_filter_matching_is_case_insensitive():
 def test_a_grid_without_a_cosmology_aborts():
     """SNANA substitutes FlatLambdaCDM(H0=70, Om0=0.315) here (:982); bin
     redshifts come from inverting this grid, so jax asks for the cosmology."""
-    from jax_create_cov.hubble import reference_grid
+    from jax_create_cov.covariance import reference_grid
 
     with pytest.raises(SNANAError, match="set COSMOLOGY"):
         reference_grid(None)
@@ -111,7 +110,7 @@ def test_the_recorded_cosmology_and_the_input_must_agree():
     """BBC records the biasCor simulation's cosmology; COSMOLOGY stands in
     for an output without it, and may restate it but not contradict it."""
     from jax_create_cov.config import Cosmology
-    from jax_create_cov.inputs import reference_cosmology
+    from jax_create_cov.covariance import reference_cosmology
 
     header = {"SIM_OMEGA_MATTER(BIASCOR)": "0.2812",
               "SIM_OMEGA_LAMBDA(BIASCOR)": "0.7188",
@@ -153,7 +152,6 @@ def test_extra_covs_weight_scales_the_covariance(tmp_path):
     Deliberately not a parity test: applying it is the divergence, so SNANA and
     jax disagree for any weight other than 1.
     """
-    import pandas as pd
 
     from jax_create_cov.covariance import contributions
 
@@ -168,7 +166,7 @@ def test_extra_covs_weight_scales_the_covariance(tmp_path):
     def diagonal(weight):
         result = contributions({}, scales, scales,
                                [("VPEC_EXTRA", weight, str(cov_file))], base)
-        return np.diagonal(result["DEFAULT|VPEC_EXTRA"].matrix())
+        return np.diagonal(result[0].matrix())
 
     np.testing.assert_allclose(diagonal(1.0), [4.0e-04, 4.0e-04])
     np.testing.assert_allclose(diagonal(2.0), [1.6e-03, 1.6e-03])
@@ -330,19 +328,26 @@ def test_conditioning_check_is_skipped_above_the_size_guard():
     assert cov_invert(cov, muerr, mxsize_test_posdef=n - 1).shape == (n, n)
 
 
-def test_environment_variables_in_paths_are_expanded(tmp_path, monkeypatch):
+def test_environment_variables_in_paths_are_expanded(tmp_path):
     """SNANA expandvars INPUT_DIR, OUTDIR and SYS_SCALE_FILE; real configs are
     written in terms of $PIPPIN_OUTPUT, $DES_ROOT and the like."""
-    monkeypatch.setenv("CREATE_COV_TEST_ROOT", str(tmp_path))
     (tmp_path / "grid").mkdir()
     config = tmp_path / "input.yml"
     config.write_text("INPUT_DIR: $CREATE_COV_TEST_ROOT/grid\nVERSION: V\n"
                       "OUTDIR: $CREATE_COV_TEST_ROOT/out\n")
 
-    parsed = load_config(config)
-    assert parsed.input_dir == tmp_path / "grid"
-    assert parsed.outdir == tmp_path / "out"
-    assert "$" not in str(parsed.data_dir)
+    previous = os.environ.get("CREATE_COV_TEST_ROOT")
+    os.environ["CREATE_COV_TEST_ROOT"] = str(tmp_path)
+    try:
+        parsed = load_config(config)
+        assert parsed.input_dir == tmp_path / "grid"
+        assert parsed.outdir == tmp_path / "out"
+        assert "$" not in str(parsed.data_dir)
+    finally:
+        if previous is None:
+            del os.environ["CREATE_COV_TEST_ROOT"]
+        else:
+            os.environ["CREATE_COV_TEST_ROOT"] = previous
 
 
 def test_a_row_without_a_finite_error_names_its_bin():
@@ -350,15 +355,13 @@ def test_a_row_without_a_finite_error_names_its_bin():
     SALT2mu.c:501), read as NaN, and one too thin to fit leaves NaN; the
     inversion cannot take either, so the abort names the bins rather than
     letting numpy fail on the matrix."""
-    import pandas as pd
 
     from jax_create_cov.covariance import require_finite_errors
-    from jax_create_cov.hubble import hubble_diagram_from
 
     diagram = hubble_diagram_from(pd.DataFrame({
         "zHD": [0.05, 0.15, 0.25, 0.35], "MUREF": [36.0, 39.0, 40.0, 41.0],
         "MUDIF": [0.0, 0.0, 0.0, 0.0], "MUDIFERR": [0.1, 999.0, np.nan, 0.1],
-        "NFIT": [40, 0, 3, 50]}), "binned")
+        "NFIT": [40, 0, 3, 50], "ROW": [1, 2, 3, 4]}), "binned")
     with pytest.raises(SNANAError, match=r"2 of 4 .* zHD=0.1500 \(NFIT=0\), "
                                           r"zHD=0.2500 \(NFIT=3\)"):
         require_finite_errors(diagram)
@@ -402,10 +405,10 @@ def test_well_behaved_covariance_warns_about_nothing(caplog):
 def test_zero_covariance_warns_only_for_an_active_systematic(selection, warn, caplog):
     from jax_create_cov.covariance import Contribution, covsys_from_covopt
 
-    contributions = {
-        "DEFAULT|DEFAULT": Contribution(np.zeros(2)),
-        "CAL|DEFAULT": Contribution(np.zeros(2)),
-    }
+    contributions = [
+        Contribution("DEFAULT", "DEFAULT", np.zeros(2)),
+        Contribution("CAL", "DEFAULT", np.zeros(2)),
+    ]
     cov = covsys_from_covopt(parse_covopt(selection), contributions, pd.DataFrame())
     assert not np.any(cov)
     assert ("every element" in caplog.text) == warn
@@ -447,3 +450,92 @@ def test_reference_distances_follow_radiation_setting(settings):
             + omega_r * (1 + x)**4), 0, z[i], epsabs=1e-12)[0]
         expected = 25 + 5 * np.log10((299792.458 / 70) * (1 + z[i]) * integral)
         np.testing.assert_allclose(mu[i], expected, rtol=0, atol=1e-10)
+
+
+@pytest.mark.parametrize('axis', ['FITOPT', 'MUOPT'])
+@pytest.mark.parametrize('factorized', [False, True])
+def test_shared_systematic_labels_keep_last_contribution(axis, factorized):
+    """SNANA overwrites earlier contributions with the same FITOPT|MUOPT label."""
+    base = pd.DataFrame({'ROW': [1, 2], 'zHD': [.1, .2], 'MU': [38., 40.],
+                         'MUREF': [38., 40.], 'MUERR': [.1, .1]})
+    diagrams = {}
+    for number, shift in enumerate([0., .1, .2]):
+        name = (f'FITOPT{number:03d}_MUOPT000' if axis == 'FITOPT'
+                else f'FITOPT000_MUOPT{number:03d}')
+        diagrams[name] = hubble_diagram_from(base.assign(MU=base.MU + shift), 'binned')
+    reference = {0: ('DEFAULT', 1.)}
+    variants = {**reference, 1: ('CAL', 1.), 2: ('CAL', 1.)}
+    selection = '[CAL] [=CAL,]' if axis == 'FITOPT' else '[CAL] [,=CAL]'
+    result = build_covariance(
+        diagrams, variants if axis == 'FITOPT' else reference,
+        variants if axis == 'MUOPT' else reference,
+        [parse_covopt(selection), parse_covopt('[STAT] [=DEFAULT,=DEFAULT]')],
+        factorized=factorized)
+    for label in ['ALL', 'CAL', 'STAT']:
+        covariance = result.covariances[label]
+        matrix = (covariance['U'] @ covariance['U'].T if factorized
+                  else covariance['matrix'])
+        np.testing.assert_allclose(matrix, 0. if label == 'STAT' else .04, atol=1e-14)
+
+
+@pytest.mark.parametrize('factorized', [False, True])
+def test_external_covariances_with_shared_labels_replace_previous(tmp_path, factorized):
+    """The last external matrix replaces earlier matrices and a same-labelled MUOPT."""
+    path = tmp_path / 'extra.dat'
+    path.write_text('CID1 IDSURVEY1 CID2 IDSURVEY2 MU_COV\n1 10 1 10 .03\n')
+    base = pd.DataFrame({'CID': ['1'], 'IDSURVEY': [10], 'zHD': [.1],
+                         'MU': [38.], 'MUREF': [38.], 'MUERR': [.1]})
+    result = build_covariance(
+        {'FITOPT000_MUOPT000': base, 'FITOPT000_MUOPT001': base.assign(MU=38.1)},
+        {0: ('DEFAULT', 1.)}, {0: ('DEFAULT', 1.), 1: ('CAL', 1.)},
+        [parse_covopt('[CAL] [,=CAL]')], factorized=factorized,
+        extra_covs=[('CAL', 1., str(path)), ('CAL', 2., str(path))])
+    for label in ['ALL', 'CAL']:
+        np.testing.assert_allclose(result.covariances[label]['matrix'], [[.12]])
+
+
+@pytest.mark.parametrize('source', ['FITOPT', 'MUOPT', 'EXTRA_COVS'])
+def test_default_label_replaces_reference_contribution(tmp_path, source):
+    """DEFAULT is an ordinary label; a later contribution overwrites its reference."""
+    from jax_create_cov.covariance import contributions
+
+    base = pd.DataFrame({'CID': ['1'], 'IDSURVEY': [10], 'MU': [38.], 'MUREF': [38.]})
+    diagrams = {'FITOPT000_MUOPT000': base}
+    reference = {0: ('DEFAULT', 1.)}
+    fitopts, muopts, extra = dict(reference), dict(reference), []
+    if source == 'FITOPT':
+        diagrams['FITOPT001_MUOPT000'] = base.assign(MU=38.2)
+        fitopts[1] = ('DEFAULT', 1.)
+    elif source == 'MUOPT':
+        diagrams['FITOPT000_MUOPT001'] = base.assign(MU=38.2)
+        muopts[1] = ('DEFAULT', 1.)
+    else:
+        path = tmp_path / 'extra.dat'
+        path.write_text('CID1 IDSURVEY1 CID2 IDSURVEY2 MU_COV\n1 10 1 10 .04\n')
+        extra = [('DEFAULT', 1., str(path))]
+    result = contributions(diagrams, fitopts, muopts, extra, base=base)
+    assert len(result) == 1
+    np.testing.assert_allclose(result[0].matrix(), [[.04]])
+
+
+@pytest.mark.parametrize("rows", [[1, 3], [2, 1]])
+@pytest.mark.parametrize("factorized", [False, True])
+def test_binned_covariance_rejects_mismatched_bin_labels(rows, factorized):
+    """Equal row counts cannot make different redshift bins comparable."""
+    from jax_create_cov import compute_covariance
+
+    base = pd.DataFrame({"ROW": [1, 2], "zHD": [.1, .2], "MU": [38., 40.],
+                         "MUREF": [38., 40.], "MUERR": [.1, .1]})
+    variant = base.assign(ROW=rows, MU=[38.01, 40.5])
+    with pytest.raises(SNANAError, match="different ROW bin labels"):
+        compute_covariance(
+            diagrams={"FITOPT000_MUOPT000": base, "FITOPT001_MUOPT000": variant},
+            fitopt_scales={0: ("DEFAULT", 1.), 1: ("CAL", 1.)},
+            muopt_scales={0: ("DEFAULT", 1.)}, write_mask_cov=8 if factorized else 1)
+
+
+def test_binned_diagram_requires_row_labels():
+    """Missing bin identities must not be replaced by positional labels."""
+    diagram = pd.DataFrame({"zHD": [.1], "MU": [38.], "MUERR": [.1]})
+    with pytest.raises(SNANAError, match="ROW"):
+        hubble_diagram_from(diagram, "binned")

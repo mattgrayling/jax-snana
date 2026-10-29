@@ -14,10 +14,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_salt2mu import fitter
 from jax_salt2mu.config import BBCConfig
 from jax_salt2mu.fitter import FitSpec, run_fit
 from jax_salt2mu.likelihood import LikelihoodInputs
-from jax_salt2mu import fitter
 from jax_salt2mu.run import run_bbc_fit, run_bbc_grid
 from jax_snlc_core.models import SALTModel
 
@@ -73,8 +73,8 @@ def test_joint_mode_recovers_truth(tmp_path):
     assert res.sigint == pytest.approx(_SIGINT, abs=0.02)
     np.testing.assert_allclose(res.m0, m0_true, atol=0.02)
     from jax_salt2mu.output import write_chi2grid, write_yaml
-    from jax_salt2mu.results import YamlSummary
-    from jax_snlc_core.io.fitres_reader import read_fitres
+    from jax_salt2mu.output import YamlSummary
+    from jax_snlc_core.snana_files import read_fitres
     import yaml
 
     fitted = jnp.array([res.nuisance[n] for n in spec.floated]
@@ -198,7 +198,7 @@ def test_prior_inputs_reuse_compilation(prior):
     import jax
 
     from jax_salt2mu.fitter import padded
-    from jax_salt2mu.run import prepare_cell
+    from _bbc_helpers import prepare_cell
 
     cfg = _des_cfg("snana_secant")
     cfg.datafile = [f"{_DES}/CONTAM_DATA.FITRES"]
@@ -251,29 +251,21 @@ def test_prior_inputs_reuse_compilation(prior):
 @pytest.mark.parametrize("mode, stop", [("joint", False),
                                         ("snana_secant", True),
                                         ("snana_secant", False)])
-def test_final_variance_reference(mode, stop, monkeypatch):
-    from jax_salt2mu.run import prepare_cell
+def test_final_variance_reference(mode, stop):
+    """Stored variance references reproduce the fitted likelihood and final errors."""
+    from _bbc_helpers import prepare_cell
 
     cell = prepare_cell(_des_cfg(mode))
     inputs = cell.inputs
     initial = np.array(inputs.muerrsq_last)
-    references = []
-    fit = fitter._timed_fit
-
-    def record_fit(timings, *args):
-        references.append(np.array(args[-1]))
-        return fit(timings, *args)
-
-    monkeypatch.setattr(fitter, "_timed_fit", record_fit)
     n = len(inputs.z)
     result = run_fit(cell.spec, inputs, cell.model.m0_reference, n + 13,
                      sigint_init=cell.config.sigint, stop_covfix=stop,
                      dchi2red_dsigint=cell.config.dchi2red_dsigint,
                      redchi2_tol=cell.config.redchi2_tol)
     np.testing.assert_array_equal(inputs.muerrsq_last, initial)
-    np.testing.assert_array_equal(result.muerrsq_last, references[-1][:n])
-    assert len(references) == result.niter
     if mode == "joint" or stop:
+        np.testing.assert_array_equal(result.muerrsq_last, initial)
         assert result.niter == 1
     else:
         assert result.niter > 1
@@ -282,11 +274,15 @@ def test_final_variance_reference(mode, stop, monkeypatch):
                   + list(result.m0))
     final = fitter._muerrsq(cell.spec, p, inputs, result.sigint)
     np.testing.assert_allclose(result.muerrsq_final, final, rtol=1e-12)
+    fitted = jnp.concatenate((p, jnp.array([result.sigint]))) if mode == "joint" else p
+    objective = cell.spec.closed(inputs, result.sigint, result.muerrsq_last)(fitted)
+    assert result.chi2 == pytest.approx(float(objective), rel=1e-10)
 
 
 def test_cc_padding_preserves_likelihood_derivatives_and_reuses_compilation():
-    from jax_salt2mu.fitter import _fit_derivatives, padded, pad_ccprior
-    from jax_salt2mu.run import prepare_cell
+    from jax_salt2mu.fitter import _fit_derivatives, padded
+    from jax_salt2mu.ccprior import pad_ccprior
+    from _bbc_helpers import prepare_cell
 
     cfg = _des_cfg('snana_secant')
     cfg.datafile = [f'{_DES}/CONTAM_DATA.FITRES']

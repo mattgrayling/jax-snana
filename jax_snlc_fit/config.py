@@ -1,4 +1,6 @@
-"""The fitter's typed configuration: six records under one aggregate.
+"""The fitter's typed configuration: six records under one aggregate, and
+two (`EarlyLC`, `RequireEpochs`) that check the selection's EARLYLC_STRING
+and REQUIRE_EPOCHS settings.
 
 Public fields declare the settings accepted by Python, YAML and the CLI.
 Private fields hold parser or runtime bookkeeping. Defaults live on the
@@ -12,12 +14,10 @@ so a configuration can be copied and reused with different settings.
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import numpy as np
-
-from jax_snlc_core.photometry.filter_system import filter_values
-from jax_snlc_core.physics.cosmology import reference_distance_modulus
-from jax_snlc_core.utils.input_settings import mapping_tokens
-from .priors import read_prior_tokens
+from jax_snlc_core.cosmology import reference_distance_modulus
+from jax_snlc_core.peak_time import (OPTMASK_SETPKMJD_BAZIN, OPTMASK_SETPKMJD_FLUXMAX,
+                                     OPTMASK_SETPKMJD_FLUXMAX2, OPTMASK_SETPKMJD_FLUXMAX3,
+                                     OPTMASK_SETPKMJD_TRIGGER)
 
 # SNANA FUDGE_FITERR window defaults (snlc_fit.F90:7072-7084)
 FUDGE_FITERR_MAXITER_DEFAULT = 9
@@ -26,15 +26,6 @@ FUDGE_FITERR_RESTLAM_DEFAULT = (1000.0, 1000.0, 90000.0, 90000.0)
 
 # PRIOR_ZERRSCALE's unset value (snlc_fit.F90:7003)
 PRIOR_ZERRSCALE_UNSET = 1000.01
-# the fit's starting distance where the redshift is undefined
-# (snlc_fit.F90:8156), and the redshift below which it is (snana.F90:17241)
-MU_START_NO_REDSHIFT = 35.5555
-Z_MIN_DLMAG = 1.0e-5
-
-
-def read_cut_window_tokens(tokens):
-    """Read a CLI cut window using the same quantity names as SNANA inputs."""
-    return {str(name).lower(): value for name, value in mapping_tokens(tokens).items()}
 
 
 @dataclass
@@ -227,9 +218,9 @@ class Data:
     #: uncertainty.
     mwebv_shift: float = 0.0
     #: SNANA MWEBV_FORCE; give every event this E(B-V), ignoring the header and
-    #: the map. It is applied only when above -0.01, so the default leaves it
-    #: off.
-    mwebv_force: float = -9.0
+    #: the map. None, the default, leaves it off; a namelist value turns it on
+    #: only above -0.001, as SNANA applies it (snana.F90:17209).
+    mwebv_force: Optional[float] = None
 
     # Input redshifts
     #: SNANA REDSHIFT_FINAL_SHIFT; additive shift applied after selecting
@@ -289,27 +280,37 @@ class Data:
     #: CUTWIN_PEAKMJD is widened by 20 days on either side.
     peakmjd_sanity: Tuple[float, float] = (0.0, 1.0e6)
 
-    # OPT_SETPKMJD bits (snana.F90:2122-2130)
     def has_setpkmjd_bazin(self) -> bool:
-        return bool(self.opt_setpkmjd & 1)
+        return bool(self.opt_setpkmjd & OPTMASK_SETPKMJD_BAZIN)
 
     def has_setpkmjd_fmax_clump(self) -> bool:
         # FLUXMAX2 or FLUXMAX3, the latter only weighting by log10(SNR)
-        return bool(self.opt_setpkmjd & (16 | 32))
+        return bool(self.opt_setpkmjd & (OPTMASK_SETPKMJD_FLUXMAX2 | OPTMASK_SETPKMJD_FLUXMAX3))
 
     def has_setpkmjd_fluxmax(self) -> bool:
-        return bool(self.opt_setpkmjd & 8)
+        return bool(self.opt_setpkmjd & OPTMASK_SETPKMJD_FLUXMAX)
 
     def has_setpkmjd_trigger(self) -> bool:
-        return bool(self.opt_setpkmjd & 64)
+        return bool(self.opt_setpkmjd & OPTMASK_SETPKMJD_TRIGGER)
+
+
+# per-SN CUTWIN_ quantities
+#: the per-SN quantities a CUTWIN_<name> can window, as apply_snana_selection
+#: evaluates them; a band suffix on the prefixed ones names one filter
+SN_CUT_NAMES = frozenset({
+    'redshift', 'redshift_err', 'mwebv', 'peakmjd', 'nepoch', 'snrmax',
+    'snrmax2', 'nfilt_snrmax', 'nfilt_snrmax2', 'trestmin', 'trestmax',
+    'trestrange', 'nfilt_trestmin', 'nfilt_trestmax', 'tgapmax', 't0gapmax',
+    'searcheff_mask',
+})
+
+
+SN_CUT_BAND_PREFIXES = ('snrmax_', 'sbflux_')
 
 
 @dataclass
 class Selection:
     """Event and epoch selection, including post-fit cuts."""
-
-    input_readers = {'cutwin': read_cut_window_tokens,
-                     'epoch_cutwin': read_cut_window_tokens}
 
     # Event identifiers and exclusion lists
     #: SNANA SNTYPE_LIST; fit only the events whose SNTYPE appears here.
@@ -447,11 +448,10 @@ class Selection:
 
 @dataclass
 class Model:
-    """Source model, initial parameter values, bounds and priors."""
+    """Source model, initial parameter values, bounds and priors, the axes
+    of the photo-z coarse grid, and the model-error settings."""
 
     input_flags = {'priors': 'prior'}
-    input_readers = {'priors': read_prior_tokens}
-
     # Source model
     #: SNANA FITMODEL_NAME; the path of the model to fit. Unless MODEL_TYPE
     #: is set, the model is chosen from the directory name. Required.
@@ -653,8 +653,8 @@ class Fit:
     #: SNANA MAXITER_ROUND2; the iterations allowed in each later round.
     maxiter_round2: int = 15
     # Initial search
-    #: Skip the initial peak-time grid search. Enabled by LFIXPAR_ALL
-    #: and when initialising from simulated truth.
+    #: Skip the initial peak-time grid search. Set by LFIXPAR_ALL;
+    #: initialising from simulated truth skips the search as well.
     skip_grid_search: bool = False
 
     # Fit statistic and flux covariance
@@ -751,41 +751,17 @@ class Fit:
     def distance_modulus(self, redshifts):
         """Reference distance modulus for each redshift.
 
-        The one place the fitter turns a redshift into a distance; models are
-        handed the result so none of them carries a cosmology.
+        At the REF cosmology; models are handed the result so none of them
+        carries a cosmology.
         """
         return reference_distance_modulus(
             redshifts, self.h0_ref[0], self.omat_ref[0], self.olam_ref[0],
             self.w0_ref[0], self.wa_ref[0])
 
-    def start_distance_modulus(self, redshifts):
-        """The distance modulus a fit starts from: the reference one where
-        the redshift is defined, SNANA's fixed value where it is not."""
-        defined = np.asarray(redshifts) > Z_MIN_DLMAG
-        return np.where(defined, self.distance_modulus(
-            np.where(defined, redshifts, 1.0)), MU_START_NO_REDSHIFT)
-
     def epoch_rejection_active(self) -> bool:
         return (self.delchi2_reject != Fit.delchi2_reject
                 or self.signoise_reject != Fit.signoise_reject
                 or tuple(self.fitwin_mjd) != Fit.fitwin_mjd)
-
-    def fitwin_trest_bounds(self, filters):
-        """Per-filter (lo, hi) for the round-1 phase cut, in fit-band order.
-
-        SNANA fills every filter's window with the global FITWIN_TREST and then
-        overwrites the bands FITWIN_TREST_FILTER names, testing only the
-        per-filter array (SETCUTS_FITWIN_TREST, snlc_fit.F90:2774-2812).
-        Returns None when no band is overridden, so the scalar window stands.
-        """
-        if not self.fitwin_trest_filter:
-            return None
-        lo = np.full(len(filters), self.fitwin_trest[0], dtype=np.float64)
-        hi = np.full(len(filters), self.fitwin_trest[1], dtype=np.float64)
-        for i, window in enumerate(filter_values(self.fitwin_trest_filter, filters, None)):
-            if window is not None:
-                lo[i], hi[i] = window
-        return lo, hi
 
 
 @dataclass
@@ -966,9 +942,9 @@ class Output:
     #: magnitude the 1/Vmax volume of each event is computed to.
     maglim_vmax: Dict[str, float] = field(default_factory=dict)
     #: SNANA OPT_VMAX; options for the 1/Vmax calculation, as a bit mask. Bit
-    #: 1, selecting model peak magnitudes, is outside the supported options.
-    #: Use 0 for the calculation from observed peak magnitudes; the remaining
-    #: bits are accepted for input compatibility without changing the output.
+    #: 0 (value 1), selecting model peak magnitudes, is refused. Use 0 for the
+    #: calculation from observed peak magnitudes; the other bits are accepted
+    #: for input compatibility and change nothing.
     opt_vmax: int = 0
 
 

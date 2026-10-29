@@ -5,10 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
+from jax_snlc_core.snana_files import HOSTGAL_PREFIXES, MXHOSTGAL
+from jax_snlc_sim.output.tables import (HOSTGAL_SB_NULL, SNANA_NULLFLOAT, filters_string,
+                                        mw_option_keys)
 from jax_snlc_sim.simulation import parse_format_mask
-from jax_snlc_core.utils import HOSTGAL_PREFIXES, MXHOSTGAL
-from jax_snlc_sim.output.tables import (
-    HOSTGAL_SB_NULL, SNANA_NULLFLOAT, filters_string, mw_option_keys)
 
 logger = logging.getLogger(__name__)
 

@@ -21,10 +21,9 @@ The in-file ZPOLY form is dead in SNANA (FLAG never set -> init abort
 """
 
 import numpy as np
-import pytest
 
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump  # noqa: E402
-from jax_snlc_sim import run as sim_run  # noqa: E402
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
 
 X1_ZBINS = ([-0.01, 0.0, 0.2, 0.5], [0.0, 0.0, 0.5, 1.0])
 Z_BIN_EDGES = np.linspace(0.02, 0.4, 5)

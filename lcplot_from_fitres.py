@@ -18,10 +18,9 @@ import argparse
 import logging
 import sys
 
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import aborting
-from jax_snlc_core.utils.precision import configure_precision
-
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import aborting
+from jax_snlc_core.utils import configure_precision
 from jax_snlc_fit.config_parser import parse_fit_input_file
 from jax_snlc_fit.run import lcplot_from_fitres
 
@@ -56,11 +55,11 @@ def main():
         level=logging.DEBUG if args.verbose else logging.INFO,
         stream=sys.stdout,
     )
-    slog.startup(logger, "lcplot_from_fitres", sys.argv)
+    log.startup(logger, "lcplot_from_fitres", sys.argv)
     config = parse_fit_input_file(args.input_file, overrides)
     configure_precision(config.fit.double_precision)
     lcplot_from_fitres(config, args.fitres, args.prefix)
-    slog.done(logger, "lcplot_from_fitres")
+    log.done(logger, "lcplot_from_fitres")
 
 
 if __name__ == "__main__":

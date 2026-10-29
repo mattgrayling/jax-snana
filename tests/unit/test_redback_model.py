@@ -7,14 +7,14 @@ import pytest
 
 pytest.importorskip("redback_jax")
 
-from jax_snlc_core.models.redback_model import (
-    BOLTZMANN_ERG_K, DL10PC_CM, LIGHT_A, PLANCK, RedbackModel,
-    _log10_blackbody_flux_density, _smooth_temperature_floor,
-)
-from jax_snlc_sim.distributions import GenGaussAsym
-from jax_snlc_sim.population import Population
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_fit.fit_spec import init_params, snana_parameter_aliases
+from jax_snlc_core.logging import SNANAError  # noqa: E402
+from jax_snlc_core.models.redback import (DL10PC_CM, RedbackModel,  # noqa: E402
+                                          log10_blackbody_flux_density,
+                                          smooth_temperature_floor)
+from jax_snlc_core.utils import BOLTZMANN_ERG_K, LIGHT_A, PLANCK  # noqa: E402
+from jax_snlc_fit.parameters import init_params, snana_parameter_aliases  # noqa: E402
+from jax_snlc_sim.distributions import GenGaussAsym  # noqa: E402
+from jax_snlc_sim.population import Population  # noqa: E402
 
 
 _ARNETT_DISTS = {
@@ -48,7 +48,7 @@ def _sample(model, n_sne, seed=0):
     """Draw the population with the real distribution sampler and add
     what the model derives, merged with the distance the way the simulator
     does, so the result is what generate_sed is actually handed."""
-    from jax_snlc_sim.distributions import make_sampler
+    from jax_snlc_sim.distributions import sample_gengauss_asym
 
     dists = _ARNETT_DISTS
     base = jax.random.PRNGKey(seed)
@@ -57,7 +57,7 @@ def _sample(model, n_sne, seed=0):
         import zlib
         keys = jax.random.split(
             jax.random.fold_in(base, zlib.crc32(key_name.encode())), n_sne)
-        return jax.vmap(make_sampler(dists[key_name]))(keys)
+        return jax.vmap(lambda key: sample_gengauss_asym(key, dists[key_name]))(keys)
 
     params = {'mu': jnp.full(n_sne, 38.0),
               **{name: draw(name) for name in dists}}
@@ -246,7 +246,7 @@ def test_blackbody_wien_gradient(temperature):
     frequency = jnp.asarray(LIGHT_A / np.array([1000., 5000., 11000.]), dtype=jnp.float32)
     temp = jnp.asarray(temperature, dtype=jnp.float32)
     def logflux(t):
-        return _log10_blackbody_flux_density(t, 15., DL10PC_CM, frequency)
+        return log10_blackbody_flux_density(t, 15., DL10PC_CM, frequency)
     gradient = jax.jacfwd(logflux)(temp)
     x = (PLANCK / BOLTZMANN_ERG_K) * np.asarray(frequency, dtype=float) / temperature
     expected = x / (temperature * -np.expm1(-x) * np.log(10.))
@@ -301,7 +301,7 @@ def test_inistp_names_resolve_against_the_model():
     """Pinning is generic now: INIVAL_/INISTP_ suffixes resolve case-insensitively
     against the model's own parameters, and an unknown one aborts naming them."""
     from jax_snlc_fit.config import FitConfig, Model
-    from jax_snlc_fit.config_parser import resolve_parameter_keys
+    from jax_snlc_fit.parameters import resolve_parameter_keys
 
     model = RedbackModel.load('REDBACK.arnett_bolometric', {})
     names = list(model.get_fit_parameters())
@@ -337,11 +337,11 @@ def test_non_finite_flux_aborts_with_context():
     the photometry with the model name, the event and its drawn parameters,
     instead of failing every cut as a very dark transient."""
     from types import SimpleNamespace
-    from jax_snlc_sim.run import check_finite_flux
+    from jax_snlc_sim.photometry import check_finite_flux
 
     model = _arnett()
     # the run's population list, which names the drawn parameters
-    model._population = tuple((name, ()) for name in model._param_names)
+    model.configured_population = tuple((name, ()) for name in model._param_names)
     n, max_obs = 4, 3
     params = {name: jnp.full(n, 1.0) for name in model._param_names}
     params['mej'] = jnp.array([1.0, jnp.nan, 1.0, 1.0])
@@ -372,7 +372,7 @@ def test_optional_defaults_in_simulation(registry_name):
     config = RedbackModel.structured_input({'GENMODEL': name})
     model = RedbackModel.load(name, config)
     # the builder's step: the population the input declares
-    model._population = tuple((n, ()) for n in config['population_parameters'])
+    model.configured_population = tuple((n, ()) for n in config['population_parameters'])
     configured = dict.fromkeys(model._param_names, 1.0)
     model.configure_generation({'populations': configured}, 2, 0.0)
 
@@ -394,42 +394,39 @@ def test_optional_defaults_in_simulation(registry_name):
                                [0.8, 0.8])
 
 
-@pytest.mark.parametrize("registry_name,native_vej", [
-    ("shocked_cocoon_bolometric", 0.1),
-    ("metzger_kilonova_bolometric", 0.1),
-    ("magnetar_boosted_kilonova_bolometric", 0.1),
-    ("arnett_bolometric", 29979.2458),
+@pytest.mark.parametrize("registry_name,engine_params", [
+    ("shocked_cocoon_bolometric", dict(
+        mej=0.1, vej=0.1, eta=3.0, tshock=100.0, shocked_fraction=0.5,
+        cos_theta_cocoon=0.5, kappa=0.2)),
+    ("metzger_kilonova_bolometric", dict(
+        mej=0.05, vej=0.1, beta=3.0, kappa=1.0)),
+    ("magnetar_boosted_kilonova_bolometric", dict(
+        mej=0.05, vej=0.1, beta=3.0, kappa=1.0,
+        p0=2.0, bp=1.0, mass_ns=1.4, theta_pb=1.0)),
+    ("arnett_bolometric", dict(
+        f_nickel=0.15, mej=3.0, vej=29979.2458, kappa=0.1, kappa_gamma=0.03)),
 ])
-def test_velocity_units_in_sed(registry_name, native_vej):
-    """At the same physical expansion speed and luminosity, each engine must
-    produce the same SED, while receiving velocity in its own units."""
-    from jax_snlc_core.physics.constants import (
-        BOLTZMANN_ERG_K, LIGHT_A, PLANCK)
-
+def test_velocity_units_in_sed(registry_name, engine_params):
+    """Real engines receive native velocity units; their photospheres expand
+    at the corresponding physical speed of 0.1c."""
     model = RedbackModel.load(f"REDBACK.{registry_name}", {})
-    received = {}
-
-    def constant_luminosity(time, **params):
-        received.update(params)
-        return jnp.full_like(time, 42.0)
-
-    model._bolo_fn = constant_luminosity
-    phase = 2.0
+    tgrid = jnp.asarray(model.lbol_time_grid)
+    index = int(np.argmin(np.abs(np.asarray(tgrid) - 2.0)))
+    phase = tgrid[index]
+    # At a grid knot, the SED must use the engine's luminosity exactly.
+    log_luminosity = model._bolo_fn(tgrid, **engine_params)[index]
     lam = jnp.array([4000.0, 6000.0, 9000.0])
     sed = model.generate_sed(phase, {
-        'vej': native_vej, 'temperature_floor': 1000.0, 'mu': 35.0,
+        **engine_params, 'temperature_floor': 100.0, 'mu': 35.0,
     }, {'wavelength_grid': lam})
-    assert received['vej'] == native_vej
-    # Expansion branch: R=v*t and L=4*pi*R^2*sigma*T^4, well above the floor.
-    radius = 29979.2458 * 1.e5 * phase * 86400.0
-    from redback_jax.photosphere import compute_temperature_floor_log10
-    temperature, log_radius = compute_temperature_floor_log10(
-        jnp.asarray(phase), jnp.asarray(42.0), jnp.asarray(29979.2458), 1000.0)
-    np.testing.assert_allclose(10.0 ** float(log_radius), radius, rtol=1e-6)
+    radius = 29979.2458 * 1.e5 * float(phase) * 86400.0
+    temperature = (10.0 ** float(log_luminosity)
+                   / (4.0 * np.pi * radius ** 2 * 5.6704e-5)) ** 0.25
+    assert temperature > 200.0  # Safely on the expanding photosphere branch.
     wave = np.asarray(lam)
     frequency = LIGHT_A / wave
     expected = (2.0 * np.pi * PLANCK * frequency ** 3 / (LIGHT_A * 1.e-8) ** 2
-                / np.expm1(PLANCK * frequency / (BOLTZMANN_ERG_K * float(temperature)))
+                / np.expm1(PLANCK * frequency / (BOLTZMANN_ERG_K * temperature))
                 * (radius / 3.0856775814913673e19) ** 2
                 * LIGHT_A / wave ** 2 * 10.0 ** (-0.4 * 35.0))
     np.testing.assert_allclose(sed, expected, rtol=2e-5)
@@ -447,7 +444,7 @@ def test_cocoon_fit_velocity_units():
     vector = jnp.asarray([specs[n].get('init', 0.0) for n in names])
     params = model.sed_params_from_fit(vector, 0.1)
     assert float(params['vej']) == pytest.approx(velocity)
-    from jax_snlc_core.physics.constants import LIGHT_KM
+    from jax_snlc_core.utils import LIGHT_KM
     arnett = RedbackModel.load('REDBACK.arnett_bolometric', {}).get_fit_parameters()['vej']
     np.testing.assert_allclose(np.array([lo, hi]) * LIGHT_KM, arnett['bounds'])
     assert velocity * LIGHT_KM == pytest.approx(arnett['init'])
@@ -455,17 +452,22 @@ def test_cocoon_fit_velocity_units():
 
 
 def _direct_arnett_sed(model, phase, params, lam):
-    """Independent reference: evaluate Arnett at the requested time, no grid."""
+    """Evaluate the upstream engine at the requested time, without our grid."""
     luminosity = model._bolo_fn(
         jnp.stack([jnp.asarray(phase), jnp.asarray(model.lbol_time_grid[-1])]),
         **{k: params[k] for k in model._sig_params})[0]
+    return _photosphere_sed(model, phase, params, lam, luminosity)
+
+
+def _photosphere_sed(model, phase, params, lam, log_luminosity):
+    """Convert bolometric luminosity to a spectrum using the model photosphere."""
     temperature, radius = model._photosphere_fn(
-        time=phase, log10_luminosity=luminosity, vej=params['vej'],
+        time=phase, log10_luminosity=log_luminosity, vej=params['vej'],
         temperature_floor=params['temperature_floor'])
-    temperature, radius = _smooth_temperature_floor(
+    temperature, radius = smooth_temperature_floor(
         phase, temperature, radius, params['vej'], params['temperature_floor'],
         model.redback_photosphere_smooth_width)
-    log_flux = _log10_blackbody_flux_density(
+    log_flux = log10_blackbody_flux_density(
         temperature, radius, DL10PC_CM, LIGHT_A / lam)
     return 10.0 ** log_flux * LIGHT_A / lam ** 2 * 10.0 ** (-0.4 * params['mu'])
 
@@ -505,7 +507,8 @@ def test_arnett_phase_derivative_is_continuous_at_interior_grid_knots():
     np.testing.assert_allclose(left, right, rtol=1e-5, atol=1e-5)
 
 
-def test_arnett_flux_and_phase_derivatives_match_direct_bolometric_evaluation():
+def test_arnett_flux_and_phase_derivative_match_direct_bolometric_evaluation():
+    """Interpolation preserves the upstream flux and first phase derivative."""
     model = RedbackModel.load('REDBACK.arnett_bolometric', {})
     params = _interpolation_parameters()
     lam = jnp.array([3500., 5000., 8000.])
@@ -517,13 +520,60 @@ def test_arnett_flux_and_phase_derivatives_match_direct_bolometric_evaluation():
     # Compare away from grid endpoints and the separate photosphere kink.
     phases = jnp.array([1.3, 4.3, 12.3, 25.3, 100.3])
     xs = jnp.log(phases)
-    for order, tolerance in [(0, 1e-5), (1, 5e-4), (2, .1)]:
+    for order, tolerance in [(0, 1e-5), (1, 5e-4)]:
         f, g = interpolated, direct
         for _ in range(order):
             f, g = jax.jacfwd(f), jax.jacfwd(g)
         got = jax.jit(jax.vmap(f))(xs)
         expected = jax.jit(jax.vmap(g))(xs)
         np.testing.assert_allclose(got, expected, rtol=0., atol=tolerance)
+
+
+def test_arnett_phase_curvature_matches_smooth_diffusion_integral():
+    """Check curvature against converged quadrature of analytic Ni/Co heating.
+
+    The upstream engine linearly interpolates heating inside its integral;
+    differentiating that interpolation twice is not a curvature reference.
+    """
+    model = RedbackModel.load('REDBACK.arnett_bolometric', {})
+    params = _interpolation_parameters()
+    lam = jnp.array([3500., 5000., 8000.])
+    xs = jnp.log(jnp.array([1.3, 4.3, 12.3, 25.3, 100.3]))
+    # Match the engine's physical constants; timescales are in days squared.
+    mass = params['mej'] * 1.989e33
+    velocity = params['vej'] * 1.e5
+    diffusion_time_squared = (2 * params['kappa'] * mass
+                              / (13.7 * 2.998e10 * velocity) / 86400.**2)
+    trapping_time_squared = (3 * params['kappa_gamma'] * mass
+                             / (4 * np.pi * velocity**2) / 86400.**2)
+
+    def reference(log_time, nodes, weights):
+        time = jnp.exp(log_time)
+        integration_times = time * nodes
+        heating = params['f_nickel'] * params['mej'] * (
+            6.45e43 * jnp.exp(-integration_times / 8.8)
+            + 1.45e43 * jnp.exp(-integration_times / 111.3))
+        integrand = (heating * integration_times
+                     * jnp.exp((integration_times**2 - time**2) / diffusion_time_squared))
+        integral = time * jnp.sum(weights * integrand)
+        luminosity = (2 * integral / diffusion_time_squared
+                      * -jnp.expm1(-trapping_time_squared / time**2))
+        return jnp.log(_photosphere_sed(
+            model, time, params, lam, jnp.log10(luminosity)))
+
+    def interpolated(log_time):
+        return jnp.log(model.generate_sed(jnp.exp(log_time), params,
+                                          {'wavelength_grid': lam}))
+
+    reference_curvature = jax.jit(jax.vmap(
+        jax.jacfwd(jax.jacfwd(reference)), in_axes=(0, None, None)))
+    estimates = []
+    for size in (128, 256):
+        nodes, weights = np.polynomial.legendre.leggauss(size)
+        estimates.append(reference_curvature(xs, (nodes + 1) / 2, weights / 2))
+    np.testing.assert_allclose(estimates[0], estimates[1], rtol=0., atol=1e-8)
+    got = jax.jit(jax.vmap(jax.jacfwd(jax.jacfwd(interpolated))))(xs)
+    np.testing.assert_allclose(got, estimates[1], rtol=0., atol=.1)
 
 
 def test_arnett_physics_gradient_includes_the_luminosity_slopes():
@@ -544,7 +594,6 @@ def test_arnett_physics_gradient_includes_the_luminosity_slopes():
 
 @pytest.mark.parametrize('halfwidth', [0.001, 0.003, 0.01])
 def test_smooth_photosphere_preserves_branches_energy_and_c2(halfwidth):
-    from jax_snlc_core.models.redback_model import _smooth_temperature_floor
     floor = 4000.
     time, velocity = 10., 9000.
     log_rej = jnp.log(velocity * 1.e5 * 86400. * time)
@@ -557,8 +606,8 @@ def test_smooth_photosphere_preserves_branches_energy_and_c2(halfwidth):
 
     def smoothed(x):
         temperature, radius = original(x)
-        return _smooth_temperature_floor(time, temperature, radius,
-                                         velocity, floor, halfwidth)
+        return smooth_temperature_floor(time, temperature, radius,
+                                        velocity, floor, halfwidth)
 
     def log_outputs(x):
         temperature, radius = smoothed(x)
@@ -583,9 +632,8 @@ def test_smooth_photosphere_preserves_branches_energy_and_c2(halfwidth):
 
 
 def test_smooth_photosphere_zero_width_and_input_validation():
-    from jax_snlc_core.models.redback_model import _smooth_temperature_floor
     np.testing.assert_array_equal(
-        _smooth_temperature_floor(1., 5000., 14., 9000., 4000., 0.), (5000., 14.))
+        smooth_temperature_floor(1., 5000., 14., 9000., 4000., 0.), (5000., 14.))
     for width in [-.01, np.nan, np.inf]:
         with pytest.raises(SNANAError, match='finite and nonnegative'):
             RedbackModel.load('REDBACK.arnett_bolometric',

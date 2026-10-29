@@ -27,44 +27,39 @@ from typing import Any, get_args
 import yaml
 
 from jax_create_cov import write_outputs
-from jax_create_cov.run import prepare_covariance, select_covariance_grid
-from jax_create_cov.config import HDMode
-from jax_create_cov.config_parser import build_config as build_covariance_config
-from jax_create_cov.config_parser import parse_covopt
-from jax_create_cov.hubble import hubble_diagram_from
-from jax_create_cov.inputs import (read_submit_info, reference_cosmology,
-                                   version_photometry)
-from jax_salt2mu.run import run_prepared_grid, fit_spec
-from jax_salt2mu.preparation import (read_cells, prepare_biascor_maps, prepare_ccpriors,
-                                   preparation_step, prepare_data, select_data)
-from jax_salt2mu.config_parser import build_bbc_config
-from jax_salt2mu.run import write_outputs as write_bbc_outputs
-from jax_salt2mu.tablevar import (EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR,
-                                  EVENT_TYPE_DATA)
-from jax_snlc_core.io.factorized_covariance import read_factorized_covariance
-from jax_snlc_core.io.cov_matrix import read_covariance_npz, read_covariance_text
-from jax_snlc_core.io.fitres_reader import concat_tables, read_fitres
-from jax_snlc_core.io.fits_path import resolve_fits_path
+from jax_create_cov.config import HDMode, build_config as build_covariance_config, parse_covopt
+from jax_create_cov.covariance import (hubble_diagram_from, read_submit_info,
+                                    reference_cosmology, version_photometry)
+from jax_create_cov.covariance import prepare_covariance, select_covariance_grid
+from jax_salt2mu.config import build_bbc_config
+from jax_salt2mu.preparation import (preparation_step, prepare_biascor_maps, prepare_ccpriors,
+                                     prepare_data, read_cells, select_data)
+from jax_salt2mu.run import fit_spec, run_prepared_grid
+from jax_salt2mu.output import write_outputs as write_bbc_outputs
+from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
+from jax_snlc_core.input_settings import merge_settings
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import standardised_model
+from jax_snlc_core.snana_files import (concat_tables, fitopt_muopt_name, read_covariance, read_factorized_covariance,
+                                       read_fitres, resolve_fits_path)
 from jax_snlc_core.utils import group_equal
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.input_settings import merge_settings
+from jax_snlc_fit.calibration import read_kcor
 from jax_snlc_fit.config_parser import parse_fit_input_file
-from jax_snlc_fit.fitter import LightCurveFitter, resolved_config
-from jax_snlc_fit.run import (check_photoz_trest_cuts, dataset_config,
-                              fit_dataset, fit_model, fit_settings, prepare_datasets,
-                              read_kcor, read_shared_files, with_fit_settings)
+from jax_snlc_fit.fitter import LightCurveFitter, fit_model, fit_settings, resolved_config
+from jax_snlc_fit.loader import read_shared_files
+from jax_snlc_fit.run import dataset_config, fit_dataset, prepare_datasets
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_sim.inputs import parse_input as parse_sim_input
-from jax_snlc_sim.output.driver import write_combined_readme
-from jax_wfit.config_parser import build as build_cosmology_config
-from jax_wfit.config_parser import read_keys as read_cosmology_keys
-from jax_wfit.data import hubble_diagram_from_covariance, load_simulation_truths
+from jax_snlc_sim.output.write import write_combined_readme
+from jax_wfit.config import (build as build_cosmology_config,
+                                    read_keys as read_cosmology_keys)
+from jax_wfit.hubble import hubble_diagram_from_covariance, load_simulation_truths
 from jax_wfit.run import run_wfit
 
 from .synchronise import fit_prepared_common_sample, synchronised_row_counts
-from .systematics import (NOMINAL, cells, check_labels, dirname, key,
-                          overrides_for, scales, selected_cells)
+from .systematics import (NOMINAL, cells, check_labels, key, overrides_for, scales,
+                          selected_cells)
 
 
 class Stage(ABC):
@@ -163,11 +158,6 @@ def _is_stages(value) -> bool:
 def _keys_only(overrides: Mapping[str, Any]) -> dict[str, Any]:
     """The overrides a package is given: those not naming stages."""
     return {k: v for k, v in overrides.items() if not _is_stages(v)}
-
-
-def _read_matrix(path: Path):
-    return (read_covariance_npz(path) if path.suffix == ".npz"
-            else read_covariance_text(path))
 
 
 # eq=False: two stages with equal settings stay distinct nodes
@@ -273,9 +263,9 @@ class Sim(Stage):
             start = time.perf_counter()
             results, selection, spectra = sim_run.run_simulation(sim)
             timings['generate'] = time.perf_counter() - start
-            written = sim_run.save_snana_outputs(
+            written = save_snana_outputs(
                 sim, results, self.name,
-                selection, spectra_cache=spectra, output_dir=parent,
+                selection, spectra_by_sn=spectra, output_dir=parent,
                 combined=combined, timings=timings)
             generated += written["n_passed"] + written["n_failed"]
             if combined:
@@ -415,20 +405,20 @@ class Fit(Stage):
         """One fitter per group of cells, and for each cell its config with
         the fitter's resolved settings, its kcor and its shared files."""
         fitters = {}
-        kernel_cache = {}
+        compiled_cache = {}
         for group, model in groups:
             fitter = LightCurveFitter._from_prepared(configs[group[0]], model,
                                       files[group[0]]["kcor"], shape,
-                                      kernel_cache=kernel_cache)
+                                      compiled_cache=compiled_cache)
             fitters.update({
                 cell: dict(fitter=fitter,
-                           config=with_fit_settings(configs[cell], fitter),
+                           config=fitter.with_fit_settings(configs[cell]),
                            **files[cell])
                 for cell in group})
         return fitters
 
     def _table(self, outdir: Path, cell: tuple[int, int], version: str) -> Path:
-        return Path(outdir) / dirname(cell) / f"{version}.FITRES.TEXT"
+        return Path(outdir) / fitopt_muopt_name(cell) / f"{version}.FITRES.TEXT"
 
     def source_files(self) -> Sequence[Path]:
         """Existing FITRES inputs in FITOPT order; empty for fits produced here."""
@@ -447,7 +437,6 @@ class Fit(Stage):
         for group, model in groups:
             for cell in group:
                 configs[cell] = resolved_config(configs[cell], model)
-                check_photoz_trest_cuts(configs[cell])
         files = self._files(configs)
         shape_file = Path(outdir) / "SHAPE.yml"
         finished_file = Path(outdir) / "FINISHED.yml"
@@ -471,7 +460,7 @@ class Fit(Stage):
             if data.name in finished:
                 continue
             for cell in cells(self.labels):
-                stem = Path(outdir) / dirname(cell) / data.name
+                stem = Path(outdir) / fitopt_muopt_name(cell) / data.name
                 stem.parent.mkdir(parents=True, exist_ok=True)
                 config = dataset_config(fitters[cell]["config"], directory, stem)
                 if (cell[0] and config.selection.opt_sncid_list
@@ -646,16 +635,17 @@ class BBC(Stage):
         self.ccprior = _stages(self.ccprior)
         self.replace_biascor = {label: Path(path) for label, path in self.replace_biascor.items()}
         self.replace_ccprior = {label: Path(path) for label, path in self.replace_ccprior.items()}
-        for role in ("biascor", "ccprior"):
-            selected = getattr(self, f"{role}_fitopts")
-            sources = getattr(self, role)
+        for role, sources, selected in (
+                ("biascor", self.biascor, self.biascor_fitopts),
+                ("ccprior", self.ccprior, self.ccprior_fitopts)):
             if selected and len(selected) != len(sources):
                 raise SNANAError(f"{role}_fitopts must have one entry per {role} source", function_name=self.name)
             for stage, label in zip(sources, selected):
                 if label is not None and label not in stage.systematics()[0]:
                     raise SNANAError(f"{role} source {stage.name} has no FITOPT {label}", function_name=self.name)
-        for role in ("biascor", "ccprior"):
-            for muopt, selected in getattr(self, f"muopt_{role}_fitopts").items():
+        for role, selections in (("biascor", self.muopt_biascor_fitopts),
+                                  ("ccprior", self.muopt_ccprior_fitopts)):
+            for muopt, selected in selections.items():
                 sources = {**self.muopts.get(muopt, {}),
                            **self.muopt_settings.get(muopt, {})}.get(f"simfile_{role}")
                 if not _is_stages(sources) or len(selected) != len(_stages(sources)):
@@ -749,22 +739,22 @@ class BBC(Stage):
             EVENT_TYPE_BIASCOR: {} if "simfile_biascor" in swaps else self.replace_biascor,
             EVENT_TYPE_CCPRIOR: {} if "simfile_ccprior" in swaps else self.replace_ccprior,
         }
-        roles = {EVENT_TYPE_BIASCOR: "biascor", EVENT_TYPE_CCPRIOR: "ccprior"}
+        correction_fitopts = {
+            EVENT_TYPE_BIASCOR: (self.muopt_biascor_fitopts.get(label, ())
+                                if "simfile_biascor" in swaps else self.biascor_fitopts),
+            EVENT_TYPE_CCPRIOR: (self.muopt_ccprior_fitopts.get(label, ())
+                                if "simfile_ccprior" in swaps else self.ccprior_fitopts),
+        }
         for event_type, slot, stage in self._sources(label):
             which = NOMINAL
             if event_type == EVENT_TYPE_DATA and fitopt:
                 which = applied if applied in stage.systematics()[0] else NOMINAL
-            elif event_type in roles:
+            elif event_type in correction_fitopts:
                 if applied in replacements[event_type]:
                     continue
-                role = roles[event_type]
-                selected = getattr(self, f"{role}_fitopts")
+                selected = correction_fitopts[event_type]
                 index = correction_index[event_type]
                 correction_index[event_type] += 1
-                # A MUOPT that swaps the correction sample uses its nominal fit.
-                swapped = label is not None and f"simfile_{role}" in swaps
-                if swapped:
-                    selected = getattr(self, f"muopt_{role}_fitopts").get(label, ())
                 if selected:
                     which = selected[index] or NOMINAL
             table = inputs[slot][which]
@@ -823,8 +813,8 @@ class BBC(Stage):
         fitopts, muopts = self.systematics()
         source = Path(run_dir) / self.name
         copies = [
-            (source / dirname(cell) / f"{self.name}.{suffix}",
-             f"{dirname(cell)}.{suffix}")
+            (source / fitopt_muopt_name(cell) / f"{self.name}.{suffix}",
+             f"{fitopt_muopt_name(cell)}.{suffix}")
             for cell in self.grid_cells()
             for suffix in ("M0DIF", "FITRES")
         ]
@@ -853,8 +843,8 @@ class BBC(Stage):
         fitopts, muopts = self.systematics()
         return {
             key(cell, fitopts, muopts): {
-                "M0DIF": read_fitres(str(Path(outdir) / dirname(cell) / f"{self.name}.M0DIF")),
-                "FITRES": read_fitres(str(Path(outdir) / dirname(cell) / f"{self.name}.FITRES")),
+                "M0DIF": read_fitres(str(Path(outdir) / fitopt_muopt_name(cell) / f"{self.name}.M0DIF")),
+                "FITRES": read_fitres(str(Path(outdir) / fitopt_muopt_name(cell) / f"{self.name}.FITRES")),
             }
             for cell in self.grid_cells()
         }
@@ -919,7 +909,7 @@ def run_bbc_stages(requests, cells, maps, priors, fit_widths, cosmology_widths, 
             fitted = run_prepared_grid(grid, grid_maps, grid_priors, t_start=t_start,
                                        fit_widths=fit_widths, cosmology_widths=cosmology_widths)
         for cell, (result, output, zbins, tv, accept) in fitted.items():
-            cell_dir = Path(outdir) / dirname(cell)
+            cell_dir = Path(outdir) / fitopt_muopt_name(cell)
             cell_dir.mkdir(parents=True, exist_ok=True)
             write_bbc_outputs(cell_dir / f"{stage.name}.FITRES", result, output,
                               zbins, tv, accept)
@@ -1005,26 +995,26 @@ class Covariance(Stage):
         keys = ({} if self.input_file is None
                 else yaml.safe_load(self.input_file.read_text()) or {})
         settings = dict(self.overrides)
-        for name in ('mode', 'rebin_bins', 'nbin_x1', 'nbin_c', 'systematic_hd',
-                     'subtract_vpec', 'label_cov_rows', 'mxsize_test_posdef'):
-            value = getattr(self, name)
+        for name, value in (
+                ('mode', self.mode), ('rebin_bins', self.rebin_bins),
+                ('nbin_x1', self.nbin_x1), ('nbin_c', self.nbin_c),
+                ('systematic_hd', self.systematic_hd), ('subtract_vpec', self.subtract_vpec),
+                ('label_cov_rows', self.label_cov_rows), ('mxsize_test_posdef', self.mxsize_test_posdef)):
             if value is not None:
                 settings = merge_settings(settings, {name: value})
-        for name in ('covopts', 'calibrators', 'extra_covs'):
-            value = getattr(self, name)
-            if value:
-                if name == 'covopts':
-                    settings[name] = [parse_covopt(text) for text in value]
-                elif name == 'extra_covs':
-                    settings[name] = [(label, scale, str(path)) for label, scale, path in value]
-                else:
-                    settings[name] = list(value)
+        if self.covopts:
+            settings['covopts'] = [parse_covopt(text) for text in self.covopts]
+        if self.calibrators:
+            settings['calibrators'] = list(self.calibrators)
+        if self.extra_covs:
+            settings['extra_covs'] = [(label, scale, str(path))
+                                      for label, scale, path in self.extra_covs]
         # Use compact covariance throughout new pipelines unless explicitly
         # configured otherwise. Standalone create_cov retains its legacy default.
         keys = merge_settings({"WRITE_MASK_COV": 8}, keys)
         config = build_covariance_config(keys, settings)
-        unusable = [name for name in ("sys_scale_file", "sys_scales")
-                    if getattr(config, name)]
+        unusable = [name for name, value in (("sys_scale_file", config.sys_scale_file),
+                                            ("sys_scales", config.sys_scales)) if value]
         if unusable:
             raise SNANAError(
                 f"stage '{self.name}' cannot honour {', '.join(unusable)} from "
@@ -1032,7 +1022,7 @@ class Covariance(Stage):
                 function_name=self.name)
         calibrators = [str(cid) for cid in config.calibrators]
         extra_covs = [(label, scale, str(path)) for label, scale, path in config.extra_covs]
-        select_covariance_grid({dirname(cell): None for cell in self.distances.grid_cells()},
+        select_covariance_grid({fitopt_muopt_name(cell): None for cell in self.distances.grid_cells()},
                                config.muopt)
         if not config.write_mask_cov & 10:
             raise SNANAError("WRITE_MASK_COV must include 2 or 8", function_name=self.name)
@@ -1043,15 +1033,15 @@ class Covariance(Stage):
         fitopts, muopts = self.systematics()
         mode = config.mode
         selected = select_covariance_grid(
-            {dirname(cell): cell for cell in self.distances.grid_cells()}, config.muopt)
+            {fitopt_muopt_name(cell): cell for cell in self.distances.grid_cells()}, config.muopt)
         # binned reads the M0DIF, unbinned and rebin the FITRES
         # (get_hubble_diagrams, create_covariance.py:713-717)
         table = "M0DIF" if mode == "binned" else "FITRES"
         # the builder wants the grid by SNANA's numbered cell names
         diagrams = {
-            dirname(cell): hubble_diagram_from(
+            fitopt_muopt_name(cell): hubble_diagram_from(
                 inputs["distances"][key(cell, fitopts, muopts)][table].df.copy(),
-                mode, source=f"{self.distances.name}:{dirname(cell)}")
+                mode, source=f"{self.distances.name}:{fitopt_muopt_name(cell)}")
             for cell in selected.values()
         }
         config = dataclasses.replace(
@@ -1082,7 +1072,7 @@ class Covariance(Stage):
                     Path(outdir) / factor_name, size=len(diagram))}
             elif inverse_name != "None":
                 covariances[label] = {"kind": "total_inverse",
-                    "matrix": _read_matrix(Path(outdir) / inverse_name)}
+                    "matrix": read_covariance(Path(outdir) / inverse_name)}
             else:
                 raise SNANAError(
                     f"stage '{self.name}' wrote neither factors nor inverse for {label}; "

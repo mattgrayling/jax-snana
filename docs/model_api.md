@@ -13,7 +13,7 @@ fitting and distance standardisation.
 ## Spectrum
 
 ```{eval-rst}
-.. py:class:: jax_snlc_core.models.base.SNModel
+.. py:class:: jax_snlc_core.models.sed_model.SNModel
 
    Base class for a model's spectral evaluation and wavelength support.
 ```
@@ -22,13 +22,13 @@ Every model implements `get_wavelength_range`, `phase_range`,
 `sed_param_names` and `generate_sed`:
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.base.SNModel.get_wavelength_range
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.get_wavelength_range
 
-.. automethod:: jax_snlc_core.models.base.SNModel.phase_range
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.phase_range
 
-.. automethod:: jax_snlc_core.models.base.SNModel.sed_param_names
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.sed_param_names
 
-.. automethod:: jax_snlc_core.models.base.SNModel.generate_sed
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.generate_sed
 ```
 
 ### Preparation and photometry
@@ -38,11 +38,11 @@ wavelength grid, and `evaluate` supplies the shared photometric integration.
 {ref}`model-compilation` describes preparation for dataclass models.
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.base.SNModel.load
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.load
 
-.. automethod:: jax_snlc_core.models.base.SNModel.choose_grid
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.choose_grid
 
-.. automethod:: jax_snlc_core.models.base.SNModel.evaluate
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.evaluate
 ```
 
 ### Amplitude adjustment
@@ -52,17 +52,17 @@ or a specified distance. A model with a non-magnitude amplitude implements
 the scaling described in {doc}`adding_a_model`.
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.base.SNModel.shift_amplitude
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.shift_amplitude
 
-.. automethod:: jax_snlc_core.models.base.SNModel.params_at_distance
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.params_at_distance
 
-.. automethod:: jax_snlc_core.models.base.SNModel.amplitude_jacobian
+.. automethod:: jax_snlc_core.models.sed_model.SNModel.amplitude_jacobian
 ```
 
 ## Simulation
 
 ```{eval-rst}
-.. py:class:: jax_snlc_core.models.simulated.SimulatedModel
+.. py:class:: jax_snlc_core.models.roles.SimulatedModel
 
    Adds population sampling and simulation truth output to a spectral model.
 ```
@@ -71,9 +71,9 @@ Population draws and truth columns have shared defaults. Models can extend
 these through:
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.derived_parameters
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.derived_parameters
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.get_snana_header_params
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.get_snana_header_params
 ```
 
 ### Input and sampling
@@ -83,17 +83,17 @@ Models using template libraries can override them to select templates and
 set per-template event counts.
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.structured_input
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.structured_input
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.configure_generation
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.configure_generation
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.drawn_parameters
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.drawn_parameters
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.generation_quotas
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.generation_quotas
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.pec1a_flags
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.pec1a_flags
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.apply_host_snpar_overrides
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.apply_host_snpar_overrides
 
 ```
 
@@ -104,11 +104,11 @@ from a simulation dump, or provide quantities for selection:
 
 ```{eval-rst}
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.text_sim_header_lines
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.text_sim_header_lines
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.replay_params_from_dump
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.replay_params_from_dump
 
-.. automethod:: jax_snlc_core.models.simulated.SimulatedModel.sn_variables
+.. automethod:: jax_snlc_core.models.roles.SimulatedModel.sn_variables
 ```
 
 The model-development guide describes the population and simulation
@@ -116,23 +116,23 @@ The model-development guide describes the population and simulation
 separate descriptions there:
 
 ```{eval-rst}
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.population_parameters
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.population_parameters
 
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.population_aliases
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.population_aliases
 
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.population_defaults
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.population_defaults
 
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.crazyflux_factor
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.crazyflux_factor
 
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.uses_nonia_rates
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.uses_nonia_rates
 
-.. autoattribute:: jax_snlc_core.models.simulated.SimulatedModel.mjd_explode_anchor
+.. autoattribute:: jax_snlc_core.models.roles.SimulatedModel.mjd_explode_anchor
 ```
 
 ## Light-curve fitting
 
 ```{eval-rst}
-.. py:class:: jax_snlc_core.models.fitted.FittedModel
+.. py:class:: jax_snlc_core.models.roles.FittedModel
 
    Adds fitted-parameter declarations, model uncertainties and fit output.
 ```
@@ -142,23 +142,23 @@ can be overridden to supply a model uncertainty, convert the fit vector into
 SED parameters, customise redshift initialisation or add output columns.
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.get_fit_parameters
+.. automethod:: jax_snlc_core.models.roles.FittedModel.get_fit_parameters
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.sed_params_from_fit
+.. automethod:: jax_snlc_core.models.roles.FittedModel.sed_params_from_fit
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.compute_raw_fracerr
+.. automethod:: jax_snlc_core.models.roles.FittedModel.compute_raw_fracerr
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.color_dispersion_fraction
+.. automethod:: jax_snlc_core.models.roles.FittedModel.color_dispersion_fraction
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.evaluate_redshift_grid
+.. automethod:: jax_snlc_core.models.roles.FittedModel.evaluate_redshift_grid
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.compute_fitprob
+.. automethod:: jax_snlc_core.models.roles.FittedModel.compute_fitprob
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.fitres_param_columns
+.. automethod:: jax_snlc_core.models.roles.FittedModel.fitres_param_columns
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.get_fitres_param_columns
+.. automethod:: jax_snlc_core.models.roles.FittedModel.get_fitres_param_columns
 
-.. automethod:: jax_snlc_core.models.fitted.FittedModel.get_fitres_derived_columns
+.. automethod:: jax_snlc_core.models.roles.FittedModel.get_fitres_derived_columns
 ```
 
 (advanced-fit-spec)=
@@ -184,7 +184,7 @@ These optional entries extend the parameter declarations described in
 ## Distance standardisation
 
 ```{eval-rst}
-.. py:class:: jax_snlc_core.models.standardised.StandardisedModel
+.. py:class:: jax_snlc_core.models.roles.StandardisedModel
 
    Defines how fitted light-curve parameters give distances and how BBC reads
    their fitted and simulated values.
@@ -195,15 +195,15 @@ bias-correction coefficients, FITRES reading and covariance checks.
 {doc}`adding_a_model` describes the nuisance-parameter and map declarations.
 
 ```{eval-rst}
-.. automethod:: jax_snlc_core.models.standardised.StandardisedModel.compute_mu
+.. automethod:: jax_snlc_core.models.roles.StandardisedModel.compute_mu
 
-.. automethod:: jax_snlc_core.models.standardised.StandardisedModel.sim_lcpar
+.. automethod:: jax_snlc_core.models.roles.StandardisedModel.sim_lcpar
 
-.. automethod:: jax_snlc_core.models.standardised.StandardisedModel.biascor_coeff_values
+.. automethod:: jax_snlc_core.models.roles.StandardisedModel.biascor_coeff_values
 
-.. automethod:: jax_snlc_core.models.standardised.StandardisedModel.read_lcpar
+.. automethod:: jax_snlc_core.models.roles.StandardisedModel.read_lcpar
 
-.. automethod:: jax_snlc_core.models.standardised.StandardisedModel.bbc_bad_covariance
+.. automethod:: jax_snlc_core.models.roles.StandardisedModel.bbc_bad_covariance
 
 .. py:class:: jax_salt2mu.tablevar.TableVar
 
@@ -220,17 +220,17 @@ working grid. The model-development guide explains interpolation and
 extrapolation choices.
 
 ```{eval-rst}
-.. autofunction:: jax_snlc_core.io.sed_ascii.read_sed_file
+.. autofunction:: jax_snlc_core.models.sed_model.read_sed_file
 
-.. autofunction:: jax_snlc_core.models.simsed_model.read_sed_info
+.. autofunction:: jax_snlc_core.models.simsed.read_sed_info
 
-.. autofunction:: jax_snlc_core.models.simsed_model.read_sed_binary
+.. autofunction:: jax_snlc_core.models.simsed.read_sed_binary
 
-.. autofunction:: jax_snlc_core.models.base.resample_surfaces
+.. autofunction:: jax_snlc_core.models.sed_model.resample_surfaces
 
-.. autofunction:: jax_snlc_core.models.base.uvlam_extrapflux_sedmodel
+.. autofunction:: jax_snlc_core.models.sed_model.uvlam_extrapflux_sedmodel
 
-.. autofunction:: jax_snlc_core.models.base.late_time_tables
+.. autofunction:: jax_snlc_core.models.sed_model.late_time_tables
 ```
 
 (model-compilation)=

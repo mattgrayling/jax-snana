@@ -55,7 +55,7 @@ repeated fits.
 ### Fit results
 
 ```{eval-rst}
-.. py:class:: jax_snlc_fit.fit_results.BatchFitResult
+.. py:class:: jax_snlc_fit.fitter.BatchFitResult
 
    Fitted parameters, uncertainties, covariances and fit diagnostics.
 ```
@@ -79,15 +79,15 @@ select objects, combine results or write fitted tables:
 
 ```{eval-rst}
 
-.. automethod:: jax_snlc_fit.fit_results.BatchFitResult.to_table
+.. automethod:: jax_snlc_fit.fitter.BatchFitResult.to_table
 
-.. automethod:: jax_snlc_fit.fit_results.BatchFitResult.write_table
+.. automethod:: jax_snlc_fit.fitter.BatchFitResult.write_table
 
-.. automethod:: jax_snlc_fit.fit_results.BatchFitResult.take
+.. automethod:: jax_snlc_fit.fitter.BatchFitResult.take
 
-.. automethod:: jax_snlc_fit.fit_results.BatchFitResult.filter_by_mask
+.. automethod:: jax_snlc_fit.fitter.BatchFitResult.filter_by_mask
 
-.. automethod:: jax_snlc_fit.fit_results.BatchFitResult.concatenate
+.. automethod:: jax_snlc_fit.fitter.BatchFitResult.concatenate
 ```
 
 (fit-table-inputs)=
@@ -285,9 +285,9 @@ stage when fitting several datasets together.
 
 .. autofunction:: jax_pipeline.run.run
 
-.. autofunction:: jax_pipeline.report.cosmology_summary
+.. autofunction:: jax_pipeline.run.cosmology_summary
 
-.. autofunction:: jax_snlc_core.utils.precision.configure_precision
+.. autofunction:: jax_snlc_core.utils.configure_precision
 ```
 
 ## Classification
@@ -304,21 +304,21 @@ and use them in the distance fit.
    :no-members:
    :exclude-members: __new__
 
-.. autoclass:: jax_pipeline.classifiers.supernnova.SuperNNova
+.. autoclass:: jax_pipeline.supernnova.SuperNNova
    :no-members:
    :exclude-members: __new__
 
-.. automethod:: jax_pipeline.classifiers.supernnova.SuperNNova.train
+.. automethod:: jax_pipeline.supernnova.SuperNNova.train
 
-.. automethod:: jax_pipeline.classifiers.supernnova.SuperNNova.predict
+.. automethod:: jax_pipeline.supernnova.SuperNNova.predict
 
-.. autoclass:: jax_pipeline.classifiers.perfect.Perfect
+.. autoclass:: jax_pipeline.classify.Perfect
    :no-members:
    :exclude-members: __new__
 
-.. automethod:: jax_pipeline.classifiers.perfect.Perfect.train
+.. automethod:: jax_pipeline.classify.Perfect.train
 
-.. automethod:: jax_pipeline.classifiers.perfect.Perfect.predict
+.. automethod:: jax_pipeline.classify.Perfect.predict
 ```
 
 ## Reading Pippin configurations
@@ -331,7 +331,7 @@ and returns its execution plan without running the analysis.
 ```{eval-rst}
 .. autofunction:: jax_pipeline.pippin.read
 
-.. autofunction:: jax_pipeline.check.check
+.. autofunction:: jax_pipeline.pippin.check
 ```
 
 ## Reading fitted tables
@@ -342,10 +342,10 @@ metadata. Use `read_fitres` for an existing file; event identifiers are
 preserved as strings, including leading zeros.
 
 ```{eval-rst}
-.. autoclass:: jax_snlc_core.io.fitres_reader.FitresTable
+.. autoclass:: jax_snlc_core.snana_files.FitresTable
    :members:
 
-.. autofunction:: jax_snlc_core.io.fitres_reader.read_fitres
+.. autofunction:: jax_snlc_core.snana_files.read_fitres
 ```
 
 ## Simulation-based inference
@@ -354,6 +354,12 @@ Use `prepare` and `build_sbi_pipeline` to prepare a survey once and run
 repeated compiled realisations. {doc}`sbi` shows how to select events,
 inspect photometry and change the generated parameters.
 
+For a complete simulation, `run_simulation` returns the event results, selection,
+and spectra for the selected events. It completes spectra and atmospheric effects
+before returning. Pass those spectra as `spectra_by_sn` to `save_snana_outputs`;
+saving formats and writes the completed results. A narrower output selection
+also restricts the spectra written to those events.
+
 ```{eval-rst}
 .. autoclass:: jax_snlc_sim.SimulationConfig
    :no-members:
@@ -361,9 +367,13 @@ inspect photometry and change the generated parameters.
 
 .. autofunction:: jax_snlc_sim.run.prepare
 
+.. autofunction:: jax_snlc_sim.run.run_simulation
+
 .. autofunction:: jax_snlc_sim.run.build_sbi_pipeline
 
 .. autofunction:: jax_snlc_sim.run.finish_batch
+
+.. autofunction:: jax_snlc_sim.output.save_snana_outputs
 ```
 
 (custom-pipeline-stage)=

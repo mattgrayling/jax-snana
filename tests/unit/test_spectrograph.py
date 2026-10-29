@@ -9,16 +9,11 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.physics.dust_laws import load_dust_law
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.dust import load_dust_law
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.spectrograph import _solve_calibration, get_snr, read_spectrograph
+from jax_snlc_sim.spectra import parse_take_spectrum_entry, prepare_spectrum_requests
 from jax_snlc_sim.simulation import Output, SimulationConfig
-from jax_snlc_sim.config_parser import parse_take_spectrum_entry, prepare_spectrum_requests
-from jax_snlc_core.photometry.spectrograph import (
-    SpectrographCalibration,
-    _solve_calibration,
-    get_snr_from_calib,
-    read_spectrograph,
-)
 
 
 @pytest.fixture(scope="module")
@@ -27,7 +22,8 @@ def testdata(spectrograph_data_dir):
 
 
 def _get_snr_simple(calib, texpose_s, texpose_t, genmag):
-    snr, ef, _, _ = get_snr_from_calib(calib, texpose_s, texpose_t, genmag)
+    snr, ef, _, _ = get_snr(calib.log_texpose_list, calib.texpose_list, calib.zp,
+                            calib.sqsigsky, texpose_s, texpose_t, genmag)
     return np.asarray(snr), np.asarray(ef)
 
 
@@ -55,6 +51,16 @@ def test_reader(testdata):
     assert bool(jnp.all(calib.zp > 0))
     assert bool(jnp.all(calib.sqsigsky >= 0))
     assert isinstance(calib.zp, jnp.ndarray)
+
+
+def test_reader_aborts_on_a_decreasing_texpose_list(testdata, tmp_path):
+    """SNANA's read_TEXPOSE_LIST aborts when an exposure time is shorter than
+    the one before it (sntools_spectrograph.c:546-554)."""
+    unsorted = tmp_path / "SPECTROGRAPH_UNSORTED.DAT"
+    unsorted.write_text(testdata.read_text().replace(
+        "TEXPOSE_LIST: 600 1800 5400", "TEXPOSE_LIST: 600 5400 1800"))
+    with pytest.raises(SNANAError, match="TEXPOSE_LIST must be in increasing order"):
+        read_spectrograph(str(unsorted))
 
 
 def test_reader_rejects_nonmonotonic_snr():
@@ -190,7 +196,7 @@ def test_sentinel_magnitude(testdata):
 
 def test_config_parsing():
     """TAKE_SPECTRUM directives parse into per-config dicts."""
-    from jax_snlc_sim.config_parser import read_keys
+    from jax_snlc_sim.inputs import read_keys
 
     content = (
         "GENVERSION: TEST\nGENMODEL: SALT3\nGENFILTERS: griz\n"
@@ -228,7 +234,7 @@ def test_config_parsing_bare_snr_alias():
     Line taken verbatim from the SNANA manual's "Creating a SIMLIB from Data"
     section, where SIMLIB headers carry the measured SNR of each real spectrum.
     """
-    from jax_snlc_sim.config_parser import read_keys
+    from jax_snlc_sim.inputs import read_keys
 
     content = (
         "GENVERSION: TEST\nGENMODEL: SALT3\nGENFILTERS: griz\n"
@@ -265,9 +271,7 @@ def test_config_parsing_bare_snr_alias():
 
 def test_config_parsing_host_rejects_snr():
     """HOST spectra allow only TEXPOSE_ZPOLY, not SNR (snlc_sim.c:5834)."""
-    import pytest
 
-    from jax_snlc_core.utils.error_handling import SNANAError
 
     def parse(value):
         (entry,) = prepare_spectrum_requests([parse_take_spectrum_entry("TAKE_SPECTRUM", value)])
@@ -285,12 +289,12 @@ def test_config_parsing_host_rejects_snr():
 
 
 # =============================================================================
-# Spectrum generation (genspec)
+# Spectrum generation
 # =============================================================================
 
 
 def test_solve_texpose(testdata):
-    from jax_snlc_sim.spectrograph.genspec import (
+    from jax_snlc_sim.spectra import (
         compute_aggregate_snr, solve_texpose_batch,
     )
 
@@ -303,7 +307,8 @@ def test_solve_texpose(testdata):
         jnp.array([5000.0]), jnp.array([6000.0]), 600.0, True,
     )
     texpose = float(texpose_arr[0])
-    snr_bins, _, _, flux = get_snr_from_calib(calib, min(texpose, 5400.0), 600.0, genmag)
+    snr_bins, _, _, flux = get_snr(calib.log_texpose_list, calib.texpose_list, calib.zp,
+                                   calib.sqsigsky, min(texpose, 5400.0), 600.0, genmag)
     snr_agg = float(compute_aggregate_snr(snr_bins, calib.lam_avg, flux, 5000.0, 6000.0))
     assert abs(snr_agg / 15.0 - 1.0) < 0.05
 
@@ -347,7 +352,7 @@ def test_solve_texpose(testdata):
 
 
 def test_wavelength_smearing(testdata):
-    from jax_snlc_sim.spectrograph.genspec import (
+    from jax_snlc_sim.spectra import (
         apply_wavelength_smearing, build_smearing_matrix,
     )
 
@@ -384,7 +389,7 @@ def test_noise_application():
     """The engine's noise step draws the correlated template realisation at
     the near-peak epoch and reuses it elsewhere (GENSPEC_OBSFLUX_RANSMEAR,
     snlc_sim.c:12342)."""
-    from jax_snlc_sim.spectrograph.genspec import _add_spectrum_noise
+    from jax_snlc_sim.spectra import _add_spectrum_noise
 
     n_lam = 10
     flux = jnp.full(n_lam, 100.0)
@@ -409,7 +414,7 @@ def test_noise_draw_matches_flamerr_in_single_precision():
     """A sky-dominated red bin has FLAMERR ~1e-20 erg/s/cm^2/A, whose square
     is below float32's normal range; the drawn noise must still carry the
     quoted error, with and without a template fraction."""
-    from jax_snlc_sim.spectrograph.genspec import _add_spectrum_noise
+    from jax_snlc_sim.spectra import _add_spectrum_noise
 
     n = 100_000
     for flamerr_value in (1.8e-20, 5e-23):
@@ -466,7 +471,7 @@ _PLAIN_SPECTRA = dict(spectro_options={}, host_spec=None, hostfrac=0.0,
 
 def _with_ab_zp_sedmodel(calib):
     """Fill zp_sedmodel from the analytic AB primary (flam = 3631e-23*c/lam^2),
-    as builder._compute_zp_sedmodel would for an AB kcor."""
+    as compute_zp_sedmodel would for an AB kcor."""
     hc = 6.62607015e-27 * 2.99792458e18
     c_angs = 2.99792458e18
     lam_avg = np.asarray(calib.lam_avg)
@@ -477,7 +482,7 @@ def _with_ab_zp_sedmodel(calib):
 
 
 def test_generate_all_spectra_batch(testdata):
-    from jax_snlc_sim.spectrograph.genspec import generate_all_spectra
+    from jax_snlc_sim.spectra import generate_all_spectra
 
     calib = _with_ab_zp_sedmodel(read_spectrograph(str(testdata)))
     n_sne = 5
@@ -509,7 +514,7 @@ def test_generate_all_spectra_batch(testdata):
 
 
 def test_batch_partial_passing(testdata):
-    from jax_snlc_sim.spectrograph.genspec import generate_all_spectra
+    from jax_snlc_sim.spectra import generate_all_spectra
 
     calib = _with_ab_zp_sedmodel(read_spectrograph(str(testdata)))
     n_sne = 10
@@ -531,7 +536,7 @@ def test_batch_partial_passing(testdata):
 
 
 def test_snrsum_rest_v(testdata):
-    from jax_snlc_sim.spectrograph.genspec import generate_all_spectra
+    from jax_snlc_sim.spectra import generate_all_spectra
 
     calib = _with_ab_zp_sedmodel(read_spectrograph(str(testdata)))
     n_sne = 3
@@ -571,7 +576,7 @@ def test_spectrum_noise_mask_invariant(testdata):
     """Spectrum noise is keyed by global SN index (fold_in), so a SN's
     spectrum is identical whether generated alongside all SNe or a subset —
     the pre-selection spectra cache stays valid for the passing subset."""
-    from jax_snlc_sim.spectrograph.genspec import generate_all_spectra
+    from jax_snlc_sim.spectra import generate_all_spectra
 
     calib = _with_ab_zp_sedmodel(read_spectrograph(str(testdata)))
     n_sne = 6
@@ -605,14 +610,14 @@ def test_spectrum_noise_mask_invariant(testdata):
 
 
 def test_zp_sedmodel_matches_analytic_ab(testdata, lsst_kcor_path):
-    """_compute_zp_sedmodel on an AB-primary kcor (zero primary mags)
+    """compute_zp_sedmodel on an AB-primary kcor (zero primary mags)
     reproduces the analytic AB zero point to sub-bin-integration accuracy."""
-    from jax_snlc_core.io.kcor_reader import KcorReader
-    from jax_snlc_sim.builder import _compute_zp_sedmodel
+    from jax_snlc_core.filters import KcorReader
+    from jax_snlc_core.spectrograph import compute_zp_sedmodel
 
     calib = read_spectrograph(str(testdata))
     kcor = KcorReader(str(lsst_kcor_path))
-    zp = _compute_zp_sedmodel(calib.lam_min, calib.lam_max, kcor)
+    zp = compute_zp_sedmodel(calib.lam_min, calib.lam_max, kcor)
     analytic = np.asarray(_with_ab_zp_sedmodel(calib).zp_sedmodel)
     np.testing.assert_allclose(zp, analytic, atol=2e-3)
 
@@ -626,7 +631,7 @@ def test_spec_fits_write_read(tmp_path):
     from astropy.io import fits as afits
 
     from jax_snlc_sim.output.fits import write_spec_fits
-    from jax_snlc_sim.spectrograph.genspec import SpectrumResult
+    from jax_snlc_sim.spectra import SpectrumResult
 
     n_lam = 5
     spec = SpectrumResult(
@@ -662,7 +667,7 @@ def test_wrspec_prescale_skips_odd_cids(tmp_path):
     from astropy.io import fits as afits
 
     from jax_snlc_sim.output.fits import write_spec_fits
-    from jax_snlc_sim.spectrograph.genspec import SpectrumResult
+    from jax_snlc_sim.spectra import SpectrumResult
 
     def _spec(cid):
         return SpectrumResult(
@@ -689,8 +694,7 @@ def test_warp_spectrum_lampoly_scales_measured_flam_only():
     """WARP_SPECTRUM: LAMPOLY(...) multiplies the measured FLAM by a polynomial
     in the bin-centre wavelength; SIM_FLAM and FLAMERR are untouched
     (GENSPEC_FLAM, snlc_sim.c:12503)."""
-    import numpy as np
-    from jax_snlc_sim.spectrograph.genspec import _parse_spectro_options
+    from jax_snlc_sim.spectra import _parse_spectro_options
 
     class _Calib:
         lam_avg = np.array([4000.0, 5000.0])
@@ -711,8 +715,7 @@ def test_warp_spectrum_lampoly_scales_measured_flam_only():
 
 def test_warp_spectrum_rejects_non_lampoly():
     """LAMPOLY is the only argument SNANA accepts (snlc_sim.c:5653)."""
-    from jax_snlc_sim.config_parser import _parse_warp_spectrum
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_sim.inputs import _parse_warp_spectrum
     assert _parse_warp_spectrum('LAMPOLY(1.0,2e-5)') == [1.0, 2e-5]
     for bad in ('LAMPOLY', 'WAVEPOLY(1,2)', 'LAMPOLY(1,2'):
         with pytest.raises(SNANAError, match="WARP_SPECTRUM"):
@@ -731,7 +734,7 @@ def _write_kcor_spectrograph(path, instrument, columns=('ZP00', 'SQSKYSIG00')):
     table.header['NBT'] = 1
     table.header['TEXPOSE00'] = 100.0
     fits.HDUList([primary, table]).writeto(path)
-    from jax_snlc_core.io.kcor_reader import KcorReader
+    from jax_snlc_core.filters import KcorReader
     return KcorReader(path).spectrograph
 
 

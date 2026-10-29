@@ -14,11 +14,10 @@ a stage's result it is keyed by what was applied.
 """
 
 import re
-
 from collections.abc import Mapping
 from typing import Any, Sequence
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 #: the key of the analysis with no systematic applied
 NOMINAL = "nominal"
@@ -30,11 +29,6 @@ def cells(fitopts: Sequence, muopts: Sequence = ()) -> list[tuple[int, int]]:
             for i in range(len(fitopts) + 1)
             for j in range(len(muopts) + 1)]
 
-
-def dirname(cell: tuple[int, int]) -> str:
-    """The directory a cell writes to, as SNANA numbers it."""
-    fitopt, muopt = cell
-    return f"FITOPT{fitopt:03d}_MUOPT{muopt:03d}"
 
 
 def key(cell: tuple[int, int], fitopts: Sequence[str], muopts: Sequence[str] = ()):
@@ -58,7 +52,7 @@ def check_labels(name: str, fitopts: Sequence[str], muopts: Sequence[str] = ()):
     shared = sorted(set(fitopts) & set(muopts))
     if taken or shared:
         raise SNANAError(f"stage '{name}': a systematic may not be called "
-                         f"{NOMINAL!r} and a label may not be on both axes; "
+                         f"{NOMINAL!r}, and a label may not be on both axes; "
                          f"got {taken + shared}", function_name=name)
 
 

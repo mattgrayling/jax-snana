@@ -1,17 +1,17 @@
 """CLI for the JAX rewrite of SNANA WFIT.
 
-wfit has no input file, so `-double_precision` carries the key the other stages
-read from theirs; it defaults to single, like them.
+Configuration accepts YAML, named options, and SNANA command-line flags.
+Precision defaults to single unless double_precision is supplied.
 """
 
 import logging
 import sys
 
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import aborting
-from jax_snlc_core.utils.precision import configure_precision
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import aborting
+from jax_snlc_core.utils import configure_precision
 from jax_wfit.blinding import parameter_offsets
-from jax_wfit.config_parser import parse_command
+from jax_wfit.config import parse_command
 from jax_wfit.run import run_wfit
 
 logger = logging.getLogger("jax_wfit")
@@ -32,7 +32,7 @@ def _report(results, config) -> None:
             shift = offsets[name] if result["blinded"] else 0.0
             rows.append((name,
                          f"{value['value'] + shift:.6f} +/- {value['sigma']:.6f}"))
-        slog.summary(logger, title, rows)
+        log.summary(logger, title, rows)
 
 
 @aborting
@@ -47,10 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     configure_precision(config.double_precision)
     if verbose:
         logger.setLevel(logging.DEBUG)
-    slog.startup(logger, "wfit",
-                 sys.argv if argv is None else ["wfit"] + argv)
+    log.startup(logger, "wfit",
+                     sys.argv if argv is None else ["wfit"] + argv)
     _report(run_wfit(config), config)
-    slog.done(logger, "wfit")
+    log.done(logger, "wfit")
     return 0
 
 

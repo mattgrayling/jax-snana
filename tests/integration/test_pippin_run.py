@@ -5,8 +5,6 @@ fixture inputs, so it needs no Pippin checkout; it exercises the sections
 that have stages here, through a fitted cosmology.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import os
 from pathlib import Path
 
@@ -15,6 +13,7 @@ import yaml
 from astropy.io import fits
 
 from jax_pipeline.pippin import run_pippin
+from jax_snlc_core.snana_files import open_text
 
 _FIXTURES = Path("tests/fixtures/snana").resolve()
 _DATA = _FIXTURES / "bbc_des_data"

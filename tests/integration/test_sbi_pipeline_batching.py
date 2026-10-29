@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 from jax.extend.core import ClosedJaxpr, Jaxpr
 
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import MAG_ZEROFLUX
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.photometry.magnitudes import SNANA_NULL_MAG
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_core.random import root_key
 
 
 _KCOR = "$JAX_TEST_FIXTURE_ROOT/kcor/JAX_TEST_LSST.fits"
@@ -306,7 +306,7 @@ def test_adjust_sees_the_hosts_before_the_photometry(snana_fixture):
             - np.asarray(plain['magnitudes']))
     # an epoch without flux carries the null magnitude in both runs
     finite = np.isfinite(dmag) & (np.asarray(plain['magnitudes'])
-                                  != SNANA_NULL_MAG)
+                                  != MAG_ZEROFLUX)
     np.testing.assert_allclose(dmag[finite & massive[:, None]], 0.5, atol=1e-4)
     np.testing.assert_allclose(dmag[finite & ~massive[:, None]], 0.0, atol=1e-4)
 

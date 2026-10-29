@@ -6,7 +6,6 @@ the jax FITS and TEXT loaders). Modifier bits (BLINDTEST/COMPACT/FILTERS/CIDRAN)
 and the SNANA validation aborts are checked directly.
 """
 
-import inspect
 import os
 import re
 from pathlib import Path
@@ -14,15 +13,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
-from astropy.table import Table
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
-from jax_snlc_core.io.snana_table import SNANA_VERSION_STRING
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import SNANA_VERSION_STRING, resolve_fits_path
+from _fit_helpers import (load_and_batch_snana_fits, load_and_batch_snana_text)
 from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_sim.output.fits import _write_bintable, write_head_fits
-from jax_snlc_fit.data_loader import (load_and_batch_snana_fits,
-                                      load_and_batch_snana_text)
 
 _ROOT = "$JAX_TEST_FIXTURE_ROOT"
 _BANDS = ['LSST-g', 'LSST-r', 'LSST-i']
@@ -67,7 +64,7 @@ def _run(mask, outdir) -> str:
     cfg = dict(n_sne=40, random_seed=12345)
     sim = sim_run.prepare(str(inp), **cfg)
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_cache=spectra_cache, output_dir=outdir)
+    save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_by_sn=spectra_cache, output_dir=outdir)
     return os.path.join(outdir, "JAX_FMASK")
 
 
@@ -165,7 +162,7 @@ def _run_extra(mask, outdir, extra) -> str:
     cfg = dict(n_sne=40, random_seed=12345)
     sim = sim_run.prepare(str(inp), **cfg)
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_cache=spectra_cache, output_dir=outdir)
+    save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_by_sn=spectra_cache, output_dir=outdir)
     return os.path.join(outdir, "JAX_FMASK")
 
 
@@ -269,7 +266,7 @@ def test_readme_sntype_defaults_without_sntype_keys(tmp_path):
     cfg = dict(n_sne=40, random_seed=12345)
     sim = sim_run.prepare(str(inp), **cfg)
     results, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_cache=spectra_cache, output_dir=str(outdir))
+    save_snana_outputs(sim, results, "JAX_FMASK", sel, spectra_by_sn=spectra_cache, output_dir=str(outdir))
     txt = Path(outdir, "JAX_FMASK", "JAX_FMASK.README").read_text()
     assert re.search(r"^\s+SNTYPE:\s+1  101  #", txt, re.M)
 
@@ -342,7 +339,7 @@ def test_gzip_default_and_off(tmp_path, fits_baseline):
     cfg = dict(n_sne=40, random_seed=12345)
     sim = sim_run.prepare(str(inp), **cfg)
     res, sel, spectra_cache = sim_run.run_simulation(sim)
-    sim_run.save_snana_outputs(sim, res, "JAX_FMASK", sel, spectra_cache=spectra_cache, output_dir=odir)
+    save_snana_outputs(sim, res, "JAX_FMASK", sel, spectra_by_sn=spectra_cache, output_dir=odir)
     pdir = os.path.join(odir, "JAX_FMASK")
     assert os.path.exists(os.path.join(pdir, "JAX_FMASK_HEAD.FITS"))
     assert not os.path.exists(os.path.join(pdir, "JAX_FMASK_HEAD.FITS.gz"))
@@ -416,12 +413,20 @@ def test_bintable_writer_matches_astropy(tmp_path):
             np.testing.assert_array_equal(got, want)
 
 
-def test_long_header_keywords_use_hierarch(tmp_path):
+@pytest.mark.parametrize("simlib_path", [
+    '/' + 'a' * 120 + '/X.SIMLIB',
+    "/data/observer's/X.SIMLIB",
+    "/data/observer''s/X.SIMLIB",
+    '/' + "observer's/" * 15 + 'X.SIMLIB',
+    '/' + 'a' * 66,
+])
+def test_long_header_keywords_use_hierarch(tmp_path, simlib_path):
     """SNANA's own headers carry HIERARCH cards for the keywords beyond the
     eight characters FITS allows, WRITE_MASK_HEAD and CODE_IVERSION among them
     (sntools_dataformat_fits.c). Writing them as plain cards puts the equals
     sign past column nine and readers silently truncate the name. A file path
-    beyond one card continues over CONTINUE cards, as SNANA's do.
+    beyond one card continues over CONTINUE cards, as SNANA's do. Quoted
+    paths and values near a card boundary must also survive unchanged.
     """
     head = {'SNID': np.array([b'000001'], dtype='S16'),
             'PTROBS_MIN': np.array([1], dtype=np.int32),
@@ -429,7 +434,7 @@ def test_long_header_keywords_use_hierarch(tmp_path):
     keywords = {'CODE_IVERSION': 27, 'ZP_FLUXCAL': 27.5,
                 'SNANA_VERSION': SNANA_VERSION_STRING,
                 'SIM_VARNAME_SNRMON': 'SIM_SNRMAG21',
-                'SIMLIB_FILE': '/' + 'a' * 120 + '/X.SIMLIB',
+                'SIMLIB_FILE': simlib_path,
                 'WRITE_MASK_HEAD': 36}
     write_head_fits(keywords, 'T', str(tmp_path), head)
     hdr = fits.getheader(str(tmp_path / 'T_HEAD.FITS'), 0)

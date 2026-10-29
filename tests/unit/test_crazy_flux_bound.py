@@ -7,7 +7,7 @@ which cancels ZPADU; these tests pin that algebra and the guards around it.
 import numpy as np
 
 from jax_snlc_core.models import MODEL_REGISTRY, SimulatedModel
-from jax_snlc_core.photometry.noise import crazy_flux_bound
+from jax_snlc_sim.photometry import crazy_flux_bound
 from jax_snlc_sim.simulation import Instrument
 
 ZP = Instrument.zp_fluxcal

@@ -2,8 +2,10 @@
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
-from jax_snlc_core.utils.extrap import modelflux_extrap
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.models.sed_model import LatetimeExtrapIa, modelflux_extrap
 
 
 def test_extrap_at_phase_edge_returns_flux_edge():
@@ -54,11 +56,6 @@ def test_extrap_rise_below_explosion_clamped_to_zero():
 # ----------------------------------------------------------------------------
 # LatetimeExtrapIa parser
 # ----------------------------------------------------------------------------
-
-import pytest  # noqa: E402
-
-from jax_snlc_core.utils.extrap import LatetimeExtrapIa  # noqa: E402
-from jax_snlc_core.utils.error_handling import SNANAError
 
 
 def _write_latetime_file(tmp_path, lines):

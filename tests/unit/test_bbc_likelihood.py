@@ -7,10 +7,10 @@ import pytest
 
 from jax_salt2mu.ccprior import H11PriorInputs, CHI2_BEAMS_NOPROB
 from jax_salt2mu.config import BBCConfig
-from jax_salt2mu.covint import sigint_muresid_list
+from jax_salt2mu.map_kernels import estimate_intrinsic_scatter
 from jax_salt2mu.fitter import FitSpec, _chi2_ia
 from jax_salt2mu.likelihood import LikelihoodInputs, event_chi2, make_loss
-from jax_salt2mu.results import _muerr_renorm
+from jax_salt2mu.output import _muerr_renorm
 from jax_salt2mu.run import _chi2max_keep
 from jax_snlc_core.models import SALTModel
 
@@ -88,5 +88,7 @@ def test_population_weighted_scatter():
     variance = np.average((residuals - np.average(residuals, weights=weights))**2,
                           weights=weights)
     expected = np.sqrt(variance - .01)
-    assert sigint_muresid_list(residuals, np.full(100, .01), weights) == pytest.approx(
-        expected, abs=5e-5)
+    result, _, _ = estimate_intrinsic_scatter(
+        residuals, np.full(100, .01), weights, np.zeros(100, dtype=int),
+        np.ones(100, dtype=bool), ncell=1)
+    assert result[0] == pytest.approx(expected, abs=5e-5)

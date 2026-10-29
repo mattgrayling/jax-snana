@@ -6,14 +6,15 @@ import numpy as np
 import pytest
 
 from jax_salt2mu.ccprior import dmu_window_max
-from jax_salt2mu.config import BBCConfig, MASK_BIASCOR_SAMPLE, resolve
-from jax_salt2mu.config_parser import parse_bbc_input
+from jax_salt2mu.config import MASK_BIASCOR_SAMPLE, BBCConfig, resolve
+from jax_salt2mu.config import parse_bbc_input
+from jax_salt2mu.distances import bias_parameters
 from jax_salt2mu.run import check_vpec_sign, run_bbc_fit
 from jax_salt2mu.samples import partition_idsamples
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, read_tablevar
+from jax_salt2mu.tablevar import EVENT_TYPE_DATA
+from _bbc_helpers import read_tablevar
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import BayeSNModel, SALTModel
-from jax_salt2mu.distances import bias_parameters
-from jax_snlc_core.utils.error_handling import SNANAError
 
 
 def _write(tmp_path, text):

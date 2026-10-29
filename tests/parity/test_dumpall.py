@@ -22,14 +22,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
-
-from jax_snlc_core.io.snana_dump_reader import load_snana_dump
-from jax_snlc_core.models import SALTModel
-from replay_snana_dump import build_override_parameters
-from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.output.dump import _STATIC_DUMP_VARIABLES
-
 from parity._dumpall_helpers import compare_dumps, parse_dump
+from replay_snana_dump import build_override_parameters
+
+from jax_snlc_core.models import SALTModel
+from jax_snlc_core.snana_files import load_snana_dump
+from jax_snlc_sim import run as sim_run
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.output.dump import _STATIC_DUMP_VARIABLES
 
 
 def _run_jax_replay(input_file: Path, gv: str, snana_dump: Path, snana_head: Path,
@@ -67,7 +67,7 @@ def _run_jax_replay(input_file: Path, gv: str, snana_dump: Path, snana_head: Pat
     try:
         os.chdir(work_root)
         results, selection, spectra_cache = sim_run.run_simulation(sim, override_parameters=override)
-        sim_run.save_snana_outputs(sim, results, gv, selection, spectra_cache=spectra_cache)
+        save_snana_outputs(sim, results, gv, selection, spectra_by_sn=spectra_cache)
     finally:
         os.chdir(cwd)
 
@@ -139,7 +139,7 @@ def test_replay_needs_av_when_the_sim_generates_dust(snana_fixture):
     """A dump without AV cannot replay a sim that draws host dust: the
     physics would run dust-free while the sim did not, so the replay aborts
     as it does without MU."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     fx = snana_fixture("bayesn_w22")
     dump = load_snana_dump(str(fx.dump), dedup_cid=True)
@@ -159,7 +159,7 @@ def test_replay_reads_any_name_the_dump_used(snana_fixture):
     SALT2x1 and SALT2c: SNANA registers each pair as one variable
     (snlc_sim.c:16050, :16083, :16486-16500), and the Foundation input of
     DES-SN5YR writes the first spellings."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     fx = snana_fixture("dumpall_listed_cols")
     dump = load_snana_dump(str(fx.dump), dedup_cid=True)
@@ -198,7 +198,7 @@ def test_dump_column_resolution_by_source():
     pattern. Each is pinned to the array it must return and the format the
     writer prints it with, which differs by source.
     """
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     from jax_snlc_sim.output.dump import _resolve_dump_column
 
     pool = {'CID': np.array([1, 2]), 'PEAKMJD': np.array([55000.5, 55001.5])}

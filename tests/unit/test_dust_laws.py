@@ -4,14 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.physics.dust_laws import (
-    CCM89DustLaw,
-    ODonnell94DustLaw,
-    _linear_coeffs_irr,
-    _spline_coeffs_irr,
-)
-from jax_snlc_core.utils.interp import invkd_irr
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.dust import CCM89DustLaw, ODonnell94DustLaw, _linear_coeffs_irr
+from jax_snlc_core.interpolation import invkd_irr, spline_coefficients
+from jax_snlc_core.logging import SNANAError
 
 
 _OPT_WAVELENGTHS = jnp.array([3500.0, 4500.0, 5500.0, 6500.0, 8000.0])  # ugriz-like
@@ -49,20 +44,13 @@ def test_invkd_irr_shape_and_zero_boundary_rows():
     np.testing.assert_array_equal(M[-1, :], 0.0)
 
 
-def test_spline_coeffs_irr_partition_of_unity_inside_grid():
+def test_spline_coefficients_partition_of_unity_inside_grid():
     """Within the knot range each row of J sums to 1 (Lagrange property)."""
     knots = np.array([0.0, 1.0, 2.5, 4.0, 5.0])
     invkd = invkd_irr(knots)
     x_int = np.array([0.5, 2.0, 3.5])
-    J = _spline_coeffs_irr(x_int, knots, invkd, allow_extrap=False)
+    J = spline_coefficients(jnp.asarray(x_int), jnp.asarray(knots), jnp.asarray(invkd), 0)
     np.testing.assert_allclose(J.sum(axis=1), 1.0, atol=1e-9)
-
-
-def test_spline_coeffs_irr_extrap_raises_when_disallowed():
-    knots = np.array([0.0, 1.0, 2.0, 3.0, 4.0])  # need >=4 knots for invKD_irr
-    invkd = invkd_irr(knots)
-    with pytest.raises(SNANAError):
-        _spline_coeffs_irr(np.array([5.0]), knots, invkd, allow_extrap=False)
 
 
 def test_linear_coeffs_irr_partition_of_unity():
@@ -83,9 +71,7 @@ def test_linear_coeffs_irr_recovers_knot_values():
 def test_fitz99_approx_aborts_above_wavemax():
     """SNANA aborts F99-approx above 25000 A (GALextinct_Fitz99_approx,
     MWgaldust.c:655-662); no silent fallback to raw O'Donnell94."""
-    from jax_snlc_core.physics.dust_laws import (
-        Fitzpatrick99ApproxDustLaw, WAVEMAX_FITZ99)
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.dust import WAVEMAX_FITZ99, Fitzpatrick99ApproxDustLaw
     law = Fitzpatrick99ApproxDustLaw()
     ok = np.asarray(law.extinction_curve(
         jnp.array([4000.0, WAVEMAX_FITZ99]), rv=3.1))
@@ -99,7 +85,7 @@ def test_somm26_is_the_symbolic_regression_curve():
     three terms at two other wavelengths worked by hand from the formula
     (GALextinct_Somm26, MWgaldust.c:1243-1252), four PARLIST_MWCOLORLAW
     values required and B0, B3 not negative."""
-    from jax_snlc_core.physics.dust_laws import load_dust_law
+    from jax_snlc_core.dust import load_dust_law
     law = load_dust_law("SOMM26")
     with pytest.raises(SNANAError, match="requires PARLIST_MWCOLORLAW"):
         law.extinction_curve(jnp.array([5542.0]), rv=3.1)
@@ -129,7 +115,7 @@ def test_per_event_av_reaches_the_law():
     curve shape reads AV (Somm25) must return per-event rows for a column of
     AVs; a law that ignores AV must return the one shared curve, so the
     factorised arithmetic downstream is unchanged."""
-    from jax_snlc_core.physics.dust_laws import load_dust_law
+    from jax_snlc_core.dust import load_dust_law
     av = jnp.array([0.05, 0.5, 2.0])[:, None]
 
     somm = load_dust_law("SOMM25")

@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.hostlib.hostspec_reader import read_host_spec_table
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.hostlib.spectra import read_host_spec_table
 
 _TABLE = """DOCUMENTATION:
   PURPOSE: test
@@ -63,7 +63,8 @@ def test_eazy_templates_list_resolves_against_the_list_files_directory(tmp_path)
     column (sntools_host.c:2021). The row order, not the index column, numbers
     the basis vectors.
     """
-    (tmp_path / "t1.dat").write_text("# wave flux\n100.0 1.0\n200.0 2.0\n")
+    (tmp_path / "t1.dat").write_text("DOCUMENTATION:\nPURPOSE: template\nDOCUMENTATION_END:\n"
+                                     "! comment\n% comment\n@ comment\n100.0 1.0\n200.0 2.0\n")
     (tmp_path / "t2.dat").write_text("# wave flux\n100.0 10.0\n200.0 20.0\n")
     # Row order reversed w.r.t. the index column, and the paths are bogus:
     # only the basename survives, so template order follows the rows.
@@ -125,7 +126,7 @@ def test_hostlib_column_names_follow_snanas_spelling(tmp_path):
     'COEFF_SPECBASIS00'", so the prefix and the 2-digit read-order index are
     both pinned by SNANA's own message.
     """
-    from jax_snlc_sim.hostlib.hostspec_reader import hostlib_column_names
+    from jax_snlc_sim.hostlib.spectra import hostlib_column_names
     t = read_host_spec_table(_write(tmp_path), 'SPECBASIS')
     assert hostlib_column_names(t) == ['COEFF_SPECBASIS00', 'COEFF_SPECBASIS01']
     d = read_host_spec_table(_write(tmp_path, 'SPECDATA'), 'SPECDATA')
@@ -133,7 +134,7 @@ def test_hostlib_column_names_follow_snanas_spelling(tmp_path):
 
 
 def test_coefficients_are_gathered_in_basis_order(tmp_path):
-    from jax_snlc_sim.hostlib.hostspec_reader import hostlib_coefficients
+    from jax_snlc_sim.hostlib.spectra import hostlib_coefficients
     t = read_host_spec_table(_write(tmp_path), 'SPECBASIS')
     cols = {'COEFF_SPECBASIS00': np.array([1.0, 2.0]),
             'COEFF_SPECBASIS01': np.array([10.0, 20.0]),
@@ -144,7 +145,7 @@ def test_coefficients_are_gathered_in_basis_order(tmp_path):
 
 def test_a_missing_coefficient_column_aborts(tmp_path):
     """A dropped column must not quietly become a zero coefficient."""
-    from jax_snlc_sim.hostlib.hostspec_reader import hostlib_coefficients
+    from jax_snlc_sim.hostlib.spectra import hostlib_coefficients
     t = read_host_spec_table(_write(tmp_path), 'SPECBASIS')
     with pytest.raises(SNANAError, match="COEFF_SPECBASIS01"):
         hostlib_coefficients(t, {'COEFF_SPECBASIS00': np.array([1.0])})
@@ -157,7 +158,7 @@ def test_hostlib_load_gathers_coefficients_in_redshift_sorted_order(tmp_path):
     Set on the config after parsing: the parser's own gate aborts on these
     keys until the spectra path exists, so this runs the build directly.
     """
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     from jax_snlc_sim.builder import build_simulation
 
     spec = tmp_path / "spec.dat"
@@ -194,7 +195,7 @@ def test_host_epoch_without_a_spec_source_aborts(tmp_path):
     Without the check jax would emit an SN spectrum at phase 0 labelled as a
     host spectrum.
     """
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     inp = tmp_path / "in.input"
     inp.write_text(open(_fixture_input()).read()
                    + "\nTAKE_SPECTRUM: HOST TEXPOSE_ZPOLY(2000,0)\n")
@@ -205,7 +206,7 @@ def test_host_epoch_without_a_spec_source_aborts(tmp_path):
 def test_both_contamination_fractions_abort(tmp_path):
     """HOSTFRAC and HOSTSNFRAC each set the same scale, so SNANA rejects the
     pair rather than letting the second silently win (snlc_sim.c:11737)."""
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     inp = tmp_path / "in.input"
     inp.write_text(open(_fixture_input()).read()
                    + "\nTAKE_SPECTRUM_HOSTFRAC: 0.1"
@@ -217,7 +218,7 @@ def test_both_contamination_fractions_abort(tmp_path):
 def test_contamination_without_a_host_epoch_aborts(tmp_path):
     """There is nothing to contaminate with. SNANA indexes GENSPEC.IMJD_HOST,
     left at its -9 initialiser when no HOST epoch was asked for."""
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     inp = tmp_path / "in.input"
     inp.write_text(open(_fixture_input()).read()
                    + "\nTAKE_SPECTRUM_HOSTFRAC: 0.1\n")
@@ -256,8 +257,8 @@ def test_malformed_host_spectrum_file_fails_at_load(tmp_path):
     """The named file is read when the builder runs, so a bad table is caught
     before generation. Config parsing does not open it — an override may still
     replace the path."""
-    from jax_snlc_sim.config_parser import parse_snana_input_file
-    from jax_snlc_sim.builder import _read_host_spec_table
+    from jax_snlc_sim.inputs import parse_snana_input_file
+    from jax_snlc_sim.hostlib.spectra import load_host_spec_table
     spec = tmp_path / "spec.dat"
     spec.write_text("VARNAMES: ROW WAVELENGTH FLUX\nROW: 1 2000.0 1.0\n")
     inp = tmp_path / "in.input"
@@ -265,4 +266,4 @@ def test_malformed_host_spectrum_file_fails_at_load(tmp_path):
                    + f"\nHOSTLIB_SPECBASIS_FILE: {spec}\n")
     cfg = parse_snana_input_file(str(inp))
     with pytest.raises(SNANAError, match="SPECBASIS"):
-        _read_host_spec_table(cfg)
+        load_host_spec_table(cfg)

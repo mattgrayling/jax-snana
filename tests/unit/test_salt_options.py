@@ -6,10 +6,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
-from jax_snlc_core.models.salt_model import load_salt_data
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_core.utils.extrap import modelflux_extrap
+from jax_snlc_core.models.salt import load_salt_data
+from jax_snlc_core.models.sed_model import modelflux_extrap
 from jax_snlc_fit.fitter import fit_static_data
 
 

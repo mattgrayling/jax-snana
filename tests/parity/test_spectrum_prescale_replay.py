@@ -20,8 +20,9 @@ import glob
 import numpy as np
 from astropy.io import fits
 
-from jax_snlc_core.io.fits_path import resolve_fits_path  # noqa: E402
-from jax_snlc_sim.random_streams import root_key
+from jax_snlc_core.snana_files import resolve_fits_path
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.spectra import compute_spectra_for_mask, spectrum_prescales
 
 PRESCALE = 4.0
 N_LIBID_FIELDS = ('TOY_A', 'TOY_B')
@@ -85,7 +86,7 @@ def test_jax_retained_fraction_matches_snana(snana_fixture, tmp_path):
     resources = sim
     results, sel, _ = sim_run.run_simulation(sim)
     mask = np.asarray(sel['passing_mask'])
-    spectra, _ = sim_run.compute_spectra_for_mask(
+    spectra, _ = compute_spectra_for_mask(
         sim, results, mask,
         key=root_key(simulation.run.random_seed))
 
@@ -112,7 +113,7 @@ def test_jax_retained_fraction_matches_snana(snana_fixture, tmp_path):
 def test_prescale_draws_follow_the_sn_not_the_row(snana_fixture, tmp_path):
     """The prescale draw is keyed on each SN's global index, not its row number."""
     from jax_snlc_sim import run as sim_run
-    from jax_snlc_sim.selection import keep_events
+    from jax_snlc_sim.observations import keep_events
 
     fx = snana_fixture("spectrum_prescale_replay")
     cfg = dict(
@@ -124,13 +125,13 @@ def test_prescale_draws_follow_the_sn_not_the_row(snana_fixture, tmp_path):
 
     mask = np.ones(len(np.asarray(results['parameters']['cid'])), dtype=bool)
     key = root_key(simulation.run.random_seed)
-    spectra_full, _ = sim_run.compute_spectra_for_mask(
+    spectra_full, _ = compute_spectra_for_mask(
         sim, results, mask, key=key)
     kept_full = set(spectra_full.keys())
 
     keep = np.arange(len(mask)) % 3 != 0
     thinned, _ = keep_events(results, selection, keep, written_only=False)
-    spectra_thinned, _ = sim_run.compute_spectra_for_mask(
+    spectra_thinned, _ = compute_spectra_for_mask(
         sim, thinned,
         np.ones(int(keep.sum()), dtype=bool), key=key)
 
@@ -162,7 +163,7 @@ def test_prescale_keeps_entries_separate(snana_fixture):
     simulation = replace(simulation, spectra=replace(
         simulation.spectra, take_spectrum=entries, take_spectrum_prescale={}))
     sim = run.prepare(simulation)
-    keep = np.asarray(run.spectrum_prescales(
+    keep = np.asarray(spectrum_prescales(
         sim, results, key=root_key(11)))
     # Expanded epochs share the input key's draw; different keys do not.
     np.testing.assert_array_equal(keep[:, 0], keep[:, 1])
@@ -171,7 +172,7 @@ def test_prescale_keeps_entries_separate(snana_fixture):
     simulation = replace(simulation, spectra=replace(
         simulation.spectra, take_spectrum_prescale={'TOY_A': 1e9}))
     sim = run.prepare(simulation)
-    keep = np.asarray(run.spectrum_prescales(
+    keep = np.asarray(spectrum_prescales(
         sim, results, key=root_key(11)))
     assert not keep[:, :3].any()
     assert keep[:, 3].all()

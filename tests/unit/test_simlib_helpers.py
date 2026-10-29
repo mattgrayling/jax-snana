@@ -2,8 +2,8 @@
 
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.survey.simlib_reader import _parse_idexpt_token
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.simlib import _parse_idexpt_token
 
 
 def test_parse_idexpt_basic():

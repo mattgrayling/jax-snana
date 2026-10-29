@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from jax_salt2mu.biascor_map import FitParBias
-from jax_salt2mu.biascor_map import BiasCorMap, fitparbias_events
-from jax_salt2mu.cellgrid import BinInfo, CellGrid, uniform_bininfo
+from jax_salt2mu.biascor import FitParBias, BiasCorMap, fitparbias_events
+from jax_salt2mu.binning import BinInfo, CellGrid
+from _bbc_helpers import uniform_bininfo
 
 
 def _const_map(bias=0.5, npercell=20):

@@ -11,7 +11,7 @@ naming it. Scheduling keys are ignored with a log line each.
 
 import argparse
 import copy
-import glob
+import dataclasses
 import logging
 import math
 import os
@@ -23,25 +23,23 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from astropy.io import fits as pyfits
 
 from jax_create_cov.config import resolve_rebin_bins
-from jax_create_cov.config_parser import parse_covopt
-from jax_snlc_core.io.fits_path import open_text
-from jax_snlc_core.utils import group_equal
-from jax_snlc_core.utils import snana_log as slog
-from jax_snlc_core.utils.error_handling import SNANAError, aborting
-from jax_snlc_core.utils.precision import configure_precision
+from jax_create_cov.config import parse_covopt
+from jax_snlc_core import logging as log
+from jax_snlc_core.logging import SNANAError, aborting
+from jax_snlc_core.snana_files import fitopt_muopt_name, open_text
+from jax_snlc_core.utils import configure_precision, group_equal
 from jax_snlc_fit.config_parser import group_override_tokens, known_keys
+from jax_snlc_fit.loader import version_survey
 from jax_snlc_sim.simulation import FORMAT_MASK_CIDRAN
-from jax_wfit.config_parser import build_parser, cli_keys
+from jax_wfit.config import (build as build_cosmology_config, build_parser, cli_keys,
+                             read_keys as read_cosmology_keys)
 
-from .classify import Classify, Train
-from .classifiers.perfect import Perfect
-from .classifiers.supernnova import SuperNNova
-from .run import run
-from .stages import (BBC, Cosmology, Covariance, Data, Fit, FitVersion, Sim, Stage,
-                     sync_setting)
+from .supernnova import SuperNNova
+from .classify import Classify, Perfect, Train
+from .run import run, validate_graph
+from .stages import BBC, Cosmology, Covariance, Data, Fit, FitVersion, Sim, Stage, sync_setting
 
 logger = logging.getLogger(__name__)
 
@@ -131,17 +129,11 @@ def _locate(text: str, data_dirs: Sequence[Path], section: str, name: str) -> Pa
 
 def _survey(stage: Stage) -> str:
     """The survey a source stage's data belongs to, which chooses the FITOPTS
-    block: the SIMLIB header for a simulation, the HEAD header for data."""
+    block: the SIMLIB header for a simulation, the data version's survey metadata."""
     if isinstance(stage, Sim):
-        input_file, overrides = stage.input_files[0], stage.overrides[0]
-        simlib = overrides.get("SIMLIB_FILE")
-        if simlib is None:
-            for line in input_file.read_text().splitlines():
-                tokens = line.split()
-                if tokens[:1] == ["SIMLIB_FILE:"]:
-                    simlib = tokens[1]
-        if simlib is None:
-            raise SNANAError(f"{input_file} names no SIMLIB_FILE", function_name="pippin")
+        simlib = stage.configuration().survey.simlib_file
+        if not simlib:
+            raise SNANAError(f"{stage.input_files[0]} names no SIMLIB_FILE", function_name="pippin")
         with open_text(os.path.expandvars(simlib)) as f:
             for line in f:
                 tokens = line.split()
@@ -150,10 +142,7 @@ def _survey(stage: Stage) -> str:
                 if "SURVEY:" in tokens:
                     return tokens[tokens.index("SURVEY:") + 1]
         raise SNANAError(f"{simlib} names no SURVEY in its header", function_name="pippin")
-    heads = sorted(glob.glob(str(stage.directory / "*_HEAD.FITS*")))
-    if not heads:
-        raise SNANAError(f"{stage.directory} holds no HEAD file", function_name="pippin")
-    return str(pyfits.getheader(heads[0], 0)["SURVEY"]).strip()
+    return version_survey(stage.directory)
 
 
 class _Graph:
@@ -996,6 +985,85 @@ def read(path, data_dirs: Sequence = ()) -> list[Stage]:
     return graph.stages()
 
 
+def _paths(value):
+    if isinstance(value, Path):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _paths(item)
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            yield from _paths(item)
+
+
+def check(path, data_dirs=()) -> dict:
+    """Read inputs, validate stage configurations and return an execution plan.
+
+    Does not initialise models, generate events, fit data or write outputs.
+    Checks requiring generated tables are performed when the analysis runs.
+    """
+    stages = validate_graph(read(path, data_dirs))
+    plan = []
+    for stage in stages:
+        paths = [p for field in dataclasses.fields(stage)
+                 for p in _paths(getattr(stage, field.name))]
+        paths.extend(stage.cache_files())
+        if isinstance(stage, Fit):
+            paths.extend(stage.source_files())
+        for source in paths:
+            if not source.exists():
+                raise SNANAError(f"input {source} does not exist", function_name=stage.name)
+        entry = dict(name=stage.name, stage=type(stage).__name__,
+                     inputs={role: used.name for role, used in stage.inputs().items()})
+        if paths:
+            entry["files"] = list(dict.fromkeys(str(p) for p in paths))
+        if isinstance(stage, Sim):
+            seeds = []
+            for index in range(len(stage.input_files)):
+                config = stage.configuration(index)
+                seeds.append(config.run.random_seed)
+            entry["simulation_seeds"] = seeds
+        elif isinstance(stage, Fit) and stage.fitres is None:
+            for cell in stage.grid_cells():
+                stage.configuration(cell)
+        elif isinstance(stage, BBC):
+            entry["sync_events"] = stage.event_sync()
+            probability_columns = {}
+            for muopt in sorted({j for _, j in stage.grid_cells()}):
+                config = stage.configuration(muopt)
+                if config.varname_pia:
+                    probability_columns[f"MUOPT{muopt:03d}"] = config.varname_pia
+            if probability_columns:
+                entry["probability_columns"] = probability_columns
+            entry.update(realisation=stage.realisation, split_index=stage.split_index,
+                         split_count=stage.split_count)
+            if stage.require_probability_column:
+                entry["requires_existing_probability_columns"] = True
+        elif isinstance(stage, Covariance):
+            config, _, _ = stage.configuration()
+            entry.update(mode=config.mode,
+                         covopts=["ALL", *(c.label for c in config.covopts)])
+        elif isinstance(stage, Cosmology):
+            keys = {} if stage.input_file is None else read_cosmology_keys(str(stage.input_file))
+            if {"cospar_yaml", "outfile_cospar"} & (keys.keys() | stage.overrides.keys()):
+                raise SNANAError("cosmology stage names its own output files", function_name=stage.name)
+            build_cosmology_config({**keys, **stage.overrides})
+            entry["covopts"] = list(stage.covopts)
+        if isinstance(stage, Data):
+            entry["reuse"] = str(stage.directory)
+        elif isinstance(stage, Fit) and stage.fitres:
+            entry["reuse"] = str(stage.fitres)
+        elif isinstance(stage, Classify) and stage.predictions:
+            entry["reuse"] = str(stage.predictions)
+        if isinstance(stage, (Fit, Classify, BBC)):
+            fitopts, muopts = stage.systematics()
+            entry["combinations"] = [dict(directory=fitopt_muopt_name((i, j)),
+                fitopt="DEFAULT" if i == 0 else fitopts[i - 1],
+                muopt="DEFAULT" if j == 0 else muopts[j - 1]) for i, j in stage.grid_cells()]
+        plan.append(entry)
+    return {"configuration": str(path), "stages": plan}
+
+
 def run_pippin(path, outdir, data_dirs: Sequence = (), refresh=()) -> dict[str, Any]:
     """Run a Pippin config as a pipeline; see :func:`read` and :func:`run`."""
     return run(*read(path, data_dirs), outdir=outdir, refresh=refresh)
@@ -1026,16 +1094,15 @@ def main(argv=None) -> None:
         parser.error("--check does not run stages; omit --refresh and --refresh-all")
     logging.basicConfig(format="%(message)s", level=logging.INFO,
                         stream=sys.stdout)
-    slog.startup(logger, "jax_pipeline",
-                 sys.argv if argv is None else ["jax_pipeline"] + argv)
+    log.startup(logger, "jax_pipeline",
+                sys.argv if argv is None else ["jax_pipeline"] + argv)
     configure_precision(args.double_precision)
     if args.check:
-        from .check import check
         print(yaml.safe_dump(check(args.config, args.data_dir), sort_keys=False))
     else:
         run_pippin(args.config, args.outdir, args.data_dir,
                    refresh=True if args.refresh_all else args.refresh)
-    slog.done(logger, "jax_pipeline")
+    log.done(logger, "jax_pipeline")
 
 
 if __name__ == "__main__":

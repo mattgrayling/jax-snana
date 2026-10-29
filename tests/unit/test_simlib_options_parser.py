@@ -2,8 +2,8 @@
 
 import pytest
 
-from jax_snlc_sim.config_parser import parse_snana_input_file
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 def _write_input(path, *, kcor_path, simlib_path, model_path, extra_lines=None):
@@ -123,7 +123,6 @@ def test_cadence_controls_filter_fields(minimal):
     from jax_snlc_sim import builder
 
     def load(extra=None):
-        builder._SIMLIB_CACHE.clear()
         return builder._load_simlib(parse_snana_input_file(minimal(extra)))
 
     base = load()
@@ -176,7 +175,7 @@ def test_forceval_psf_overrides_all_obs(minimal):
 
 def test_resolve_input_path_uses_path_user_input(tmp_path):
     """PATH_USER_INPUT provides a fallback search dir for bare-name input files."""
-    from jax_snlc_sim.config_parser import _resolve_input_path
+    from jax_snlc_sim.inputs import resolve_input_path
     from jax_snlc_sim.simulation import Run
     d = tmp_path / "inputs"
     d.mkdir()
@@ -184,10 +183,47 @@ def test_resolve_input_path_uses_path_user_input(tmp_path):
     f.write_text("x")
     run = Run(path_user_input=str(d))
     # a bare name not found in cwd resolves from PATH_USER_INPUT
-    assert _resolve_input_path("my.KCOR", run) == str(f)
+    assert resolve_input_path("my.KCOR", run) == str(f)
     # an already-resolvable path is returned unchanged
-    assert _resolve_input_path(str(f), run) == str(f)
+    assert resolve_input_path(str(f), run) == str(f)
     # empty stays empty (no false-positive match to the directory)
-    assert _resolve_input_path("", run) == ""
+    assert resolve_input_path("", run) == ""
     # no PATH_USER_INPUT → plain expandvars passthrough
-    assert _resolve_input_path("nope.KCOR", Run()) == "nope.KCOR"
+    assert resolve_input_path("nope.KCOR", Run()) == "nope.KCOR"
+
+
+def test_reload_reads_updated_simlib(minimal, lsst_simlib_path, tmp_path):
+    """Rebuilding from the same path must see changed observing conditions."""
+    from jax_snlc_sim.builder import _load_simlib
+
+    source = tmp_path / "updated.SIMLIB"
+    original = lsst_simlib_path.read_text()
+    source.write_text(original)
+    config = parse_snana_input_file(minimal())
+    config.survey.simlib_file = str(source)
+    first = _load_simlib(config)
+    source.write_text(original.replace("MWEBV: 0.0200", "MWEBV: 0.0400"))
+    second = _load_simlib(config)
+    assert first.fields[0].mwebv == pytest.approx(0.02)
+    assert second.fields[0].mwebv == pytest.approx(0.04)
+
+
+def test_synthetic_epochs_do_not_leak_between_builds(minimal, data_root):
+    """Appending synthetic photometry must not alter a later SIMLIB load."""
+    from jax_snlc_sim.builder import _load_kcor, _load_simlib
+    from jax_snlc_sim.simlib import append_spectrograph_photometry
+    from jax_snlc_sim.spectra import load_spectrograph
+
+    config = parse_snana_input_file(minimal())
+    config.survey.simlib_file = str(data_root / "simlib/JAX_TEST_LSST_SIMSPEC.SIMLIB")
+    config.survey.kcor_file = str(data_root / "kcor/JAX_TEST_LSST_SPECTRO.fits")
+    config.survey.use_simlib_spectrograph = True
+    first = _load_simlib(config)
+    original_counts = [field.nobs for field in first.fields]
+    kcor = _load_kcor(config)
+    calibration = load_spectrograph(config, kcor)
+    append_spectrograph_photometry(
+        first, calibration, kcor, config.spectra.spectrograph_scale_texpose)
+    assert any(field.nobs > count for field, count in zip(first.fields, original_counts))
+    second = _load_simlib(config)
+    assert [field.nobs for field in second.fields] == original_counts

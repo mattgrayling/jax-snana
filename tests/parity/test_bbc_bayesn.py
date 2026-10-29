@@ -10,10 +10,10 @@ tests/fixtures/snana/bbc_des_bayesn_data/README.md.
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.fitres_reader import read_fitres
-from jax_snlc_core.utils.error_handling import SNANAError
 from jax_salt2mu.config import BBCConfig
 from jax_salt2mu.run import run_bbc_fit
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import read_fitres
 
 _DATA_DIR = "tests/fixtures/snana/bbc_des_bayesn_data"
 _BC_DIR = "tests/fixtures/snana/bbc_des_bayesn_biascor"

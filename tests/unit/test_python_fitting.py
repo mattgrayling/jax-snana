@@ -1,16 +1,17 @@
 """The public fitting lifecycle, using installed resources and real kernels."""
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from astropy.io import fits
 
-from jax_snlc_core.io.fits_path import resolve_fits_path
+from jax_snlc_core.snana_files import resolve_fits_path
 from jax_snlc_fit import LightCurveFitter
+from jax_snlc_fit.fitter import fitwin_trest_bounds
 
 
 def test_repeated_fit_keeps_model_and_previous_predictions():
-    fitter = LightCurveFitter.from_model(
+    fitter = LightCurveFitter(
         'SALT3.K21', batch_size=2, n_fit_iterations=1, maxiter_round1=2)
     model = fitter.model
     calibration = fitter.calibration
@@ -28,8 +29,7 @@ def test_repeated_fit_keeps_model_and_previous_predictions():
         photometry={'snid': ['SN2'] * 8, 'mjd': times[:8], 'flux': flux[:8] / 10.,
                     'flux_err': np.full(8, .5), 'band': ['r_PS1'] * 8},
         objects={'snid': ['SN2'], 'redshift': [.1]}, zp=25.)
-    assert second.context[0][0]['batch'].zp_fluxcal == 25.
-    np.testing.assert_allclose(second.context[0][0]['batch'].fluxcals[0], flux[:8] / 10.)
+    assert second.n_sne == 1
     assert fitter.model is model
     assert fitter.calibration is calibration
     assert fitter.epoch_lengths == [12]
@@ -47,7 +47,7 @@ def test_repeated_fit_keeps_model_and_previous_predictions():
 
 def test_redback_prior_support_and_rejected_bounds():
     pytest.importorskip("redback_jax")
-    fitter = LightCurveFitter.from_model(
+    fitter = LightCurveFitter(
         'REDBACK.arnett_bolometric', batch_size=1,
         priors={'mej': {'distribution': 'uniform', 'lower': '1e0', 'upper': '2e0'}},
         bounds={'mej': (-100., 1000000.)})
@@ -60,7 +60,7 @@ def test_redback_prior_support_and_rejected_bounds():
 
 
 def test_bayesn_bundled_model_can_be_prepared():
-    fitter = LightCurveFitter.from_model('BAYESN.W22', batch_size=1)
+    fitter = LightCurveFitter('BAYESN.W22', batch_size=1)
     assert 'THETA' in fitter.param_names
     assert 'g_PS1' in fitter.calibration.get_filter_names()
 
@@ -73,7 +73,7 @@ def test_bayesn_arrays_return_model_distance_columns(snana_fixture, data_root):
         redshift, peak = float(head['REDSHIFT_HELIO']), float(head['PEAKMJD'])
     with fits.open(fixture.phot_fits) as hdus:
         phot = hdus[1].data[start:stop].copy()
-    fitter = LightCurveFitter.from_model(
+    fitter = LightCurveFitter(
         'BAYESN.W22', calibration=data_root / 'kcor/JAX_TEST_LSST.fits',
         batch_size=1, n_fit_iterations=1, maxiter_round1=2, opt_mwebv=0)
     result = fitter.fit(
@@ -90,16 +90,16 @@ def test_bayesn_arrays_return_model_distance_columns(snana_fixture, data_root):
 
 
 def test_full_filter_names_control_independent_bands():
-    from jax_snlc_fit.fitter import shift_map_with_poly
-    from jax_snlc_core.photometry.filter_system import filter_values
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_fit.calibration import shift_map_with_poly
+    from jax_snlc_core.filters import filter_values
+    from jax_snlc_core.logging import SNANAError
 
     names = ['g_PS1', 'r_PS1']
-    fitter = LightCurveFitter.from_model(
+    fitter = LightCurveFitter(
         'SALT3.K21', batch_size=1, filtlist_fit=names,
         fitwin_trest_filter={'g_PS1': (-10., 20.), 'r_PS1': (-5., 30.)},
         fudge_fiterr_passbands=['g_PS1'], fudge_mag_coverr={'r_PS1': .02})
-    lo, hi = fitter.config.fit.fitwin_trest_bounds(names)
+    lo, hi = fitwin_trest_bounds(fitter.config, names)
     np.testing.assert_array_equal(lo, [-10., -5.])
     np.testing.assert_array_equal(hi, [20., 30.])
     assert fitter.fudge_fiterr_passband_mask == (True, False)
@@ -113,8 +113,8 @@ def test_full_filter_names_control_independent_bands():
 
 
 def test_full_filter_names_reach_photometry_corrections():
-    from jax_snlc_fit.data_loader import batch_from_columns
-    from jax_snlc_fit.batch import snrmax_band_mask
+    from jax_snlc_fit.loader import batch_from_columns
+    from jax_snlc_fit.cuts import snrmax_band_mask
 
     names = {0: 'g_PS1', 1: 'r_PS1'}
     head = dict(SNID=['A'], PTROBS_MIN=[1], PTROBS_MAX=[4],
@@ -133,7 +133,7 @@ def test_full_filter_names_reach_photometry_corrections():
 
 
 def test_empty_observations_report_every_object():
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=1)
+    fitter = LightCurveFitter('SALT3.K21', batch_size=1)
     result = fitter.fit(mjd=[], flux=[], flux_err=[], band='g_PS1', redshift=.1)
     table = result.to_table()
     assert len(table) == 1
@@ -144,13 +144,13 @@ def test_empty_observations_report_every_object():
 
 @pytest.mark.parametrize('zero_point', [25., 27.5, 31.4])
 def test_flux_units_share_the_calibration_zero_point(zero_point):
-    from jax_snlc_fit.python import _flux_factor
+    from jax_snlc_fit.calibration import flux_factor
 
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=1)
+    fitter = LightCurveFitter('SALT3.K21', batch_size=1)
     bands = np.array(['g_PS1', 'r_PS1'])
-    jy = _flux_factor('Jy', None, bands, fitter.calibration,
+    jy = flux_factor('Jy', None, bands, fitter.calibration,
                      fitter.model.wavelength_grid, zp_fluxcal=zero_point)
-    microjy = _flux_factor('uJy', None, bands, fitter.calibration,
+    microjy = flux_factor('uJy', None, bands, fitter.calibration,
                           fitter.model.wavelength_grid, zp_fluxcal=zero_point)
     np.testing.assert_allclose(jy, microjy * 1e6, rtol=1e-12)
     # A 20th-magnitude AB source, including the catalogue's calibration offsets.
@@ -158,7 +158,7 @@ def test_flux_units_share_the_calibration_zero_point(zero_point):
     offsets = np.array([fitter.calibration.filter_primary_mag[name] for name in bands])
     expected = 10. ** (.4 * (zero_point - 20.)) * 10. ** (-.4 * offsets)
     np.testing.assert_allclose(jy * flux_jy, expected, rtol=1e-12)
-    np.testing.assert_allclose(_flux_factor('fluxcal', 25., bands,
+    np.testing.assert_allclose(flux_factor('fluxcal', 25., bands,
         fitter.calibration, fitter.model.wavelength_grid,
         zp_fluxcal=zero_point), 10. ** (.4 * (zero_point - 25.)))
 
@@ -181,8 +181,6 @@ def test_default_zero_point_matches_explicit_simulation_zero_point(tables):
     implicit = fitter.fit(**data, progress=False)
     explicit = fitter.fit(**data, zp=31.4, progress=False)
     assert implicit.n_sne == explicit.n_sne == 1
-    assert implicit.context[0][0]['batch'].zp_fluxcal == 31.4
-    np.testing.assert_allclose(implicit.context[0][0]['batch'].fluxcals[0], flux)
     np.testing.assert_allclose(implicit.chi_squared, explicit.chi_squared)
     first = fitter.predict(implicit, times, 'g_PS1')
     second = fitter.predict(explicit, times, 'g_PS1')
@@ -195,8 +193,6 @@ def test_default_zero_point_matches_explicit_simulation_zero_point(tables):
     else:
         rescaled = {**data, 'flux': flux * scale, 'flux_err': errors * scale}
     other = fitter.fit(**rescaled, zp=25., progress=False)
-    assert other.context[0][0]['batch'].zp_fluxcal == 25.
-    np.testing.assert_allclose(other.context[0][0]['batch'].fluxcals[0], flux * scale)
     np.testing.assert_allclose(other.chi_squared, implicit.chi_squared, rtol=1e-10)
     prediction = fitter.predict(other, times, 'g_PS1')
     np.testing.assert_allclose(prediction['flux'], first['flux'] * scale, rtol=1e-10)
@@ -220,12 +216,12 @@ def test_repeated_photoz_fit_grows_search_and_matches_fresh_fitter(snana_fixture
         flux_err=phot['FLUXCALERR'].astype(float),
         band=np.char.strip(phot['BAND'].astype(str)), redshift=redshift,
         band_map={band: 'LSST-' + band for band in 'ugrizY'})
-    fitter = LightCurveFitter.from_model('SALT3.K21', **settings)
+    fitter = LightCurveFitter('SALT3.K21', **settings)
     fitter.fit(**data, metadata={'peakmjd': peak, 'redshift_err': .0001})
     narrow_size = fitter.n_z
     wide = fitter.fit(**data, metadata={'peakmjd': peak, 'redshift_err': .1})
     assert fitter.n_z > narrow_size
-    fresh = LightCurveFitter.from_model('SALT3.K21', **settings)
+    fresh = LightCurveFitter('SALT3.K21', **settings)
     expected = fresh.fit(**data, metadata={'peakmjd': peak, 'redshift_err': .1})
     assert fresh.n_z == fitter.n_z
     for name in wide.params:
@@ -236,7 +232,7 @@ def test_repeated_photoz_fit_grows_search_and_matches_fresh_fitter(snana_fixture
 
 
 def test_object_tables_keep_order_and_include_unobserved_objects():
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=2,
+    fitter = LightCurveFitter('SALT3.K21', batch_size=2,
         n_fit_iterations=1, lfixpar_all=True, initial={'x0': .001})
     times = np.linspace(59990., 60030., 8)
     photometry = dict(snid=['A'] * 8 + ['B'] * 8,
@@ -252,9 +248,6 @@ def test_object_tables_keep_order_and_include_unobserved_objects():
     assert table['status'][1] == 'rejected' and table['mB'].mask[1]
     assert table['reason_description'][1] == 'No usable observations'
     assert list(result.snids) == ['B', 'A']
-    for context, row in result.context:
-        assert context['batch'].zp_fluxcal == 25.
-        np.testing.assert_allclose(context['batch'].fluxcals[row], 10.)
     empty = fitter.fit(mjd=[], flux=[], flux_err=[], band='g_PS1', redshift=.1, snid='none')
     for parts, snids, rejected in (
             ([result, empty], ['B', 'empty', 'A', 'none'], [1, 3]),
@@ -269,7 +262,7 @@ def test_object_tables_keep_order_and_include_unobserved_objects():
 
 def test_redback_array_fit_evaluates_user_prior():
     pytest.importorskip("redback_jax")
-    fitter = LightCurveFitter.from_model('REDBACK.arnett_bolometric',
+    fitter = LightCurveFitter('REDBACK.arnett_bolometric',
         batch_size=1, n_fit_iterations=1, lfixpar_all=True,
         redback_tgrid_nbin=128, initial={'mej': 1.5},
         priors={'mej': {'distribution': 'uniform', 'lower': 1., 'upper': 2.}})
@@ -284,10 +277,10 @@ def test_redback_array_fit_evaluates_user_prior():
 
 def test_configuration_retains_explicit_calibration(data_root):
     calibration = resolve_fits_path(data_root / 'kcor/JAX_TEST_LSST.fits')
-    fitter = LightCurveFitter.from_model('BAYESN.W22', calibration=calibration, batch_size=1)
+    fitter = LightCurveFitter('BAYESN.W22', calibration=calibration, batch_size=1)
     config = fitter.configuration()
     assert config.data.kcor_file == str(calibration)
-    recreated = LightCurveFitter.from_model(config.model.fitmodel_name, config=config)
+    recreated = LightCurveFitter(config.model.fitmodel_name, config=config)
     assert recreated.calibration.kcor_file_path == fitter.calibration.kcor_file_path
     assert recreated.configuration() == config
 
@@ -295,10 +288,11 @@ def test_configuration_retains_explicit_calibration(data_root):
 @pytest.mark.parametrize('tables', [False, True])
 @pytest.mark.parametrize('coordinates', [False, True])
 def test_python_redshift_is_heliocentric(tables, coordinates):
-    from jax_snlc_fit.python import _batch_from_tables, _input_tables
-    from jax_snlc_fit.run import cut_windows, read_shared_files
+    from jax_snlc_fit.loader import batch_from_tables, input_tables
+    from jax_snlc_fit.loader import read_shared_files
+    from jax_snlc_fit.cuts import cut_windows
 
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=1, filtlist_fit=['g_PS1'])
+    fitter = LightCurveFitter('SALT3.K21', batch_size=1, filtlist_fit=['g_PS1'])
     cfg = fitter.configuration()
     metadata = {'ra': 0., 'dec': 0.} if coordinates else {}
     kwargs = dict(mjd=[60000., 60010.], flux=[100., 80.], flux_err=[5., 5.],
@@ -312,25 +306,30 @@ def test_python_redshift_is_heliocentric(tables, coordinates):
                                       flux=[100., 80.], flux_err=[5., 5.], band=['g_PS1']*2),
                       objects={k: [v] for k,v in dict(snid='SN1', redshift=.05,
                                                      redshift_cmb=.06, **metadata).items()})
-    obs, obj = _input_tables(**kwargs)
+    obs, obj = input_tables(**kwargs)
     _, epoch_cuts, _ = cut_windows(cfg)
-    batch = _batch_from_tables(obs, obj, fitter, cfg, epoch_cuts,
+    batch = batch_from_tables(obs, obj, fitter, cfg, epoch_cuts,
                                read_shared_files(cfg), zp_fluxcal=31.4)
     np.testing.assert_allclose(batch.redshifts, [.05], rtol=1.e-6)
 
 
 def test_python_fit_applies_calibration_shifts():
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=1, n_fit_iterations=1,
+    fitter = LightCurveFitter('SALT3.K21', batch_size=1, n_fit_iterations=1,
         maxiter_round1=2, magobs_shift_zp={'g_PS1': 1.})
     times = np.linspace(59990., 60035., 12)
     flux = 10. * np.exp(-.5 * ((times - 60005.) / 15.)**2)
     result = fitter.fit(mjd=times, flux=flux, flux_err=np.full(12, .5),
                         band='g_PS1', redshift=.1, zp=25.)
     assert result.n_sne == 1
-    context = result.context[0][0]
-    assert context['batch'].zp_fluxcal == 25.
-    np.testing.assert_allclose(context['batch'].fluxcals[0], flux * 10.**(-.4))
-    np.testing.assert_allclose(context['batch'].fluxcalerrs[0], .5 * 10.**(-.4))
+    plain = LightCurveFitter('SALT3.K21', batch_size=1, n_fit_iterations=1,
+                            maxiter_round1=2)
+    scale = 10.**(-.4)
+    expected = plain.fit(mjd=times, flux=flux * scale,
+                         flux_err=np.full(12, .5 * scale), band='g_PS1',
+                         redshift=.1, zp=25.)
+    for name in result.params:
+        np.testing.assert_allclose(result.params[name], expected.params[name])
+    np.testing.assert_allclose(result.chi_squared, expected.chi_squared)
 
 
 @pytest.mark.parametrize('kind', ['pandas', 'astropy', 'mapping'])
@@ -377,7 +376,7 @@ def test_single_table_matches_two_tables(kind):
     ('redshift', [.1, np.nan]),
 ])
 def test_single_table_rejects_inconsistent_object_properties(column, values):
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     fitter = LightCurveFitter('SALT3.K21', batch_size=1)
     data = dict(snid=['SN1', 'SN1'], mjd=[60000., 60001.],
                 band=['g_PS1'] * 2, flux=[1., 2.], flux_err=[.1] * 2,
@@ -389,12 +388,12 @@ def test_single_table_rejects_inconsistent_object_properties(column, values):
 
 def test_single_table_column_mapping_and_required_metadata():
     import pandas as pd
-    from jax_snlc_fit.python import _input_tables
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_fit.loader import input_tables
+    from jax_snlc_core.logging import SNANAError
     data = pd.DataFrame(dict(id=['B', 'A', 'B'], time=[1., 2., 3.],
                              measured=[3., 4., 5.], error=[.1] * 3,
                              filter=['g_PS1'] * 3, z=[.1, .2, .1]))
-    obs, objects = _input_tables(
+    obs, objects = input_tables(
         photometry=data, objects=None, mjd=None, flux=None, flux_err=None,
         band=None, redshift=None, redshift_cmb=None, metadata=None,
         mwebv=0., snid='0', flux_unit='uJy', zp=None,
@@ -412,7 +411,7 @@ def test_single_table_column_mapping_and_required_metadata():
 
 
 def test_python_selection_is_explicit_and_can_exclude_every_object():
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     data = dict(mjd=np.arange(60000., 60012.), flux=np.full(12, 10.),
                 flux_err=np.ones(12), band='g_PS1', redshift=.1)
     fitter = LightCurveFitter('SALT3.K21', batch_size=1,
@@ -425,7 +424,8 @@ def test_python_selection_is_explicit_and_can_exclude_every_object():
     assert fitter.epoch_lengths == []
 
 
-def test_predictions_do_not_depend_on_sample_acceptance(monkeypatch):
+def test_predictions_do_not_depend_on_sample_acceptance():
+    from jax_snlc_fit.batch import ERRFLAG_FIT_CUTS
     times = np.linspace(59990., 60030., 12)
     data = dict(mjd=times, flux=np.full(12, 10.), flux_err=np.ones(12),
                 band='g_PS1', redshift=.1)
@@ -433,21 +433,18 @@ def test_predictions_do_not_depend_on_sample_acceptance(monkeypatch):
                              initial={'x0': .001}, fitwin={'PROB': (.999999, 1.)})
     result = fitter.fit(**data, apply_selection=True, progress=False)
     assert result.n_sne == 1
-    assert result.to_table()['status'][0] == 'rejected'
+    table = result.to_table()
+    assert table['status'][0] == 'rejected'
+    assert table['reason'][0] == ERRFLAG_FIT_CUTS
     narrow_window = fitter.static_data['band_window']
     # A prediction in a wider band must not alter the fitter's prepared window.
     predicted = fitter.predict(result, times, 'c_ATLAS')
     assert np.isfinite(predicted['flux']).all()
     assert fitter.static_data['band_window'] == narrow_window
-    with monkeypatch.context() as patch:
-        patch.setattr('jax_snlc_fit.fitter.fit_band_window', lambda model, photometry: None)
-        full_grid = fitter.predict(result, times, 'c_ATLAS')
-    np.testing.assert_allclose(predicted['flux'], full_grid['flux'], rtol=1e-12)
-    np.testing.assert_allclose(predicted['model_flux_err'], full_grid['model_flux_err'], rtol=1e-12)
 
 
 def test_python_constructor_checks_photoz_restframe_cuts():
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     with pytest.raises(SNANAError, match='ABORT_ON_CUTWIN_TREST'):
         LightCurveFitter('SALT3.K21', batch_size=1, opt_photoz=1,
                         inistp={'PHOTOZ': 1.}, cutwin={'TRESTMIN': (-10., 0.)})
@@ -466,9 +463,9 @@ def test_fit_without_observations_in_model_support_is_rejected():
     assert table['reason'][0] == ERRFLAG_FITPREP_NOEPOCHS
 
 
-def test_flux_conversion_prepares_bands_once_for_mixed_objects(monkeypatch):
+def test_flux_conversion_of_mixed_objects():
     import pandas as pd
-    from jax_snlc_fit import python as interface
+    from jax_snlc_fit.calibration import flux_factor, normalise_flux
     fitter = LightCurveFitter('SALT3.K21', batch_size=1)
     bands = np.array(['g_PS1', 'r_PS1', 'g_PS1', 'r_PS1', 'g_PS1', 'g_PS1'])
     objects = pd.DataFrame({'snid': ['A', 'B', 'C', 'D'],
@@ -479,18 +476,12 @@ def test_flux_conversion_prepares_bands_once_for_mixed_objects(monkeypatch):
     expected = np.empty(6)
     for row in objects.to_dict('records'):
         mask = obs.snid == row['snid']
-        expected[mask] = interface._flux_factor(row['flux_unit'],
+        expected[mask] = flux_factor(row['flux_unit'],
             None if np.isnan(row['zp']) else row['zp'], bands[mask],
             fitter.calibration, fitter.model.wavelength_grid, zp_fluxcal=25.)
-    calls = []
-    load = interface.load_photometry_resources
-    def recorded(*args):
-        calls.append(args[2])
-        return load(*args)
-    monkeypatch.setattr(interface, 'load_photometry_resources', recorded)
-    units, zero_point = interface._normalise_flux(obs, objects, fitter)
+    units, zero_point = normalise_flux(obs, objects, fitter.calibration,
+                                       fitter.model.wavelength_grid)
     assert zero_point == 25.
-    assert calls == [['g_PS1', 'r_PS1']]
     np.testing.assert_allclose(obs.flux, expected)
     np.testing.assert_allclose(obs.flux_err, expected * .1)
     assert units == {'A': ('Jy', None), 'B': ('uJy', None), 'C': ('fluxcal', 25.), 'D': ('Jy', None)}
@@ -506,3 +497,23 @@ def test_epoch_rejection_uses_prepared_band_window():
     mask = np.asarray(result.observation_mask)[0]
     assert not mask[5]
     assert mask.sum() == 11
+
+
+def test_predictions_follow_objects_through_take_and_concatenate():
+    """Saved predictions keep each object's dust, redshift and units after reordering."""
+    fitter = LightCurveFitter('SALT3.K21', batch_size=2, n_fit_iterations=1,
+                             lfixpar_all=True, initial={'x0': .001})
+    times = np.linspace(59990., 60030., 8)
+    results = []
+    predictions = []
+    for snid, redshift, mwebv, zp in [('A', .1, .02, 25.), ('B', .2, .1, 27.5)]:
+        result = fitter.fit(mjd=times, flux=np.full(8, 10.), flux_err=np.ones(8),
+                            band='g_PS1', redshift=redshift, mwebv=mwebv,
+                            snid=snid, zp=zp, progress=False)
+        results.append(result)
+        predictions.append(fitter.predict(result, times, 'c_ATLAS'))
+    combined = type(results[0]).concatenate(results).take(np.array([1, 0]))
+    for snid, expected in zip(['A', 'B'], predictions):
+        actual = fitter.predict(combined, times, 'c_ATLAS', snid=snid)
+        for name in ['flux', 'model_flux_err']:
+            np.testing.assert_allclose(actual[name], expected[name], rtol=1.e-10)

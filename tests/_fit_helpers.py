@@ -16,13 +16,14 @@ import jax.numpy as jnp
 
 from jax_snlc_core.models import infer_model_type_from_path
 from jax_snlc_fit.config_parser import FIELD_RECORD, parse_fit_input_file
-from jax_snlc_fit.data_loader import load_and_batch_snana_fits
-from jax_snlc_fit.fit_spec import init_params
-from jax_snlc_fit.fitter import attach_mw_attenuation, fit_photometry
+from jax_snlc_fit.loader import batch_from_columns, read_snana_fits, version_sources
+from jax_snlc_fit.parameters import init_params, start_distance_modulus
+from jax_snlc_fit.fitter import fit_model, prepare
+from jax_snlc_fit.calibration import (attach_mw_attenuation, fit_photometry, mwebv_options,
+                                      resolved_filters)
 from jax_snlc_fit.photoz import redshift_priors
-from jax_snlc_fit.run import (lcplot_from_fitres, mwebv_options, prepare,
-                              read_kcor, resolved_filters, run_fitting)
-from jax_snlc_fit.run import fit_model
+from jax_snlc_fit.run import lcplot_from_fitres, run_fitting
+from jax_snlc_fit.calibration import read_kcor
 
 
 def override(config, **flat):
@@ -104,7 +105,7 @@ def peak_start(fitter, batch):
     t0_init = jnp.array(batch.reference_mjds if batch.peakmjd_offsets is None
                         else batch.peakmjd_offsets + batch.reference_mjds)
     return init_params(fitter.model, batch.n_sne, t0_init,
-                       fitter.config.fit.start_distance_modulus(batch.redshifts))
+                       start_distance_modulus(fitter.config, batch.redshifts))
 
 
 def run_fit(fitter, batch):
@@ -238,3 +239,16 @@ def compare_lcplots(fit_rows, rebuilt) -> dict:
             if r["DATAFLAG"] != s["DATAFLAG"]:
                 out["flags"].append((r["CID"], float(r["MJD"])))
     return out
+
+
+def load_and_batch_snana_fits(head_path, phot_path, **kwargs):
+    """Build a test batch from a fixture's explicit FITS pair."""
+    head, phot, metadata = read_snana_fits(head_path, phot_path)
+    return batch_from_columns(head, phot, **metadata, **kwargs)
+
+
+def load_and_batch_snana_text(version_dir, **kwargs):
+    """Load a TEXT fixture through normal version discovery and batching."""
+    [(path, read)] = version_sources(version_dir, {})
+    head, phot, metadata = read()
+    return batch_from_columns(head, phot, **metadata, **kwargs)

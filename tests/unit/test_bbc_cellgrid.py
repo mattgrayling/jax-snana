@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from jax_salt2mu.biascor_grid import coeff_bininfo
-from jax_salt2mu.cellgrid import BinInfo, CellGrid, uniform_bininfo
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_salt2mu.binning import coeff_bininfo, BinInfo, CellGrid
+from _bbc_helpers import uniform_bininfo
+from jax_snlc_core.logging import SNANAError
 
 
 def _grid(*nbins):

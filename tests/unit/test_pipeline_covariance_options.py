@@ -6,9 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from jax_snlc_core.io.factorized_covariance import dense_factorized_covariance
 from jax_pipeline import Covariance
-from jax_snlc_core.io.fitres_reader import FitresTable
+from jax_snlc_core.snana_files import FitresTable, dense_factorized_covariance
 
 
 def test_external_covariance_calibrators_and_systematic_outputs(tmp_path):
@@ -90,7 +89,7 @@ def test_changing_external_matrix_reruns_covariance(tmp_path, via):
     (False, 0.2, "positive variance"), (False, float("nan"), "finite errors"),
 ])
 def test_velocity_subtraction(tmp_path, renorm, velocity, error):
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     df = pd.DataFrame({"CID": ["A"], "IDSURVEY": [1], "FIELD": ["X"],
                        "zHD": [0.1], "zHEL": [0.1], "MUMODEL": [38.],
                        "MU": [38.], "MUERR": [0.1], "MUERR_VPEC": [velocity]})
@@ -112,7 +111,7 @@ def test_velocity_subtraction(tmp_path, renorm, velocity, error):
 def test_renormalised_velocity_subtraction_matches_file_interface(tmp_path, mode):
     import yaml
     from jax_create_cov import create_covariance, load_config
-    from jax_snlc_core.io.snana_table import write_varnames_table
+    from jax_snlc_core.snana_files import write_varnames_table
     df = pd.DataFrame({"CID": ["A", "B"], "IDSURVEY": [1, 1], "FIELD": ["X", "X"],
                        "zHD": [0.1, 0.2], "zHEL": [0.1, 0.2], "MUMODEL": [38., 40.],
                        "MU": [38., 40.], "MUERR": [0.1, 0.2],
@@ -167,10 +166,11 @@ def test_pippin_covariance_writer_flags_roundtrip(tmp_path, flags):
 def test_covariance_grid_options_match_file_interface(tmp_path, settings, invalid_excluded):
     import yaml
     from jax_create_cov import create_covariance
-    from jax_create_cov.config_parser import build_config
-    from jax_pipeline.systematics import key, dirname
-    from jax_snlc_core.io.snana_table import write_varnames_table
-    from jax_snlc_core.utils import SNANAError
+    from jax_create_cov.config import build_config
+    from jax_snlc_core.snana_files import fitopt_muopt_name
+    from jax_pipeline.systematics import key
+    from jax_snlc_core.snana_files import write_varnames_table
+    from jax_snlc_core.logging import SNANAError
 
     fitopts, muopts = ('shift',), ('alternate',)
     cells = [(0, 0), (1, 0), (0, 1), (1, 1)]
@@ -189,7 +189,7 @@ def test_covariance_grid_options_match_file_interface(tmp_path, settings, invali
             df = pd.DataFrame({'INVALID': [1]})
         table = FitresTable(df, list(df), {'ISDATA_REAL': '1'})
         tables[key(cell, fitopts, muopts)] = {'M0DIF': table, 'FITRES': table}
-        write_varnames_table(str(version / (dirname(cell)+'.M0DIF')), list(df),
+        write_varnames_table(str(version / (fitopt_muopt_name(cell)+'.M0DIF')), list(df),
             {name: df[name].to_numpy() for name in df}, fmt={},
             header_comments=['ISDATA_REAL: 1'])
     stage = Covariance('cov', source, overrides=settings)

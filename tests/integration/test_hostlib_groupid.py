@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.survey.simlib_reader import read_simlib
+from jax_snlc_sim.simlib import read_simlib
 
 
 def _write_groupid_hostlib(out: Path, *, n_per_group: int = 60,
@@ -238,7 +238,7 @@ def test_groupid_without_hostlib_column_aborts(tmp_path, lsst_simlib_path,
                                                 jax_test_hostlib_path):
     """SIMLIB demands a GROUPID the HOSTLIB has no column for -> fatal, as in
     MATCH_GROUPID_HOSTLIB (sntools_host.c:6718)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
 
     simlib = tmp_path / "JAX_TEST_GROUPID.SIMLIB"
     _write_groupid_simlib(simlib, lsst_simlib_path)

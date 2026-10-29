@@ -1,30 +1,16 @@
 """Unit tests for ``_smear_host_properties``.
 
-It reads only the HOSTLIB scale-property-err settings and a root key, so
-the tests hand it those, the key from a stand-in RANSEED, rather than a
-loaded simulation.
+Host-property smearing reads the HOSTLIB settings and a root random key.
+These tests use the normal simulation configuration and explicit property arrays.
 """
-
-from types import SimpleNamespace
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_sim.host_association import (
-    _parse_property_err_scales, _smear_host_properties)
-from jax_snlc_sim.random_streams import root_key
-
-
-def _build():
-    """The configuration host-property smearing reads."""
-    return SimpleNamespace(
-        config=SimpleNamespace(run=SimpleNamespace(random_seed=0)),
-        host_settings=SimpleNamespace(
-            scale_logmass_err=None,
-            scale_property_err=None,
-        ),
-    )
+from jax_snlc_sim.hostlib.association import _parse_property_err_scales, _smear_host_properties
+from jax_snlc_core.random import root_key
+from jax_snlc_sim.simulation import SimulationConfig
 
 
 # ---------------------------------------------------------------------------
@@ -32,28 +18,28 @@ def _build():
 # ---------------------------------------------------------------------------
 
 def test_parse_property_err_scales_legacy_logmass_only():
-    cfg = _build()
-    cfg.host_settings.scale_logmass_err = 0.5
-    out = _parse_property_err_scales(cfg.host_settings)
+    cfg = SimulationConfig()
+    cfg.host.scale_logmass_err = 0.5
+    out = _parse_property_err_scales(cfg.host)
     assert out == {"LOGMASS": 0.5}
 
 
 def test_parse_property_err_scales_value_paren_name_form():
     """SNANA accepts ``0.5(LOGMASS),2.0(LOGSFR)``."""
-    cfg = _build()
-    cfg.host_settings.scale_property_err = "0.5(LOGMASS),2.0(LOGSFR)"
-    out = _parse_property_err_scales(cfg.host_settings)
+    cfg = SimulationConfig()
+    cfg.host.scale_property_err = "0.5(LOGMASS),2.0(LOGSFR)"
+    out = _parse_property_err_scales(cfg.host)
     assert out == {"LOGMASS": 0.5, "LOGSFR": 2.0}
 
 
 def test_parse_property_err_scales_legacy_and_new_keys_collide():
     """Specifying both legacy and new keys is a hard error."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    cfg = _build()
-    cfg.host_settings.scale_logmass_err = 0.5
-    cfg.host_settings.scale_property_err = "1.0(LOGMASS)"
+    from jax_snlc_core.logging import SNANAError
+    cfg = SimulationConfig()
+    cfg.host.scale_logmass_err = 0.5
+    cfg.host.scale_property_err = "1.0(LOGMASS)"
     with pytest.raises(SNANAError, match="Cannot specify both"):
-        _parse_property_err_scales(cfg.host_settings)
+        _parse_property_err_scales(cfg.host)
 
 
 # ---------------------------------------------------------------------------
@@ -62,17 +48,17 @@ def test_parse_property_err_scales_legacy_and_new_keys_collide():
 
 def _smear(cfg, host_properties, n_sne=4, global_start_idx=0):
     _smear_host_properties(
-        cfg, host_properties,
+        cfg.host, host_properties,
         np.arange(n_sne) + global_start_idx,
-        key=root_key(cfg.config.run.random_seed))
+        key=root_key(cfg.run.random_seed))
     return host_properties
 
 
 def test_smear_keeps_obs_when_already_present():
     """If LOGMASS_OBS exists, it's used as-is (no perturbation), but the
     ERR is still scaled by HOSTLIB_SCALE_PROPERTY_ERR if specified."""
-    cfg = _build()
-    cfg.host_settings.scale_property_err = "2.0(LOGMASS)"
+    cfg = SimulationConfig()
+    cfg.host.scale_property_err = "2.0(LOGMASS)"
     host = {
         "LOGMASS": jnp.array([10.0, 11.0, 9.5, 10.2]),
         "LOGMASS_OBS": jnp.array([10.05, 10.95, 9.55, 10.18]),
@@ -95,8 +81,8 @@ def test_smear_synthesises_obs_from_true_plus_err():
     """LOGMASS + LOGMASS_ERR but no _OBS → _OBS = LOGMASS + G*ERR with G a
     truncated normal on [-3, 3] (getRan_GaussClip rejection-samples,
     sntools.c:7870-7878)."""
-    cfg = _build()
-    cfg.config.run.random_seed = 42
+    cfg = SimulationConfig()
+    cfg.run.random_seed = 42
     n_sne = 50
     true_vals = jnp.full((n_sne,), 10.0)
     err_vals = jnp.full((n_sne,), 0.1)
@@ -112,7 +98,7 @@ def test_smear_synthesises_obs_from_true_plus_err():
 
 def test_smear_obs_falls_back_to_true_when_no_err():
     """LOGMASS only, no _ERR and no _OBS → _OBS = LOGMASS (no smearing applied)."""
-    cfg = _build()
+    cfg = SimulationConfig()
     host = {"LOGMASS": jnp.array([10.0, 11.0, 9.5])}
     out = _smear(cfg, host, n_sne=3)
     np.testing.assert_array_equal(
@@ -125,7 +111,7 @@ def test_smear_does_not_derive_logssfr():
     """SNANA never derives LOGsSFR from LOGSFR - LOGMASS; each property
     comes from its own HOSTLIB columns (GEN_SNHOST_PROPERTY,
     sntools_host.c:7495-7542)."""
-    cfg = _build()
+    cfg = SimulationConfig()
     host = {
         "LOGSFR": jnp.array([0.0, 0.5]),
         "LOGSFR_ERR": jnp.array([0.3, 0.4]),
@@ -138,12 +124,12 @@ def test_smear_does_not_derive_logssfr():
 
 
 def test_smear_applies_per_property_err_scale():
-    """LOGSFR scale=2 → smeared OBS_LOGSFR has ~2× the spread of unscaled."""
-    base_cfg = _build()
-    base_cfg.config.run.random_seed = 7
-    scaled_cfg = _build()
-    scaled_cfg.config.run.random_seed = 7  # same seed → same Gaussian draws
-    scaled_cfg.host_settings.scale_property_err = "3.0(LOGSFR)"
+    """LOGSFR scale=3 triples the scatter while preserving the random draws."""
+    base_cfg = SimulationConfig()
+    base_cfg.run.random_seed = 7
+    scaled_cfg = SimulationConfig()
+    scaled_cfg.run.random_seed = 7  # same seed → same Gaussian draws
+    scaled_cfg.host.scale_property_err = "3.0(LOGSFR)"
 
     n_sne = 200
     host_base = {
@@ -174,8 +160,8 @@ def test_smear_truncated_normal_has_no_atoms_at_bounds():
     """getRan_GaussClip redraws until the value lies inside [-3, 3]
     (sntools.c:7870-7878): a truncated normal, not a clipped one, so no
     draw lands exactly on the +-3 sigma boundary."""
-    cfg = _build()
-    cfg.config.run.random_seed = 7
+    cfg = SimulationConfig()
+    cfg.run.random_seed = 7
     n_sne = 20000
     host = {"LOGMASS": jnp.full((n_sne,), 10.0),
             "LOGMASS_ERR": jnp.full((n_sne,), 1.0)}
@@ -183,3 +169,16 @@ def test_smear_truncated_normal_has_no_atoms_at_bounds():
     deltas = np.asarray(out["LOGMASS_OBS"]) - 10.0
     assert np.max(np.abs(deltas)) <= 3.0
     assert int(np.sum(np.abs(deltas) == 3.0)) == 0
+
+
+@pytest.mark.parametrize('value', [
+    '1(LOGMASS)junk', '1(LOGMASS)(COLOR)', '1e+(LOGMASS)',
+    '1..2(LOGMASS)', '.(LOGMASS)',
+])
+def test_property_error_scale_rejects_malformed_terms(value):
+    """Malformed scales must name the input instead of being partly accepted."""
+    from jax_snlc_core.logging import SNANAError
+    from jax_snlc_sim.simulation import Host
+
+    with pytest.raises(SNANAError, match='HOSTLIB_SCALE_PROPERTY_ERR'):
+        _parse_property_err_scales(Host(scale_property_err=value))

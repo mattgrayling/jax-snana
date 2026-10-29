@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.stats import norm as jax_norm
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 # SNANA's epsilon for deciding a width is zero (sntools_genExpHalfGauss.c:226)
 _EXP_HALFGAUSS_EPS = 1.0e-14
@@ -80,7 +80,7 @@ def flat_distribution(bounds, *, dust=False):
     return GenGaussAsym(peak=0.5 * (lo + hi), sigma=(1.e6, 1.e6), range=(lo, hi))
 
 
-def _bifurcated_cdf(x, peak, sigma_lo, sigma_hi):
+def bifurcated_cdf(x, peak, sigma_lo, sigma_hi):
     """CDF of the bifurcated (split-normal) Gaussian.
 
     F(x) = 2*w_lo * Phi((x - peak) / sigma_lo)          for x < peak
@@ -98,7 +98,7 @@ def _bifurcated_cdf(x, peak, sigma_lo, sigma_hi):
     return jnp.where(x < peak, cdf_left, cdf_right)
 
 
-def _bifurcated_ppf(u, peak, sigma_lo, sigma_hi):
+def bifurcated_ppf(u, peak, sigma_lo, sigma_hi):
     """Inverse CDF (percent-point function) of bifurcated Gaussian.
 
     if u < p_left:
@@ -120,10 +120,10 @@ def sample_truncated_gaussian(key, peak, sigma_lo, sigma_hi, range_lo, range_hi)
     Computes CDF at the range bounds, samples u ~ U(cdf_lo, cdf_hi),
     then applies the inverse CDF. Result is exactly within [range_lo, range_hi].
     """
-    cdf_lo = _bifurcated_cdf(range_lo, peak, sigma_lo, sigma_hi)
-    cdf_hi = _bifurcated_cdf(range_hi, peak, sigma_lo, sigma_hi)
+    cdf_lo = bifurcated_cdf(range_lo, peak, sigma_lo, sigma_hi)
+    cdf_hi = bifurcated_cdf(range_hi, peak, sigma_lo, sigma_hi)
     u = jax.random.uniform(key, minval=cdf_lo, maxval=cdf_hi)
-    return _bifurcated_ppf(u, peak, sigma_lo, sigma_hi)
+    return bifurcated_ppf(u, peak, sigma_lo, sigma_hi)
 
 
 
@@ -272,13 +272,13 @@ def _component_mass(branch, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo, hi):
     if branch == 'dyn_flat':
         width = hi - lo
         flat = (sig_lo > 10.0 * width) & (sig_hi > 10.0 * width)
-        m = (_bifurcated_cdf(hi, peak, sig_lo, sig_hi)
-             - _bifurcated_cdf(lo, peak, sig_lo, sig_hi))
+        m = (bifurcated_cdf(hi, peak, sig_lo, sig_hi)
+             - bifurcated_cdf(lo, peak, sig_lo, sig_hi))
         return jnp.where(flat, 1.0, m)
     if branch == 'peakrange':
         return _peakrange_mass(sig_lo, sig_hi, pr_lo, pr_hi, lo, hi)
-    return (_bifurcated_cdf(hi, peak, sig_lo, sig_hi)
-            - _bifurcated_cdf(lo, peak, sig_lo, sig_hi))
+    return (bifurcated_cdf(hi, peak, sig_lo, sig_hi)
+            - bifurcated_cdf(lo, peak, sig_lo, sig_hi))
 
 
 def _component_value(key, branch, peak, sig_lo, sig_hi, skew_lo, skew_hi,
@@ -597,26 +597,6 @@ def mixture_mass(g):
     return float((1.0 - g.prob2) * m1 + g.prob2 * m2)
 
 
-def make_sampler(dist):
-    """Return a (key) -> value sampling function for a distribution.
-
-    This pre-binds the distribution parameters so the returned function
-    only takes a JAX PRNG key, making it easy to vmap. ``dist`` is a
-    GenGaussAsym, GenExpHalfGauss, or None. Returns a callable
-    (key -> scalar) suitable for jax.vmap.
-    """
-    if dist is None:
-        return lambda key: 0.0
-
-    if isinstance(dist, GenExpHalfGauss):
-        return lambda key: sample_exp_halfgauss(key, dist)
-    elif isinstance(dist, GenGaussAsym):
-        return lambda key: sample_gengauss_asym(key, dist)
-    else:
-        raise SNANAError(f"Unknown distribution type: {type(dist)}",
-                         function_name="make_sampler")
-
-
 GENGAUSS_ZSHIFT_FIELDS = ('peak', 'sigma_lo', 'sigma_hi', 'skew_lo',
                           'skew_hi', 'prob2', 'peak2', 'sigma2_lo',
                           'sigma2_hi')
@@ -683,23 +663,6 @@ def _sample_exp_halfgauss_shifted(key, dist, shifts):
                   jnp.where((sigma > _EXP_HALFGAUSS_EPS)
                             & (tau < _EXP_HALFGAUSS_EPS),
                             val_gauss, val_mixed)))
-
-
-def make_zshift_sampler(dist, active):
-    """Return ``(key, *shifts) -> value`` for a distribution with z-shifts.
-
-    ``active`` is the static set of shifted field names; shift args follow
-    GENGAUSS_ZSHIFT_FIELDS or EXPHALFGAUSS_ZSHIFT_FIELDS order.
-    """
-    active = frozenset(active)
-    if isinstance(dist, GenExpHalfGauss):
-        return lambda key, *sh: sample_exp_halfgauss(key, dist, sh)
-    elif isinstance(dist, GenGaussAsym):
-        return lambda key, *sh: sample_gengauss_asym(key, dist, sh, active)
-    else:
-        raise SNANAError(f"Unknown distribution type: {type(dist)}",
-                         function_name="make_zshift_sampler")
-
 
 
 # SIM_WGT_POPULATION population functions (rewgt_genPDF, snlc_sim.c:31492)

@@ -6,10 +6,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_sim import run as sim_run
-from jax_snlc_sim.builder import resolve_counts
-from jax_snlc_sim.config_parser import parse_snana_input_file
+from jax_snlc_sim.output import save_snana_outputs
+from jax_snlc_sim.rate import resolve_counts
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 
 _KCOR = "$JAX_TEST_FIXTURE_ROOT/kcor/JAX_TEST_LSST.fits"
@@ -115,7 +116,7 @@ def test_rerun_clears_the_previous_genversion(tmp_path):
                                 batch_size=sim_config["batch_size"])
         sim = sim_run.prepare(cfg)
         results, sel, spectra_cache = sim_run.run_simulation(sim)
-        sim_run.save_snana_outputs(sim, results, "RERUN", sel, spectra_cache=spectra_cache, output_dir=str(out))
+        save_snana_outputs(sim, results, "RERUN", sel, spectra_by_sn=spectra_cache, output_dir=str(out))
 
     run()
     stale = out / "RERUN" / "STALE_FROM_LAST_RUN.TEXT"

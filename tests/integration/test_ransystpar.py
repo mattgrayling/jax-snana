@@ -11,11 +11,10 @@ import os
 import re
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from jax_snlc_core.utils.error_handling import SNANAError
-from jax_snlc_sim.config_parser import parse_snana_input_file
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.inputs import parse_snana_input_file
 
 FIXTURE_INPUT = (Path(__file__).resolve().parents[1]
                  / "fixtures" / "snana" / "salt3_k21_replay" / "input.input")
@@ -195,7 +194,7 @@ def test_shifts_land_before_the_counts_are_resolved(tmp_path):
         f"\nOMEGA_MATTER: {shifted.cosmology.omega_matter:.10f}\n")
     nominal = _season_input(tmp_path, "nominal.input", "")
 
-    from jax_snlc_sim.builder import resolve_counts
+    from jax_snlc_sim.rate import resolve_counts
 
     def n_simulated(cfg):
         return resolve_counts(cfg, cfg.hz_map())[0]
@@ -207,7 +206,7 @@ def test_shifts_land_before_the_counts_are_resolved(tmp_path):
 def test_sigshift_zp_multi_group_reads_one_value_per_group(tmp_path):
     """SNANA reads one value per comma-separated filter group
     (parse_input_RANSYSTPAR, snlc_sim.c:4706-4738)."""
-    from jax_snlc_sim.ransystpar import _filter_groups
+    from jax_snlc_sim.systematics import _filter_groups
     sig = _filter_groups({'SIGSHIFT_ZP(gr,iz)': ['0.01', '0.02']},
                          'SIGSHIFT_ZP', 'griz')
     assert sig['g'] == sig['r'] == 0.01
@@ -217,8 +216,7 @@ def test_sigshift_zp_multi_group_reads_one_value_per_group(tmp_path):
 def test_sigshift_zp_bare_key_takes_one_value_per_filter(tmp_path):
     """The bare key expands to one group per GENFILTERS filter, so it takes
     NFILT values; a wrong count is fatal (snlc_sim.c:4706-4728)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_sim.ransystpar import _filter_groups
+    from jax_snlc_sim.systematics import _filter_groups
     sig = _filter_groups({'SIGSHIFT_ZP': ['0.01', '0.02', '0.03']},
                          'SIGSHIFT_ZP', 'gri')
     assert sig == {'g': 0.01, 'r': 0.02, 'i': 0.03}
@@ -228,8 +226,7 @@ def test_sigshift_zp_bare_key_takes_one_value_per_filter(tmp_path):
 
 def test_sigshift_zphot_host_keeps_higher_order_bias(tmp_path):
     """SNANA assigns only HOSTLIB_GENZPHOT_BIAS[0] (snlc_sim.c:8199-8205)."""
-    import numpy as _np
-    from jax_snlc_sim.ransystpar import prep_ransystpar
+    from jax_snlc_sim.systematics import prep_ransystpar
     cfg = _config_with(tmp_path, None, "zphot")
     cfg.host.genzphot_bias = [0.0, 0.5, -0.2]
     cfg.run.ransystpar = {'RANSEED_SYST': 4242,
@@ -266,7 +263,7 @@ def test_ranseed_gen_is_not_warned_as_unrecognised(tmp_path, caplog):
                   FIXTURE_INPUT.read_text())
     inp = tmp_path / "rsp_gen_warn.input"
     inp.write_text(base + "\nRANSYSTPAR_RANSEED_GEN: 777\n")
-    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.config_parser"):
+    with caplog.at_level(logging.WARNING, logger="jax_snlc_sim.inputs"):
         parse_snana_input_file(str(inp))
     assert "Unrecognized SNANA input key" not in caplog.text
 

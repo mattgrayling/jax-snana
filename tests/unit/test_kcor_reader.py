@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from jax_snlc_core.io.kcor_reader import KcorReader
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.filters import KcorReader
+from jax_snlc_core.logging import SNANAError
 
 
 def test_leakage_cut_drops_transmission_below_the_cut(lsst_kcor_path):
@@ -30,7 +30,6 @@ def test_kcor_reader_zpoff_missing_columns_fatal(tmp_path):
     ZPoff table without the calibration columns aborts instead of leaving
     silent zero defaults."""
     from astropy.io import fits
-    from jax_snlc_core.utils.error_handling import SNANAError
 
     cols = [
         fits.Column(name='Filter Name', format='20A', array=np.array(['X-g'])),
@@ -68,7 +67,8 @@ def test_filter_letters_keep_their_case():
     the case, or one band takes the other's observations."""
     from types import SimpleNamespace
 
-    from jax_snlc_sim.builder import _build_filter_lookup, _parse_searcheff_logic
+    from jax_snlc_sim.builder import _build_filter_lookup
+    from jax_snlc_sim.detection import parse_trigger_logic
 
     kcor = SimpleNamespace(get_filter_names=lambda: ["CSP-b", "CFA41-B", "CSP-g"])
     names, table = _build_filter_lookup(kcor)
@@ -77,4 +77,4 @@ def test_filter_letters_keep_their_case():
     assert table["CFA41-B"] == 1
     assert "V" not in table
 
-    assert _parse_searcheff_logic("bB+Bg", table) == [0b011, 0b110]
+    assert parse_trigger_logic("bB+Bg", table) == [0b011, 0b110]

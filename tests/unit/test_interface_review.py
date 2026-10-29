@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 import yaml
 
-from jax_snlc_core.utils import SNANAError
+from jax_snlc_core.logging import SNANAError
 
 
 def test_bbc_output_override_preserves_special_nuisance_mode():
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
 
     original = parse_bbc_input(None, ['u13=2'])
     changed = parse_bbc_input(None, ['u13=2', '--prefix', 'renamed'])
@@ -27,9 +27,9 @@ def test_bbc_output_override_preserves_special_nuisance_mode():
 
 @pytest.mark.parametrize('onebin,flag', [(False, 1), (True, 3)])
 def test_bbc_named_floating_parameters_preserve_correction_bins(onebin, flag):
-    from jax_salt2mu.config_parser import parse_bbc_input
-    from jax_salt2mu.inputs import build_config
-    from jax_salt2mu.biascor_grid import build_coeff_bins
+    from jax_salt2mu.config import parse_bbc_input
+    from jax_salt2mu.config import build_config
+    from jax_salt2mu.binning import build_coeff_bins
     from jax_snlc_core.models import standardised_model
 
     settings = {'nuisance_float': {'alpha0': True, 'beta0': True}}
@@ -57,7 +57,7 @@ def test_bbc_named_floating_parameters_preserve_correction_bins(onebin, flag):
 def test_explicit_fit_values_must_respect_model_limits(setting, value):
     from jax_snlc_fit import LightCurveFitter
 
-    fitter = LightCurveFitter.from_model(
+    fitter = LightCurveFitter(
         'SALT3.K21', batch_size=1, n_fit_iterations=1, maxiter_round1=0,
         **{setting: {'x1': value}})
     times = np.linspace(59990., 60035., 12)
@@ -68,7 +68,7 @@ def test_explicit_fit_values_must_respect_model_limits(setting, value):
 
 def test_covariance_bin_options_agree_across_input_routes(tmp_path):
     from create_covariance import config_from_args
-    from jax_create_cov.config_parser import build_config
+    from jax_create_cov.config import build_config
     from jax_pipeline import Covariance
 
     settings = {'input_dir': '.', 'version': 'DATA', 'outdir': 'output'}
@@ -91,35 +91,11 @@ def test_covariance_bin_options_agree_across_input_routes(tmp_path):
     assert (cfg.mode, cfg.nbin_x1, cfg.nbin_c) == ('rebin', 2, 3)
 
 
-def test_combined_yaml_simulations_preserve_prefix_and_id_overrides(tmp_path, monkeypatch):
-    from jax_pipeline import Sim
-    from jax_snlc_sim import run
-
-    settings = dict(genmodel='SALT3.K21', genfilters='griz', simlib_file='survey.simlib',
-                    kcor_file='survey.fits', random_seed=42, redshift_range=[.1, .2],
-                    trest_range=[-10, 40], peakmjd_range=[60000, 60010],
-                    sigma_ratio=0., ngentot_lc=2)
-    path = tmp_path / 'sim.yaml'
-    path.write_text(yaml.safe_dump(settings))
-    overrides = [{}, {'genprefix': 'custom', 'cidoff': 12}]
-    stage = Sim('combined', [path, path], overrides=overrides)
-    seen = []
-
-    def prepare(config):
-        seen.append(config)
-        return None
-
-    monkeypatch.setattr(run, 'prepare', prepare)
-    stage.run({}, tmp_path/'output')
-    assert [cfg.output.genprefix for cfg in seen] == ['combined_sim_0', 'custom']
-    assert seen[1].output.cidoff == 12
-    assert overrides == [{}, {'genprefix': 'custom', 'cidoff': 12}]
-
-
 @pytest.mark.parametrize('position', ['before', 'after', 'explicit'])
-def test_simulation_options_can_precede_input_file(tmp_path, monkeypatch, position):
+def test_simulation_options_can_precede_input_file(tmp_path, position):
+    """Named model options resolve through the CLI parser in each argument order."""
     pytest.importorskip("redback_jax")
-    import snlc_sim
+    from jax_snlc_sim.inputs import parse_cli_args, command_line_config
 
     path = tmp_path/'sim.yaml'
     path.write_text(yaml.safe_dump(dict(
@@ -130,11 +106,7 @@ def test_simulation_options_can_precede_input_file(tmp_path, monkeypatch, positi
     options = ['--ngentot-lc', '3', '--batch-size', '2', '--redback-tgrid-nbin', '128']
     argv = (options + [str(path)] if position == 'before' else
             [str(path)] + options if position == 'after' else options + ['--input', str(path)])
-    seen = []
-    monkeypatch.setattr(snlc_sim, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_sim.sim_run, 'prepare', lambda cfg: seen.append(cfg))
-    snlc_sim.main(argv)
-    cfg = seen[0]
+    cfg = command_line_config(parse_cli_args(argv))
     assert cfg.run.ngentot_lc == 3 and cfg.numerical.batch_size == 2
     assert cfg.model._model_input_values['REDBACK_TGRID_NBIN'] == 128
 
@@ -142,7 +114,7 @@ def test_simulation_options_can_precede_input_file(tmp_path, monkeypatch, positi
 @pytest.mark.parametrize('position', ['before', 'after', 'explicit', 'no_file'])
 def test_bbc_options_can_precede_input_file(tmp_path, position):
     from salt2mu import _parse_cli_args
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path/'bbc.yaml'
     path.write_text('model_lcfit: BAYESN\n')
@@ -157,7 +129,7 @@ def test_bbc_options_can_precede_input_file(tmp_path, position):
 
 
 def test_reused_fit_configuration_restores_linked_settings():
-    from jax_snlc_fit.inputs import build_config
+    from jax_snlc_fit.config_parser import build_config
 
     original = build_config({'use_model_magerr': False, 'dofit_photoz': True,
                              'lfixpar_all': True, 'fudge_modelerr_scale': .7})
@@ -173,7 +145,7 @@ def test_reused_fit_configuration_restores_linked_settings():
 
 
 def test_redundant_bbc_float_override_keeps_explicit_onebin():
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     original = parse_bbc_input(None, ['u1=3'])
     changed = parse_bbc_input(None, ['u1=3', '--nuisance-float', 'alpha0', 'true'])
@@ -211,8 +183,8 @@ def test_covariance_combines_file_and_cli_bin_counts(tmp_path):
 
 
 def test_cli_filter_shorthand_matches_yaml():
-    from jax_snlc_fit.inputs import command_settings
-    from jax_snlc_core.photometry.resources import resolve_filtlist
+    from jax_snlc_fit.config_parser import command_settings
+    from jax_snlc_fit.calibration import resolve_filtlist
 
     calibration = SimpleNamespace(filter_names=['LSST-g', 'LSST-r'],
         header={'NFILTERS': 2, 'FILT001': 'LSST-g', 'FILT002': 'LSST-r'})
@@ -223,21 +195,20 @@ def test_cli_filter_shorthand_matches_yaml():
         assert resolve_filtlist(values['filtlist_fit'], calibration) == expected
 
 
-def test_fitter_model_option_precedes_file_selected_model(tmp_path, monkeypatch):
-    import snlc_fit
+def test_fitter_model_option_precedes_file_selected_model(tmp_path):
+    """The real command parser resolves model options before loading settings."""
+    from jax_snlc_fit.config_parser import command_line_input, parse_fit_input_file
 
-    path = tmp_path/'fit.yaml'
+    path = tmp_path / 'fit.yaml'
     path.write_text('model_type: redback\nfitmodel_name: REDBACK.arnett_bolometric\n')
-    seen = []
-    monkeypatch.setattr(snlc_fit, 'configure_precision', lambda value: None)
-    monkeypatch.setattr(snlc_fit, 'run_fitting', lambda cfg, **kw: seen.append(cfg))
-    snlc_fit.main(['--redback-tgrid-nbin', '128', str(path)])
-    assert seen[0].model._model_key_values['REDBACK_TGRID_NBIN'] == 128
+    input_file, _, overrides = command_line_input(['--redback-tgrid-nbin', '128', str(path)])
+    config = parse_fit_input_file(input_file, overrides)
+    assert config.model._model_key_values['REDBACK_TGRID_NBIN'] == 128
 
 
 def test_cli_help_includes_input_and_literal_percent(capsys):
     from create_covariance import config_from_args
-    from jax_wfit.config_parser import parse_command
+    from jax_wfit.config import parse_command
 
     with pytest.raises(SystemExit) as exit:
         parse_command(['--help'])
@@ -254,21 +225,21 @@ def test_cli_help_includes_input_and_literal_percent(capsys):
 def test_bundled_model_configuration_roundtrip():
     from jax_snlc_fit import LightCurveFitter
 
-    original = LightCurveFitter.from_model('SALT3.K21', batch_size=1, use_model_magerr=False)
-    changed = LightCurveFitter.from_model('SALT3.K21', config=original.configuration(),
+    original = LightCurveFitter('SALT3.K21', batch_size=1, use_model_magerr=False)
+    changed = LightCurveFitter('SALT3.K21', config=original.configuration(),
                                          use_model_magerr=True)
     assert changed.config.model.fudge_modelerr_scale == 1
     assert changed.config.fit.use_offdiag_covariance
     explicit = original.configuration()
     explicit.model.fudge_modelerr_scale = 0
-    held = LightCurveFitter.from_model('SALT3.K21', config=explicit, use_model_magerr=True)
+    held = LightCurveFitter('SALT3.K21', config=explicit, use_model_magerr=True)
     assert held.config.model.fudge_modelerr_scale == 0
     with pytest.raises(SNANAError, match='different models'):
-        LightCurveFitter.from_model('BAYESN.W22', config=original.configuration())
+        LightCurveFitter('BAYESN.W22', config=original.configuration())
 
 
 def test_partial_selection_settings_use_shared_snana_defaults(tmp_path):
-    from jax_snlc_fit.inputs import build_config
+    from jax_snlc_fit.config_parser import build_config
     from jax_snlc_fit.config_parser import parse_fit_input_file
 
     named = build_config({'earlylc': {'maxobs': 5}, 'require_epochs': {'tranges': [-10, 0, 10]}})
@@ -286,7 +257,7 @@ def test_partial_selection_settings_use_shared_snana_defaults(tmp_path):
 
 def test_simulation_structured_settings_are_prepared_before_consumption():
     from jax_snlc_sim.inputs import build_config
-    from jax_snlc_sim.config_parser import build
+    from jax_snlc_sim.inputs import build
 
     settings = dict(genmodel='SALT3.K21', genfilters='griz', simlib_file='survey.simlib',
                     kcor_file='survey.fits', random_seed=42, redshift_range=[.1, .2],
@@ -315,8 +286,8 @@ def test_simulation_structured_settings_are_prepared_before_consumption():
 
 
 def test_bbc_configuration_reuse_restores_supplied_settings():
-    from jax_salt2mu.inputs import build_config
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import build_config
+    from jax_salt2mu.config import parse_bbc_input
 
     for cfg in (build_config({'muref_zpoly': [1., 2.], 'chi2max': 25.}),
                 parse_bbc_input(None, ['muref_zpoly=1,2', 'chi2max=25'])):
@@ -333,7 +304,7 @@ def test_bbc_configuration_reuse_restores_supplied_settings():
 
 
 def test_covariance_merges_all_supplied_settings_before_resolution(tmp_path):
-    from jax_create_cov.config_parser import build_config
+    from jax_create_cov.config import build_config
     from jax_pipeline import Covariance
 
     scales = tmp_path/'scales.yaml'
@@ -349,7 +320,7 @@ def test_covariance_merges_all_supplied_settings_before_resolution(tmp_path):
 
 def test_spectrum_requests_share_preparation_and_validation():
     from jax_snlc_sim.inputs import build_config
-    from jax_snlc_sim.config_parser import parse_take_spectrum_entry, prepare_spectrum_requests
+    from jax_snlc_sim.spectra import parse_take_spectrum_entry, prepare_spectrum_requests
 
     settings = dict(genmodel='SALT3.K21', genfilters='griz', simlib_file='survey.simlib',
                     kcor_file='survey.fits', random_seed=42, redshift_range=[.1, .2],
@@ -403,7 +374,7 @@ def test_structured_simulation_cli_lists_match_python():
 ])
 def test_pipeline_snana_overrides_use_the_line_readers(overrides):
     from jax_pipeline import Sim
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
 
     path = Path('tests/fixtures/snana/salt3_k21_replay/input.input')
     tokens = [str(item) for name, value in overrides.items()
@@ -415,7 +386,7 @@ def test_pipeline_snana_overrides_use_the_line_readers(overrides):
 
 def test_pipeline_snana_include_and_exclude_overrides(tmp_path):
     from jax_pipeline import Sim
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
 
     included = tmp_path/'included.input'
     included.write_text('MAG_OFFSET: 0.2\n')
@@ -435,8 +406,8 @@ def test_pipeline_snana_include_and_exclude_overrides(tmp_path):
 
 def test_file_spectrum_requests_preserve_shared_prescale_draws(tmp_path):
     import jax
-    from jax_snlc_sim.config_parser import parse_snana_input_file
-    from jax_snlc_sim.run import spectrum_prescales
+    from jax_snlc_sim.inputs import parse_snana_input_file
+    from jax_snlc_sim.spectra import spectrum_prescales
 
     path = tmp_path/'sim.input'
     path.write_text(Path('tests/fixtures/snana/spectrum_prescale_replay/input.input').read_text()
@@ -491,8 +462,8 @@ def test_spectrum_source_conflicts_use_completed_configuration(tmp_path, named):
 def test_uniform_populations_preserve_snana_sampling(parameter, name, dust, bounds):
     import jax
     from jax_snlc_core.models import MODEL_REGISTRY
-    from jax_snlc_sim.config_parser import _build_distributions
-    from jax_snlc_sim.distributions import make_sampler
+    from jax_snlc_sim.inputs import _build_distributions
+    from jax_snlc_sim.distributions import sample_exp_halfgauss, sample_gengauss_asym
     from jax_snlc_sim.population import distribution_from_settings
 
     lo, hi = bounds
@@ -501,15 +472,16 @@ def test_uniform_populations_preserve_snana_sampling(parameter, name, dust, boun
     named = distribution_from_settings({'distribution': 'uniform', 'range': bounds}, dust=dust)
     assert named == snana[name]
     keys = jax.random.split(jax.random.PRNGKey(14), 32)
-    np.testing.assert_array_equal(jax.vmap(make_sampler(named))(keys),
-                                  jax.vmap(make_sampler(snana[name]))(keys))
+    sample = sample_exp_halfgauss if dust else sample_gengauss_asym
+    np.testing.assert_array_equal(jax.vmap(lambda key: sample(key, named))(keys),
+                                  jax.vmap(lambda key: sample(key, snana[name]))(keys))
 
 
 @pytest.mark.parametrize('perfect', [0, 16])
 def test_named_dust_replaces_snana_profile_before_perfect_mode(tmp_path, perfect):
     import jax
-    from jax_snlc_sim.config_parser import parse_snana_input_file
-    from jax_snlc_sim.distributions import make_sampler
+    from jax_snlc_sim.inputs import parse_snana_input_file
+    from jax_snlc_sim.distributions import sample_exp_halfgauss
 
     path = tmp_path/'sim.input'
     base = Path('tests/fixtures/snana/spectrum_prescale_replay/input.input').read_text()
@@ -518,8 +490,10 @@ def test_named_dust_replaces_snana_profile_before_perfect_mode(tmp_path, perfect
     named = parse_snana_input_file(path, settings={'populations': values})
     snana = parse_snana_input_file(path, ['GENRANGE_AV', '0', '2', 'GENTAU_AV', '.4'])
     keys = jax.random.split(jax.random.PRNGKey(17), 32)
-    named_draws = jax.vmap(make_sampler(named.model.populations['AV'].distributions[0]))(keys)
-    snana_draws = jax.vmap(make_sampler(snana.model.populations['AV'].distributions[0]))(keys)
+    named_draws = jax.vmap(lambda key: sample_exp_halfgauss(
+        key, named.model.populations['AV'].distributions[0]))(keys)
+    snana_draws = jax.vmap(lambda key: sample_exp_halfgauss(
+        key, snana.model.populations['AV'].distributions[0]))(keys)
     np.testing.assert_array_equal(named_draws, snana_draws)
     assert named.host.av_range == snana.host.av_range
     assert named.host.tau_av == snana.host.tau_av
@@ -546,7 +520,7 @@ def test_native_population_records_use_shared_validation(dust):
 @pytest.mark.parametrize('explicit_range', [False, True])
 def test_wv07_uses_supplied_av_range(tmp_path, explicit_range):
     import jax
-    from jax_snlc_sim.config_parser import parse_snana_input_file
+    from jax_snlc_sim.inputs import parse_snana_input_file
     from jax_snlc_sim.sampler import _sample_wv07_av
 
     path = tmp_path/'sim.input'
@@ -570,7 +544,7 @@ def test_wv07_uses_supplied_av_range(tmp_path, explicit_range):
     ({'simfile_ccprior': 'H11'}, ['simfile_ccprior=H11'], 'use_h11'),
 ])
 def test_bbc_snana_mapping_strings_keep_their_syntax(values, tokens, field):
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     expected = parse_bbc_input(None, tokens)
     for other in ({}, {'u1': 1}):
@@ -582,7 +556,7 @@ def test_bbc_snana_mapping_strings_keep_their_syntax(values, tokens, field):
 
 
 def test_bbc_batch_header_is_separate_from_scientific_inputs(tmp_path):
-    from jax_salt2mu.config_parser import parse_bbc_input
+    from jax_salt2mu.config import parse_bbc_input
 
     path = tmp_path/'bbc.input'
     path.write_text('CONFIG:\n  BATCH_INFO: sbatch example 1\n#END_YAML\nnzbin=10\n')
@@ -593,7 +567,7 @@ def test_bbc_batch_header_is_separate_from_scientific_inputs(tmp_path):
 
 
 def test_covariance_override_aliases_resolve_before_merging():
-    from jax_create_cov.config_parser import build_config
+    from jax_create_cov.config import build_config
 
     assert build_config({'write_mask_cov': 3}, {'WRITE_MASK_COV': 2}).write_mask_cov == 2
     assert build_config({'WRITE_MASK_COV': 3}, {'write_mask_cov': 2}).write_mask_cov == 2

@@ -1,13 +1,17 @@
 """Unit tests for ``LightCurveBatch.take`` and the epoch-length chooser."""
 
+import dataclasses
+import functools
+
 import numpy as np
 import pytest
 
-from jax_snlc_core.utils.cutwin import gap_maxima
-from jax_snlc_sim.simulation import Instrument
-from jax_snlc_fit.batch import (ERRFLAG_NO_FIT, LightCurveBatch,
-                                choose_epoch_lengths,
+from jax_snlc_fit.batch import (ERRFLAG_NO_FIT, LightCurveBatch, choose_epoch_lengths,
                                 group_by_epoch_length, plan_fit_batches)
+from jax_snlc_fit.cuts import gap_maxima
+from jax_snlc_fit.photoz import z_prior_chi2
+from jax_snlc_fit.photoz import ZSPEC_SOURCE_MASK
+from jax_snlc_sim.simulation import Instrument
 
 
 def _make_batch(n=4, max_obs=5):
@@ -32,6 +36,20 @@ def _make_batch(n=4, max_obs=5):
     )
 
 
+def test_an_event_without_a_helio_redshift_writes_the_converted_one():
+    """SNANA writes zHEL from SNLC_ZHELIO, which SET_ZHELIO converts from zCMB
+    for an event whose REDSHIFT_HELIO is undefined (snana.F90:17710), so the
+    -9 of a file holding the column for other events is never written."""
+    from jax_snlc_fit.output import _data_zhel
+
+    batch = dataclasses.replace(_make_batch(n=2), head_extras={
+        'REDSHIFT_HELIO': np.array([0.25, -9.0]),
+        'REDSHIFT_HELIO_ERR': np.array([0.002, -9.0])})
+    zhel, zhelerr = _data_zhel(batch)
+    np.testing.assert_array_equal(zhel, [0.25, batch.redshifts[1]])
+    np.testing.assert_array_equal(zhelerr, [0.002, batch.redshift_errs[1]])
+
+
 def test_take_pads_rows_and_epochs():
     """A batch padded to a fixed shape: rows repeat the batch's own events,
     epochs past the light curve are masked zeros."""
@@ -49,7 +67,7 @@ def test_fitres_sim_columns():
     """The loader carries SNANA's generic SIM_ columns (snana.F90:24158) and,
     per fitted model, the truth columns its fit spec names plus what it
     declares beyond them."""
-    from jax_snlc_fit.data_loader import FITRES_SIM_COLUMNS, model_sim_columns
+    from jax_snlc_fit.loader import FITRES_SIM_COLUMNS, model_sim_columns
     assert FITRES_SIM_COLUMNS == [
         'SIM_GENTYPE', 'SIM_TEMPLATE_INDEX', 'SIM_LIBID',
         'SIM_NGEN_LIBID', 'SIM_SUBSAMPLE_INDEX',
@@ -79,7 +97,7 @@ def test_absent_model_truth_columns_are_named(caplog):
     columns; the loader carries what exists and names what it did not find."""
     import logging
     from astropy.table import Table
-    from jax_snlc_fit.data_loader import _sim_truth_columns
+    from jax_snlc_fit.loader import _sim_truth_columns
     head = Table({'SIM_PEAKMJD': [1.0], 'SIM_A': [2.0]})
     with caplog.at_level(logging.WARNING):
         out = _sim_truth_columns(head, True, ('SIM_PEAKMJD', 'SIM_A', 'SIM_B'))
@@ -93,7 +111,7 @@ def test_sim_prescale_keeps_every_nth_event_read():
     """SIM_PRESCALE keeps the events at read positions 0, N, 2N, ... whatever
     the other cuts do (RDHEAD_DRIVER, snana.F90:4083; REJECT_PRESCALE, :9990),
     and N_SNLC_PROC then counts the survivors."""
-    from jax_snlc_fit.batch import apply_snana_selection
+    from jax_snlc_fit.cuts import apply_snana_selection
     b = _make_batch(n=300)
 
     keep_all, index_all = apply_snana_selection(b, ladder=[])
@@ -111,8 +129,8 @@ def test_duplicate_cids_are_compared_as_cidassign_integers():
     not parse as one takes a per-event index and can never collide, while '7'
     and '007' are one CID."""
     import pytest as _pytest
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.batch import apply_snana_selection
+    from jax_snlc_core.logging import SNANAError
+    from jax_snlc_fit.cuts import apply_snana_selection
 
     b = _make_batch(n=4)
     b.snids = np.array(['SN26', 'SN32', 'SN41', 'SN55'])
@@ -133,7 +151,7 @@ def test_duplicate_cids_are_compared_as_cidassign_integers():
 
 def test_nobs_trest_window_includes_its_endpoints():
     """sntools.c:1972 tests >= TMIN and <= TMAX."""
-    from jax_snlc_fit.batch import apply_snana_selection
+    from jax_snlc_fit.cuts import apply_snana_selection
 
     b = _make_batch(n=1, max_obs=3)
     b.redshifts = np.zeros(1, dtype=np.float32)
@@ -149,7 +167,7 @@ def test_nobs_trest_window_includes_its_endpoints():
 def test_duplicate_mjd_is_reported_not_rejected():
     """SNANA's ABORT_ON_DUPLMJD gate is commented out, so it warns on a repeated
     MJD+band unconditionally and never cuts (snana.F90:22414)."""
-    from jax_snlc_fit.batch import warn_duplicate_mjd
+    from jax_snlc_fit.cuts import warn_duplicate_mjd
     b = _make_batch(n=2, max_obs=4)
     assert warn_duplicate_mjd(b) == 0
 
@@ -171,8 +189,8 @@ def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
     id or an IAUC name picks the event out of a file whose SNIDs are numbers;
     SNIDs which are not numbers are matched as strings, and a numeric SNID
     as its number."""
-    from jax_snlc_fit.batch import apply_snana_selection
-    from jax_snlc_fit.run import _cid_list
+    from jax_snlc_fit.cuts import apply_snana_selection
+    from jax_snlc_fit.cuts import _cid_list
 
     cids, names, table = _cid_list(None, ['3', '2026abc', 'ZTF26aaa', ''], None)
     assert (cids, names, table) == (['3', '2026abc', 'ZTF26aaa'],
@@ -205,8 +223,8 @@ def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
 def test_private_cutwin_veto_rejects_on_equality():
     """The 'VARNAME != VALUE' spelling rejects events matching the value rather
     than windowing them (USE_PRIVATE_CUTWIN = -1, snana.F90:5095)."""
-    from jax_snlc_core.utils.error_handling import SNANAError
-    from jax_snlc_fit.batch import apply_snana_selection
+    from jax_snlc_core.logging import SNANAError
+    from jax_snlc_fit.cuts import apply_snana_selection
     import pytest as _pytest
 
     b = _make_batch(n=4)
@@ -365,7 +383,7 @@ def test_redshift_shifts_apply_only_to_the_sne_whose_host_z_was_used():
     the SN redshift. Deciding it for the whole file from any one match shifts
     every other SN by a value that has nothing to do with it.
     """
-    from jax_snlc_fit.data_loader import apply_redshift_shifts
+    from jax_snlc_fit.loader import apply_redshift_shifts
 
     z = np.array([0.20, 0.50, 0.80])
     photoz = np.array([0.20, 0.55, 0.80])      # SN 1's host-z is not its redshift
@@ -379,7 +397,7 @@ def test_redshift_shifts_apply_only_to_the_sne_whose_host_z_was_used():
 
 def test_redshift_final_shift_moves_every_sn():
     """REDSHIFT_FINAL_SHIFT is unconditional, unlike the host shifts."""
-    from jax_snlc_fit.data_loader import apply_redshift_shifts
+    from jax_snlc_fit.loader import apply_redshift_shifts
 
     z = np.array([0.20, 0.50])
     out_z, _, _, _ = apply_redshift_shifts(
@@ -389,7 +407,7 @@ def test_redshift_final_shift_moves_every_sn():
 
 def test_gap_maxima_start_at_minus_999_and_only_a_real_gap_moves_them():
     """TGAPMAX and T0GAPMAX are -999 for a light curve with fewer than two
-    accepted epochs (snana.F90:20835), on a one-epoch axis too, and are
+    accepted epochs (snana.F90:21092-21093), on a one-epoch axis too, and are
     otherwise the largest gap: overall, and touching the peak window."""
     times = np.array([[-10.0, 30.0, 0.0, 5.0], [1.0, 2.0, 3.0, 4.0]])
     accepted = np.array([[True, True, True, True], [True, False, False, False]])
@@ -410,17 +428,17 @@ def test_host_gaussian_constrains_small_redshift_errors(scale):
     from jax_snlc_fit import LightCurveFitter
     from jax_snlc_fit.photoz import redshift_priors
 
-    fitter = LightCurveFitter.from_model('SALT3.K21', batch_size=1,
+    fitter = LightCurveFitter('SALT3.K21', batch_size=1,
         opt_photoz=1, prior_zerrscale=scale)
     errors = np.array([0., .001, .005, .03])
     means = np.full(4, .1)
     batch = replace(_make_batch(), photoz=means, photoz_err=errors)
     priors = redshift_priors(fitter.config, batch)
     sigma = np.sqrt(errors**2 + .001**2) * scale
-    evaluate = jax.jit(jax.vmap(fitter._z_prior_chi2))
+    evaluate = jax.jit(jax.vmap(functools.partial(z_prior_chi2, fitter._compiled_settings)))
     np.testing.assert_allclose(evaluate(jnp.asarray(means), priors), 0., atol=1e-12)
     np.testing.assert_allclose(evaluate(jnp.asarray(means + sigma), priors), 1., rtol=1e-10)
-    curvature = jax.jit(jax.vmap(jax.grad(jax.grad(fitter._z_prior_chi2))))
+    curvature = jax.jit(jax.vmap(jax.grad(jax.grad(functools.partial(z_prior_chi2, fitter._compiled_settings)))))
     np.testing.assert_allclose(curvature(jnp.asarray(means), priors), 2. / sigma**2,
                                rtol=1e-10)
 
@@ -431,11 +449,9 @@ def test_mixed_redshift_priors(mode):
     from dataclasses import replace
     import jax
     import jax.numpy as jnp
-    from jax_snlc_core.utils import ZSPEC_SOURCE_MASK
     from jax_snlc_fit.config import FitConfig
-    from jax_snlc_fit.fit_kernels import _z_prior_chi2
     from jax_snlc_fit.photoz import quantile_prior_mask, redshift_priors
-    from jax_snlc_fit.run import drop_unfittable
+    from jax_snlc_fit.cuts import drop_unfittable
 
     cfg = FitConfig()
     cfg.photoz.dofit_photoz = True
@@ -460,7 +476,7 @@ def test_mixed_redshift_priors(mode):
     np.testing.assert_array_equal(priors.use_quantiles, [False, False, True])
     # Exercise the same vmapped prior dispatch as the fitter, including AD.
     def evaluate(z, prior):
-        return _z_prior_chi2({'config': cfg}, z, prior)
+        return z_prior_chi2({'config': cfg}, z, prior)
     spec = jax.tree.map(lambda a: a[0], priors)
     zspec = float(kept.redshifts[0])
     assert float(evaluate(zspec, spec)) == 0.0
@@ -487,11 +503,10 @@ def test_mixed_redshift_priors(mode):
 
 @pytest.mark.parametrize('mode', [4, 6])
 def test_missing_quantiles(mode):
-    from jax_snlc_core.utils import ZSPEC_SOURCE_MASK
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     from jax_snlc_fit.config import FitConfig
     from jax_snlc_fit.photoz import quantile_prior_mask, redshift_priors, scan_size
-    from jax_snlc_fit.run import drop_unfittable
+    from jax_snlc_fit.cuts import drop_unfittable
 
     config = FitConfig()
     config.photoz.dofit_photoz = True
@@ -513,7 +528,7 @@ def test_missing_quantiles(mode):
 
 def test_concatenate_host_priors():
     from dataclasses import replace
-    from jax_snlc_core.utils import SNANA_NULLFLOAT, ZSPEC_SOURCE_MASK
+    from jax_snlc_core.snana_files import SNANA_NULLFLOAT
     from jax_snlc_fit.config import FitConfig
     from jax_snlc_fit.photoz import redshift_priors, is_zspec
 
@@ -543,12 +558,11 @@ def test_concatenate_host_priors():
 @pytest.mark.parametrize('mode', [6, 14])
 def test_concatenate_quantile_priors(mode):
     from dataclasses import replace
-    from jax_snlc_core.utils import ZSPEC_SOURCE_MASK
-    from jax_snlc_core.utils.error_handling import SNANAError
+    from jax_snlc_core.logging import SNANAError
     from jax_snlc_fit.config import FitConfig
     from jax_snlc_fit.photoz import quantile_prior_mask, redshift_priors
-    from jax_snlc_fit.run import drop_unfittable
-    from jax_snlc_fit.sntable import build_host_columns
+    from jax_snlc_fit.cuts import drop_unfittable
+    from jax_snlc_fit.output import build_host_columns
 
     cfg = FitConfig()
     cfg.photoz.dofit_photoz = True
@@ -602,8 +616,8 @@ def test_concatenate_quantile_priors(mode):
 
 @pytest.mark.parametrize('quantity', ['REDSHIFT', 'redshift', 'Redshift'])
 def test_cut_quantity_case_applies_same_selection(quantity):
-    from jax_snlc_fit.batch import apply_snana_selection
-    from jax_snlc_fit.inputs import build_config
+    from jax_snlc_fit.cuts import apply_snana_selection
+    from jax_snlc_fit.config_parser import build_config
 
     config = build_config({'cutwin': {quantity: (0.15, 0.35), 'NEPOCH': (4, 6)}})
     keep, _ = apply_snana_selection(_make_batch(),
@@ -614,7 +628,7 @@ def test_cut_quantity_case_applies_same_selection(quantity):
 
 @pytest.mark.parametrize('dtype', ['S16', 'U16', object])
 def test_epoch_labels_keep_sorted_codes_and_whitespace_semantics(dtype):
-    from jax_snlc_fit.data_loader import _label_codes
+    from jax_snlc_fit.loader import _label_codes
     column = np.array(['VOID', ' C3', 'g', 'C3 ', 'LSST-g', '', ' C3',
                        'r', 'g', 'unused'], dtype=dtype)
     for rows in [np.array([8, 6, 4, 2, 1, 3, 7, 5, 0, 2]),
@@ -627,9 +641,82 @@ def test_epoch_labels_keep_sorted_codes_and_whitespace_semantics(dtype):
 
 
 def test_host_surface_brightness_gathers_the_matching_event_and_band():
-    from jax_snlc_fit.data_loader import _host_surface_brightness
+    from jax_snlc_fit.calibration import host_surface_brightness
     head = {'HOSTGAL_SB_FLUXCAL_g': np.array([10., 20.], dtype='>f8'),
             'HOSTGAL_SB_FLUXCAL_r': np.array([30., 40.], dtype='>f8')}
-    result = _host_surface_brightness(head, np.array(['r', 'g', 'r', 'g']),
+    result = host_surface_brightness(head, np.array(['r', 'g', 'r', 'g']),
                                       np.array([1, 0, 0, 1]))
     np.testing.assert_array_equal(result, [40., 10., 30., 20.])
+
+
+@pytest.mark.parametrize('windows', [{}, {'selected': (0, 3)}])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_range_cuts_ignore_unselected_nan_column(windows, reverse):
+    """Unrelated NaNs cannot change selection, eagerly or under JIT."""
+    import jax
+    from jax_snlc_core.utils import apply_range_cuts
+
+    quantities = {'unused': np.array([np.nan, 3.]), 'selected': np.array([1., 2.])}
+    if reverse:
+        quantities = dict(reversed(list(quantities.items())))
+    np.testing.assert_array_equal(apply_range_cuts(windows, quantities), [True, True])
+    compiled = jax.jit(lambda values: apply_range_cuts(windows, values))
+    np.testing.assert_array_equal(compiled(quantities), [True, True])
+
+
+@pytest.mark.parametrize("text_dtype", [str, object])
+def test_concatenate_missing_metadata_preserves_values(text_dtype):
+    """Missing metadata has complete null markers and exact integer values."""
+    first = dataclasses.replace(_make_batch(n=2), head_extras={
+        'NAME': np.array(['A', 'B'], dtype=text_dtype),
+        'ID': np.array([2**63 + 1, 2**64 - 1], dtype=np.uint64),
+        'COUNT': np.array([2**32 - 1, 1], dtype=np.uint32),
+        'BOOL': np.array([True, False]),
+        'VECTOR': np.array([['A'], ['B']], dtype=text_dtype),
+    }, obs_extras={'PHOTFLAG': np.full((2, 5), 2**32 - 1, dtype=np.uint32)})
+    second = dataclasses.replace(_make_batch(n=1, max_obs=3),
+                                 head_extras={'VECTOR': np.array([['C', 'D']])})
+    merged = LightCurveBatch.concatenate([first, second])
+    assert merged.head_extras['NAME'].tolist() == ['A', 'B', 'NULL']
+    assert merged.head_extras['ID'].tolist() == [2**63 + 1, 2**64 - 1, -9]
+    assert merged.head_extras['COUNT'].tolist() == [2**32 - 1, 1, -9]
+    assert merged.head_extras['BOOL'].tolist() == [1, 0, -9]
+    assert merged.head_extras['VECTOR'].tolist() == [['A', 'NULL'], ['B', 'NULL'], ['C', 'D']]
+    np.testing.assert_array_equal(merged.obs_extras['PHOTFLAG'][:2], first.obs_extras['PHOTFLAG'])
+    np.testing.assert_array_equal(merged.obs_extras['PHOTFLAG'][2], np.zeros(5))
+    assert merged.obs_extras['PHOTFLAG'].dtype == np.dtype('uint32')
+    merged_again = LightCurveBatch.concatenate([merged, _make_batch(n=1)])
+    assert merged_again.head_extras['NAME'].tolist() == ['A', 'B', 'NULL', 'NULL']
+    assert merged_again.head_extras['ID'].tolist() == [2**63 + 1, 2**64 - 1, -9, -9]
+
+
+def test_concatenate_signed_and_unsigned_identifiers():
+    """Combining integer metadata must not round uint64 identifiers to floats."""
+    first = dataclasses.replace(_make_batch(n=1),
+                                head_extras={'ID': np.array([2**64 - 1], dtype=np.uint64)})
+    second = dataclasses.replace(_make_batch(n=1),
+                                 head_extras={'ID': np.array([-9], dtype=np.int64)})
+    merged = LightCurveBatch.concatenate([first, second])
+    assert merged.head_extras['ID'].tolist() == [2**64 - 1, -9]
+
+
+def test_concatenate_after_band_cuts_remove_all_epochs():
+    """An input with no retained epochs can merge with usable light curves."""
+    from jax_snlc_fit.loader import batch_from_columns
+
+    batches = []
+    for snid, band in [('excluded', 'g'), ('retained', 'r')]:
+        batches.append(batch_from_columns(
+            {'SNID': np.array([snid]), 'PTROBS_MIN': np.array([1]),
+             'PTROBS_MAX': np.array([1]), 'REDSHIFT_HELIO': np.array([0.1])},
+            {'MJD': np.array([60000.]), 'FLUXCAL': np.array([100.]),
+             'FLUXCALERR': np.array([5.]), 'BAND': np.array([band]),
+             'FIELD': np.array(['FIELD1'])},
+            is_sim=False, zp_fluxcal=27.5, sim_mw_colour_law=None,
+            filter_map={'g': 0, 'r': 1}, fit_bands=['r'], keep_obs_extras=True))
+
+    merged = LightCurveBatch.concatenate(batches)
+    assert merged.snids.tolist() == ['excluded', 'retained']
+    assert merged.n_obs_per_sn.tolist() == [0, 1]
+    assert merged.observation_mask.tolist() == [[False], [True]]
+    assert merged.obs_extras['FIELD'].tolist() == [[''], ['FIELD1']]

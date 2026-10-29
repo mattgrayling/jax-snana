@@ -1,9 +1,9 @@
 """Unit tests for the parameter-distribution samplers.
 
-Covers both low-level helpers (``_bifurcated_cdf``/``_ppf``,
+Covers both low-level helpers (``bifurcated_cdf``/``bifurcated_ppf``,
 ``_sample_truncated_<dist>``, ``precompute_skew_cdf``,
 ``_sample_from_precomputed_cdf``) and the top-level dispatchers
-(``sample_gengauss_asym``, ``sample_exp_halfgauss``, ``make_sampler``,
+(``sample_gengauss_asym``, ``sample_exp_halfgauss``,
 plus the grid helpers ``_grid_params`` / ``_apply_grid_snapping``).
 """
 
@@ -13,28 +13,15 @@ import numpy as np
 import pytest
 from scipy.stats import norm, truncnorm
 
-from jax_snlc_sim.distributions import (
-    EXPHALFGAUSS_ZSHIFT_FIELDS,
-    GenExpHalfGauss,
-    GenGaussAsym,
-    make_zshift_sampler,
-    mixture_mass,
-    pdf_exp_halfgauss,
-    pdf_gengauss_asym,
-    _apply_grid_snapping,
-    _bifurcated_cdf,
-    _bifurcated_ppf,
-    _grid_params,
-    _peakrange_mass,
-    _sample_from_precomputed_cdf,
-    sample_truncated_gaussian,
-    _sample_truncated_exponential,
-    _sample_truncated_normal,
-    precompute_skew_cdf,
-    sample_exp_halfgauss,
-    sample_gengauss_asym,
-)
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.logging import SNANAError
+from jax_snlc_sim.distributions import (EXPHALFGAUSS_ZSHIFT_FIELDS, GenExpHalfGauss,
+                                        GenGaussAsym, _apply_grid_snapping, bifurcated_cdf,
+                                        bifurcated_ppf, _grid_params, _peakrange_mass,
+                                        _sample_truncated_exponential,
+                                        _sample_truncated_normal,
+                                        mixture_mass, pdf_exp_halfgauss, pdf_gengauss_asym,
+                                        precompute_skew_cdf, sample_exp_halfgauss,
+                                        sample_gengauss_asym, sample_truncated_gaussian)
 
 
 def _draw(sampler, key, n=2000):
@@ -50,8 +37,8 @@ def _draw(sampler, key, n=2000):
 def test_bifurcated_cdf_at_peak():
     """At the peak, CDF = sigma_lo / (sigma_lo + sigma_hi) (left tail mass)."""
     sigma_lo, sigma_hi = 1.0, 2.0
-    cdf = float(_bifurcated_cdf(0.0, peak=0.0,
-                                 sigma_lo=sigma_lo, sigma_hi=sigma_hi))
+    cdf = float(bifurcated_cdf(0.0, peak=0.0,
+                                sigma_lo=sigma_lo, sigma_hi=sigma_hi))
     expected = sigma_lo / (sigma_lo + sigma_hi)
     assert abs(cdf - expected) < 1e-5
 
@@ -61,8 +48,8 @@ def test_bifurcated_ppf_inverts_cdf():
     peak, slo, shi = 0.5, 0.3, 0.6
     xs = np.array([-1.0, 0.0, 0.5, 1.0, 2.0])
     for x in xs:
-        u = float(_bifurcated_cdf(x, peak, slo, shi))
-        x_back = float(_bifurcated_ppf(u, peak, slo, shi))
+        u = float(bifurcated_cdf(x, peak, slo, shi))
+        x_back = float(bifurcated_ppf(u, peak, slo, shi))
         assert abs(x_back - x) < 1e-4
 
 
@@ -301,11 +288,6 @@ def test_exp_halfgauss_flat_branch_when_tau_huge():
 
 
 # ----------------------------------------------------------------------------
-# make_sampler factory
-# ----------------------------------------------------------------------------
-
-
-# ----------------------------------------------------------------------------
 # Grid helpers
 # ----------------------------------------------------------------------------
 
@@ -413,10 +395,9 @@ def test_zshift_pure_halfgauss_stays_finite():
     must never reach the exponential draw's 1/tau."""
     d = GenExpHalfGauss(exp_tau=0.0, peak=0.0, sigma=0.3, ratio=0.0,
                         range=(0.0, 3.0))
-    f = make_zshift_sampler(d, frozenset(EXPHALFGAUSS_ZSHIFT_FIELDS))
     keys = jax.random.split(jax.random.PRNGKey(3), 64)
     zeros = [jnp.zeros(64)] * len(EXPHALFGAUSS_ZSHIFT_FIELDS)
-    vals = jax.vmap(f)(keys, *zeros)
+    vals = jax.vmap(lambda key, *shifts: sample_exp_halfgauss(key, d, shifts))(keys, *zeros)
     assert bool(jnp.all(jnp.isfinite(vals)))
     assert bool(jnp.all((vals >= 0.0) & (vals <= 3.0)))
 

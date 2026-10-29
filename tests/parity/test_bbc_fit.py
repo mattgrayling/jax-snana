@@ -7,25 +7,23 @@ reference. Config is SNANA's default fitflag_sigmb=0 -> single fit at sigint=0.
 Everything runs on the bbc_des_beams fixture set.
 """
 
-from jax_snlc_core.io.fits_path import open_text
-
 import re
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_salt2mu.tablevar import force_probcc0
-from jax_snlc_core.physics.constants import LIGHT_KM
-from jax_salt2mu.config import BBCConfig, M0FITFLAG_CONSTANT, resolve
-from jax_salt2mu.likelihood import h11_dPdmu
+from jax_salt2mu.config import M0FITFLAG_CONSTANT, BBCConfig, resolve
+from jax_salt2mu.ccprior import h11_dPdmu
 from jax_salt2mu.output import write_cov, write_fitres, write_m0dif, write_yaml
-from jax_salt2mu.results import YamlSummary
+from jax_salt2mu.output import YamlSummary
 from jax_salt2mu.run import run_bbc_fit
-from jax_salt2mu.tablevar import EVENT_TYPE_DATA, read_tablevar
-from jax_snlc_core.io.fitres_reader import read_fitres
+from jax_salt2mu.tablevar import EVENT_TYPE_DATA, force_probcc0
+from _bbc_helpers import read_tablevar
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import SALTModel
-from jax_snlc_core.utils.error_handling import SNANAError
+from jax_snlc_core.snana_files import open_text, read_fitres
+from jax_snlc_core.utils import LIGHT_KM
 
 
 # The biasCor-variant cases run on the DES fixtures: same keys, a sample whose
@@ -359,10 +357,11 @@ def _des_ccprior_cfg(datafile="CONTAM_DATA.FITRES", **cc_kw):
 def test_ccprior_rejects_failed_fits():
     import pandas as pd
     from jax_salt2mu.ccprior import build_ccprior, ccprior_data
-    from jax_salt2mu.run import prepare_cell
+    from _bbc_helpers import prepare_cell
     from jax_salt2mu.samples import assign_to_samples
-    from jax_salt2mu.tablevar import EVENT_TYPE_CCPRIOR, tablevar_from
-    from jax_snlc_core.io.fitres_reader import FitresTable
+    from jax_salt2mu.tablevar import EVENT_TYPE_CCPRIOR
+    from _bbc_helpers import tablevar_from
+    from jax_snlc_core.snana_files import FitresTable
 
     cell = prepare_cell(_des_ccprior_cfg(varname_pia="PROBIA"))
     table = read_fitres(f"{_DES}/CCPRIOR.FITRES")
@@ -375,7 +374,7 @@ def test_ccprior_rejects_failed_fits():
     cc_idsample = assign_to_samples(tv.idsurvey, tv.field, tv.is_photoz,
                                     cell.maps.samples, cell.config)
     prior, ncell = build_ccprior(tv, cc_idsample, cell.maps, cell.model, cell.config)
-    prior = ccprior_data(prior, cell.tv, cell.accept, cell.maps,
+    prior = ccprior_data(prior, cell.tv, cell.accept,
                          cell.model, cell.config)
     assert ncell == cell.spec.cc_ncell
     reference = cell.inputs.ccprior
@@ -455,7 +454,7 @@ def test_u13_bayes_factor_scalepcc():
     cfg = _des_ccprior_cfg(varname_pia="PROBIA")
     cfg.nuisance_float["scalePCC"] = True
     cfg._u_flags = {"u13": 2}
-    from jax_salt2mu.inputs import build_config
+    from jax_salt2mu.config import build_config
     cfg = build_config({"prefix": "renamed"}, cfg)
     assert cfg._u_flags == {"u13": 2}
     result, output, _, tv, accept = run_bbc_fit(cfg)
