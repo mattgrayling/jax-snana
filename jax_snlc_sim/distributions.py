@@ -518,19 +518,20 @@ def _apply_grid_snapping(val, range_lo, range_hi, ngrid):
 
 
 
-def distribution_shifts(dist, settings):
-    """Call-time distribution settings as shifts of the prepared values.
+def distribution_shifts(dist, hyperparameters):
+    """Call-time distribution hyperparameters as shifts of the prepared values.
 
     Bounds are passed separately; grid size and plateau boundaries stay fixed.
     The same shifts are used by the ordinary population-variation kernels.
     """
     if isinstance(dist, GenExpHalfGauss):
         fields = EXPHALFGAUSS_ZSHIFT_FIELDS
-        values = {name: settings[name] - getattr(dist, name) for name in settings}
+        values = {name: hyperparameters[name] - getattr(dist, name)
+                  for name in hyperparameters}
     else:
         fields = GENGAUSS_ZSHIFT_FIELDS
         values = {}
-        for name, value in settings.items():
+        for name, value in hyperparameters.items():
             if name in ('sigma', 'sigma2', 'skew'):
                 for i, side in enumerate(('lo', 'hi')):
                     values[f'{name}_{side}'] = jnp.asarray(value)[..., i] - getattr(dist, name)[i]
@@ -681,7 +682,7 @@ def _skew_cdf_grids_traced(peak, sigma_lo, sigma_hi, skew_lo, skew_hi,
     """Traced twin of precompute_skew_cdf for per-SN (shifted) parameters.
 
     The grid size is fixed; its bounds and the density can depend on traced
-    population settings.
+    population hyperparameters.
     """
     x = jnp.linspace(range_lo, range_hi, n_grid)
     x_rel = x - peak
@@ -697,7 +698,7 @@ def _skew_cdf_grids_traced(peak, sigma_lo, sigma_hi, skew_lo, skew_hi,
 
 
 def _sample_exp_halfgauss_shifted(key, dist, shifts, bounds=None):
-    """Exponential/half-Gaussian draw with traced settings and optional bounds."""
+    """Exponential/half-Gaussian draw with traced hyperparameters and optional bounds."""
     d = dict(zip(EXPHALFGAUSS_ZSHIFT_FIELDS, shifts))
     range_lo, range_hi = dist.range if bounds is None else bounds
     point_distribution = range_lo == range_hi

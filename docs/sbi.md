@@ -1,11 +1,14 @@
 # Simulation-based inference
 
-This page describes how to use the simulator inside your own inference code,
-for example to train a neural posterior estimator or to fit population
-parameters with gradients. You build a pipeline once from a simulation input
-file, then call it with a random key and any population parameters you want to
-change. Each call reuses the same compiled program. If you want to write
-simulated data to disk instead, see {doc}`building_pipelines`.
+This page describes how to use the simulator inside your own inference code.
+You build a pipeline once from a simulation input file, then call it with a
+random key. On each call you can change the hyperparameters of the population
+distributions in the input file, or give the simulated values directly. When
+you build the pipeline, you can also replace a distribution with your own, or
+make it depend on other quantities such as the host mass. If you want to write
+simulated data to disk instead, see {doc}`simulating`.
+
+## Building a simulation pipeline
 
 Run the examples from the repository root, with `SNDATA_ROOT` set as in
 {ref}`Preparing the examples <installation-examples>`:
@@ -17,147 +20,66 @@ import jax_snlc_sim.run as sim_run
 
 input_file = "examples/quickstart/sim_bayesn.input"
 n_sne = 1000
-pipeline = sim_run.build_sbi_pipeline(input_file, n_sne=n_sne)
+simulate = sim_run.build_sbi_pipeline(input_file, n_sne=n_sne)
 
-results, selection = pipeline(
+results, selection = simulate(
     jax.random.PRNGKey(0),
-    params={"THETA": {"peak": 0.5, "sigma": (0.4, 0.4)}},
+    params={"theta": {"peak": 0.5, "sigma": (0.4, 0.4)}},
 )
 ```
 
-Each call generates `n_sne` events before selection. `results` contains the
-generated parameters, the noise-free photometry and the observing schedule, and
-`selection` contains the observed photometry and the survey's selection masks.
-Without `params`, the populations in the input file are used.
+This simulates 1000 events from the BayeSN quick-start input, with the theta
+distribution changed to peak at 0.5 with a width of 0.4 on each side. Without
+`n_sne`, the number of events set by the input file is used.
 
-Building the pipeline checks the input file in the same way as an ordinary
-simulation, and also requires any conditional GENPDF map to cover every HOSTLIB
-value it depends on. The compiled pipeline does not make the checks an ordinary
-simulation makes on individual events.
+`params` maps a parameter name, such as `theta` for BayeSN or `c` for SALT, to
+new hyperparameters for its distribution, such as its peak and width. They are
+the fields listed with their input-file keys in
+{ref}`Population distributions <sim-population-settings>`, except `peakrange`
+and `ngrid`, which cannot be changed. Hyperparameters you leave out keep their
+input-file values, and any `VARIATION` in the input file still applies on top
+of the new ones.
 
-## Population parameters
-
-`params` maps each population parameter you want to change to new distribution
-settings or to one value per event. Use the input-file names, such as `THETA`
-for BayeSN or `SALT2c` for SALT; the model's aliases are also accepted.
-
-For an asymmetric Gaussian the settings are `peak`, `sigma`, `skew`, `prob2`,
-`peak2` and `sigma2`, where `sigma`, `skew` and `sigma2` give the lower and
-upper values. For the exponential plus half-Gaussian dust distribution they are
-`exp_tau`, `peak`, `sigma` and `ratio`. Both also accept `range`, which replaces
-the bounds in the input file:
-
-```python
-params = {"RV": {"peak": 3.0, "sigma": (0.4, 0.4), "range": (1.2, 6.0)}}
-```
-
-To change the settings of a parameter fixed to one value in the input file,
-give `range` as well. Settings you leave out keep their input-file values. The new settings apply to
-every subpopulation, and any `VARIATION` in the input file is applied on top of
-them.
-
-If you already have samples, pass one value per event:
+If you already have samples, pass one value per event instead of
+hyperparameters, for a population parameter or for the magnitude offset
+`GENMAG_OFF_GLOBAL`. The values are used as given:
 
 ```python
 theta = jnp.linspace(-1.0, 1.0, n_sne)
-results, selection = pipeline(jax.random.PRNGKey(1), params={"THETA": theta})
+results, selection = simulate(jax.random.PRNGKey(1), params={"theta": theta})
 ```
 
-The values are used as given, without resampling. They cannot be used for a
-parameter with population reweighting, since they provide no probability density.
+The first call includes JAX compilation, so it takes longer than later calls.
+Later calls reuse the compiled program as long as the dictionary keys and the
+array shapes and types stay the same. `simulate` can be used inside `jax.jit`
+and `jax.vmap`.
 
-## Custom distributions
+## Output
 
-To draw a parameter from a distribution the input format does not support, give
-a sampler when you build the pipeline. It receives one event's random key, any
-dependencies (see {ref}`sbi-conditional`) and the settings you pass on each
-call, and returns one value:
+`results` holds the simulated parameters and the noise-free photometry, and
+`selection` holds the observed photometry and the survey's selection:
 
-```python
-def draw_theta(key, lower, width):
-    return lower + width * jax.random.uniform(key)
+- `results["parameters"]`: the simulated parameters, one array per parameter;
+- `selection["fluxcals_noisy_sat"]` and `selection["fluxcalerrs_sat"]`: the
+  observed fluxes and their uncertainties;
+- `results["fluxcals"]`: the noise-free fluxes;
+- `results["observation_schedule"]["mjds"]` and
+  `results["observation_schedule"]["filter_indices"]`: the observation times
+  and filters, with indices into `simulate.filter_names`.
 
-pipeline = sim_run.build_sbi_pipeline(
-    input_file, n_sne=n_sne, samplers={"THETA": draw_theta},
-)
-results, selection = pipeline(
-    jax.random.PRNGKey(2), params={"THETA": {"lower": -1.0, "width": 2.0}},
-)
-```
-
-A sampler replaces the whole draw, including the range and any `VARIATION` in
-the input file. Like samples, it cannot be used for a parameter with population
-reweighting.
-
-(sbi-conditional)=
-## Conditional populations
-
-A parameter can also depend on other quantities, such as a host property or the
-redshift. When you build the pipeline, register a function for it together with
-the list of quantities it depends on, then pass the function's coefficients on
-each call. For example, a colour distribution whose mean changes with host mass,
-and a mass step in the magnitude offset:
-
-```python
-def colour_settings(mass, mean, slope, scatter):
-    return {"peak": mean + slope * (mass - 10), "sigma": (scatter, scatter)}
-
-def mass_step(mass, step):
-    return jnp.where(mass > 10, step / 2, -step / 2)
-
-pipeline = sim_run.build_sbi_pipeline(
-    "examples/quickstart/sim_host_variation.input", n_sne=n_sne,
-    conditional_settings={"SALT2c": (colour_settings, ["HOST.LOGMASS"])},
-    relations={"GENMAG_OFF_GLOBAL": (mass_step, ["HOST.LOGMASS"])},
-)
-results, selection = pipeline(jax.random.PRNGKey(3), params={
-    "SALT2c": {"mean": 0.0, "slope": 0.02, "scatter": 0.05},
-    "GENMAG_OFF_GLOBAL": {"step": 0.1},
-})
-```
-
-There are three kinds of function. `conditional_settings` functions return new
-settings for the input-file distribution, `samplers` return a random draw and
-take a key before their dependencies, and `relations` return a value with no
-randomness. `GENMAG_OFF_GLOBAL` takes only a relation. A function with no
-dependencies, such as the sampler above, is given on its own. Each function
-receives its dependencies in the order listed, and its coefficients by name. A
-dependency can be:
-
-- `HOST.<column>`, a HOSTLIB column, which is loaded automatically when you
-  build the pipeline from an input file, and must already be loaded in a
-  prepared simulator;
-- `REDSHIFT_CMB`, the true CMB-frame redshift before peculiar velocities;
-- `REDSHIFT_HELIO`, the true heliocentric redshift;
-- a population parameter drawn earlier.
-
-Building the pipeline reports a dependency that is not available when the
-parameter is drawn, for example a host property when a HOSTLIB weight map needs
-the parameter before the host is chosen. A function cannot change a setting that
-a `VARIATION` in the input file also changes.
-
-## Complete events
-
-To resimulate a set of events, including their positions, population parameters
-and scatter, pass them as `events=`. The random key still sets the photometric
-noise and the selection. The number of events is taken from these
-arrays, and `params` and registered functions cannot be combined with them:
-
-```python
-pipeline = sim_run.build_sbi_pipeline(input_file, n_sne=n_sne)
-baseline, _ = pipeline(jax.random.PRNGKey(4))
-results, selection = pipeline(
-    jax.random.PRNGKey(4), events=baseline["parameters"],
-)
-```
-
-(sbi-photometry)=
-## Using the photometry
+The photometry arrays have shape `(n_sne, n_epochs)`.
 
 The arrays keep rejected events and padded observations, so that their shapes
-stay fixed inside compiled code. Mask them when you calculate summary
-statistics. For example, the summed observed flux of each event, with rejected
-events contributing zero:
+stay fixed inside compiled code. Three masks select what you need:
+
+- `selection["passing_mask"]`, of shape `(n_sne,)`: the events that pass
+  selection;
+- `selection["valid_mask"]`: the real observations among the padding;
+- `selection["saturated_mask"]`: the saturated observations, which have no
+  usable flux.
+
+For example, the summed observed flux of each event, with rejected events
+contributing zero:
 
 ```python
 usable = (selection["passing_mask"][:, None]
@@ -166,46 +88,97 @@ flux = selection["fluxcals_noisy_sat"]
 total_flux = jnp.sum(jnp.where(usable, flux, 0.0), axis=1)
 ```
 
-The observed uncertainties are `selection["fluxcalerrs_sat"]`, and the
-noise-free fluxes are `results["fluxcals"]`. The times and filter indices are
-`results["observation_schedule"]["mjds"]` and `["filter_indices"]`. These arrays
-all have shape `(n_events, n_epochs)`. Fluxes use the configured `ZP_FLUXCAL`,
-which defaults to 31.4, so use that zero point if you pass them to the
-{doc}`Python light-curve fitter <fitting_light_curves>`.
+(sbi-custom-distributions)=
+## Custom distributions
 
-Host galaxies are given by their row in the HOSTLIB, for example in
-`results["parameters"]["host_galaxy_index"]`. To look up filter names or
-HOSTLIB galaxy IDs, load the simulator first and build the pipeline from it:
+The input file can describe only the distribution shapes listed in
+{ref}`Population distributions <sim-population-settings>`. To draw a parameter
+from any other distribution, write a sampler, a function that draws the value
+for one event, and give it under the parameter's name when you build the
+pipeline:
 
 ```python
-simulator = sim_run.prepare(input_file, n_sne=n_sne)
-pipeline = sim_run.build_sbi_pipeline(simulator)
+def draw_theta(key, lower, width):
+    return lower + width * jax.random.uniform(key)
+
+simulate = sim_run.build_sbi_pipeline(
+    input_file, n_sne=n_sne, samplers={"theta": draw_theta},
+)
+results, selection = simulate(
+    jax.random.PRNGKey(2), params={"theta": {"lower": -1.0, "width": 2.0}},
+)
 ```
 
-The filter indices then refer to `simulator.filter_names`, and
-`simulator.hostlib.galaxy_ids(indices)` gives the galaxy IDs.
+The simulator calls the sampler once for each event, with a random key for that
+event as the first argument. The values you give for the parameter in `params`
+follow as keyword arguments, so the sampler's argument names must match their
+keys. This sampler draws theta uniformly between -1 and 1.
 
-## Compilation and gradients
+The sampler replaces the input-file distribution for that parameter entirely,
+including its range and any `VARIATION`.
 
-Calls reuse the compiled program as long as the dictionary keys and the array
-shapes and types stay the same. Changing these, for example by switching a
-parameter between settings and an array of values, compiles a new program.
-Pipelines can be used inside `jax.jit`, `jax.vmap` and `jax.grad`.
+## Conditional populations
 
-Gradients pass through continuous distribution parameters. Discrete choices,
-such as which subpopulation or host galaxy is drawn, grid snapping and the
-selection cuts, do not contribute gradients.
+A parameter can also depend on other quantities, such as the mass of the host
+galaxy, through a function given under one of two arguments when you build the
+pipeline:
 
-## Limitations
+- in `conditional_hyperparameters`, the function returns hyperparameters, such
+  as the peak, for the event's distribution in the input file, and the value is
+  drawn from that distribution;
+- in `conditional_samplers`, the function is a sampler, as in
+  {ref}`sbi-custom-distributions`, that also receives the event after its key.
 
-Some simulation options are only available in an ordinary simulation
-({doc}`building_pipelines`):
+The function receives `event`, a dictionary of the event's values simulated so
+far, under their names in `results["parameters"]`, such as `host_LOGMASS`,
+`sim_redshift_cmb` or `x1`.
 
-- spectroscopic efficiency maps based on `SNRSUM_REST_V`, which need simulated
-  spectra;
-- `NGEN_LC`, which generates until a number of events pass selection, whereas
-  each SBI call generates `n_sne` events;
-- changing the populations together with `HOSTLIB_MSKOPT` USESNPAR or
-  `USE_SIMLIB_SALT2`, or the dust together with `GENAV_WV07`;
-- distribution settings for a parameter drawn from a GENPDF map, although it can
-  be replaced by samples or a sampler.
+The following example uses `examples/quickstart/sim_host.input`, the SALT
+quick-start simulation with the bundled host catalogue. It adds the stretch-mass
+relation and the mass step, with the slope and the size of the step given on
+each call:
+
+```python
+def stretch_by_mass(event, slope):
+    return {"peak": slope * (event["host_LOGMASS"] - 10)}
+
+def mass_step(key, event, step):
+    return jnp.where(event["host_LOGMASS"] > 10, -step, 0.0)
+
+simulate = sim_run.build_sbi_pipeline(
+    "examples/quickstart/sim_host.input", n_sne=n_sne,
+    conditional_hyperparameters={"x1": stretch_by_mass},
+    conditional_samplers={"GENMAG_OFF_GLOBAL": mass_step},
+)
+results, selection = simulate(jax.random.PRNGKey(3), params={
+    "x1": {"slope": -0.3},
+    "GENMAG_OFF_GLOBAL": {"step": 0.06},
+})
+```
+
+The magnitude offset `GENMAG_OFF_GLOBAL` has no input-file distribution, so it
+takes either one value per event or a sampler.
+
+This conditional sampler draws the SALT2 colour with a scatter of 0.1 about a mean that
+depends on x1 and redshift:
+
+```python
+def draw_colour(key, event, slope):
+    mean = slope * event["x1"] + event["sim_redshift_cmb"]
+    return mean + 0.1 * jax.random.normal(key)
+
+simulate = sim_run.build_sbi_pipeline(
+    "examples/quickstart/sim_host.input", n_sne=n_sne,
+    conditional_samplers={"c": draw_colour},
+)
+results, selection = simulate(
+    jax.random.PRNGKey(4), params={"c": {"slope": 0.02}},
+)
+```
+
+A function can only use values simulated before its parameter. The host is
+chosen first, then the model's parameters are drawn in the model's order (x1, c,
+alpha and beta for SALT), then the host dust (RV, then AV), and the magnitude
+offset last. A parameter that a HOSTLIB weight map uses is drawn before the host
+is chosen. To use a HOSTLIB column that the simulation does not otherwise read,
+list it in `HOSTLIB_STOREPAR`.
