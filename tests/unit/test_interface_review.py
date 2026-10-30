@@ -585,23 +585,3 @@ def test_population_dust_conflicts_are_checked_after_merging(tmp_path, subpop):
                 if subpop else {'populations': {'EBV_HOST': dust}})
     with pytest.raises(SNANAError, match='more than one host dust distribution'):
         parse_input(path, settings)
-
-
-def test_simulator_reports_conditional_population_draw_failure():
-    from jax_snlc_sim.population import Population
-    from jax_snlc_sim.run import validate_batch
-    from jax_snlc_sim.simulation import Model, SimulationConfig
-
-    genpdf = SimpleNamespace(cond_varnames=('LOGMASS',),
-                             cond_grids=(np.array([9., 11.]),))
-    simulator = SimpleNamespace(
-        config=SimulationConfig(),
-        model_settings=Model(populations={'SALT2c': Population(genpdf=genpdf)}))
-    results = {
-        'parameters': {'cid': np.array([1]), 'prefilter_pass': np.array([True]),
-                       'prefilter_reason_code': np.array([0])},
-        'observation_schedule': {},
-    }
-    with pytest.raises(SNANAError, match="Event 7: GENPDF for SALT2c.*LOGMASS"):
-        validate_batch(simulator, results, {'draw_input_failure': np.array([1])},
-                       start_index=7, n_events=1)

@@ -350,7 +350,7 @@ preserved as strings, including leading zeros.
 
 ## Simulation-based inference
 
-Use `prepare` and `build_sbi_pipeline` to prepare a survey once and run
+Pass an input file to `build_sbi_pipeline` to load a survey once and run
 repeated compiled realisations. {doc}`sbi` shows how to select events,
 inspect photometry and change the generated parameters.
 
@@ -370,8 +370,6 @@ also restricts the spectra written to those events.
 .. autofunction:: jax_snlc_sim.run.run_simulation
 
 .. autofunction:: jax_snlc_sim.run.build_sbi_pipeline
-
-.. autofunction:: jax_snlc_sim.run.finish_batch
 
 .. autofunction:: jax_snlc_sim.output.save_snana_outputs
 ```

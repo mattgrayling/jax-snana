@@ -26,6 +26,8 @@ and dN/dz tables read here are built once by ``build_simulation``.
 """
 
 import logging
+from collections.abc import Mapping
+from dataclasses import replace
 from functools import partial
 from typing import Dict, Optional, Tuple
 
@@ -40,13 +42,14 @@ from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import SNANA_NULLFLOAT, canonical_property_name
 from jax_snlc_core.utils import LIGHT_KM
 from jax_snlc_sim.population import HOST_DUST_PARAMETERS
-from jax_snlc_sim.distributions import (GenExpHalfGauss,
+from jax_snlc_sim.distributions import (GenExpHalfGauss, GenGaussAsym, distribution_shifts,
                                         pdf_exp_halfgauss, pdf_gengauss_asym,
                                         sample_exp_halfgauss, sample_gengauss_asym,
                                         sample_truncated_gaussian)
 from jax_snlc_sim.genpdf import pdf_genpdf, sample_genpdf, sample_genpdf_conditional
 from jax_snlc_sim.lensing import lensing_offset
-from jax_snlc_sim.population import component_names, stream_name
+from jax_snlc_sim.population import (checked_genpdf_maps, component_names, outside_map,
+                                     stream_name, validate_call_settings)
 from jax_snlc_sim.scatter import (draw_phase_scatter, draw_coherent_scatter,
                                    draw_filter_scatter, draw_model_scatter,
                                    scale_model_scatter)
@@ -55,6 +58,66 @@ from jax_snlc_sim.simlib import ZMIN_SIMLIB_REGEN, draw_simlib_entry, simlib_fie
 from jax_snlc_sim.zvariation import REDSHIFT, shift_array
 
 logger = logging.getLogger(__name__)
+
+
+def prepare_population_functions(simulator, names, conditional_settings, samplers,
+                                 relations, dependencies):
+    """Resolve function dependencies against the simulator's population draw order.
+
+    Targets are canonical population names. Dependency names may use input aliases.
+    The model and dust can precede host selection when its weights require them.
+    """
+    functions = []
+    registered = set()
+    populations = simulator.model_settings.populations
+    model_order = list(simulator.model.drawn_parameters(populations))
+    order = [*model_order, *[name for name in ('RV', 'AV', 'EBV_HOST') if name in populations],
+             'GENMAG_OFF_GLOBAL']
+    redshifts = {'REDSHIFT_CMB', 'REDSHIFT_HELIO'}
+    for kind, supplied in (('settings', conditional_settings), ('sample', samplers),
+                           ('relation', relations)):
+        for name, function in supplied.items():
+            if name in registered:
+                raise SNANAError(f"Multiple population functions for {name}",
+                                 function_name="build_sbi_pipeline")
+            if name == 'GENMAG_OFF_GLOBAL' and kind != 'relation':
+                raise SNANAError("GENMAG_OFF_GLOBAL accepts a deterministic relation",
+                                 function_name="build_sbi_pipeline")
+            deps = []
+            if name in model_order:
+                before_host = simulator.model_before_host
+            else:
+                before_host = name != 'GENMAG_OFF_GLOBAL' and simulator.dust_before_host
+            earlier = order[:order.index(name)]
+            # EBV is converted into AV by the completed dust stage.
+            if name == 'GENMAG_OFF_GLOBAL':
+                earlier = [quantity for quantity in earlier if quantity != 'EBV_HOST']
+            if before_host and not simulator.model_before_host:
+                earlier = [quantity for quantity in earlier if quantity not in model_order]
+            for dep in dependencies.get(name, ()):
+                if dep.startswith('HOST.'):
+                    column = dep.removeprefix('HOST.')
+                    if (before_host or simulator.hostlib is None
+                            or column not in simulator.hostlib.selector.varnames):
+                        raise SNANAError(f"{name} requires unavailable host column {column}; "
+                                         "host dependencies must be loaded and drawn after host selection",
+                                         function_name="build_sbi_pipeline")
+                elif dep not in redshifts:
+                    dep = names.get(dep.lower(), dep)
+                    if dep not in earlier:
+                        raise SNANAError(f"{name} depends on {dep}, which is not drawn before it",
+                                         function_name="build_sbi_pipeline")
+                deps.append(dep)
+            if name == 'GENMAG_OFF_GLOBAL' and simulator.model_settings._offset_shifts.get(name):
+                raise SNANAError(f"A relation and configured variations both set {name}",
+                                 function_name="build_sbi_pipeline")
+            functions.append((name, kind, function, tuple(deps)))
+            registered.add(name)
+    unused = set(dependencies) - registered
+    if unused:
+        raise SNANAError(f"Dependencies have no population function: {sorted(unused)}",
+                         function_name="build_sbi_pipeline")
+    return tuple(functions)
 
 
 @partial(jax.jit, static_argnums=(1,))
@@ -413,29 +476,19 @@ def draw_input_checks(simulator):
     events, ``weights`` the SUBPOP weights (:func:`_subpop_weights`) where a
     VARIATION shifts them.
 
-    A host whose GENPDF conditioning value lies outside the map aborts
-    unless GENPDF_OPTMASK bit 1 (EXTRAP) clamps it to the edge
-    (sntools_gridmap.c:574-582). A SUBPOP weight that its VARIATION takes
+    A host whose conditional GENPDF value lies outside the map aborts
+    (:func:`outside_map`). A SUBPOP weight that its VARIATION takes
     negative aborts, as does an event for which every class's weight is
     zero, since no class can be drawn for it.
     """
     model = simulator.model_settings
     checks = []
-    for param_name, pop in model.populations.items():
-        genpdf = pop.genpdf
-        if (model.genpdf_optmask & 1 or genpdf is None
-                or not genpdf.cond_varnames):
-            continue
-        for cv_name, grid in zip(genpdf.cond_varnames, genpdf.cond_grids):
-            vmin, vmax = grid[0], grid[-1]
-            tol = 1.0E-14 * (vmax - vmin)
-            column = canonical_property_name(cv_name)
-            checks.append((
-                f"GENPDF for {param_name}: conditioning variable '{cv_name}' "
-                f"outside map range [{vmin}, {vmax}]. Set GENPDF_OPTMASK bit "
-                f"1 (EXTRAP) to clamp.",
-                lambda z, host, weights, column=column, lo=vmin - tol,
-                hi=vmax + tol: (host[column] < lo) | (host[column] > hi)))
+    for param_name, column, grid in checked_genpdf_maps(model):
+        checks.append((
+            f"GENPDF for {param_name}: host '{column}' outside map range "
+            f"[{grid[0]}, {grid[-1]}]. Set GENPDF_OPTMASK bit 1 (EXTRAP) to clamp.",
+            lambda z, host, weights, column=column, grid=grid:
+                outside_map(host[column], grid)))
     if _shifted_subpop_weights(model):
         checks.append((
             "A SUBPOP weight goes negative once its VARIATION is applied. A "
@@ -469,7 +522,7 @@ def draw_input_failures(simulator, redshifts, host_properties):
 
 
 def _sample_population_parameter(simulator, redshifts, host_properties,
-                                 keys_for, param_name, subpop_index, drawn):
+                                 keys_for, param_name, subpop_index, drawn, settings=None):
     """Sample a named population parameter from its record.
 
     One component means every class draws it the same way, which is the
@@ -504,16 +557,15 @@ def _sample_population_parameter(simulator, redshifts, host_properties,
         return jax.vmap(lambda key: sample_genpdf(key, genpdf))(keys)
 
     per_class = [_draw(param_name, dist, shifts, keys, redshifts,
-                       host_properties, drawn)
+                       host_properties, drawn, settings)
                  for dist, shifts in zip(pop.distributions, pop.shifts)]
     if len(per_class) == 1:
         return per_class[0]
-    return jnp.take_along_axis(jnp.stack(per_class),
-                               subpop_index[None, :], axis=0)[0]
+    return jnp.take_along_axis(jnp.stack(per_class), subpop_index[None, :], axis=0)[0]
 
 
 def _population_weight(simulator, param_name, value, host_properties,
-                       subpop_index):
+                       subpop_index, settings=None):
     """prob(nominal)/prob(reweighted) at the drawn value, one where the
     parameter's distribution carries no GENPDF_EXPON_REWGT. A GENPDF map is
     read at the map's own coordinate; a class-dependent parameter reads the
@@ -536,6 +588,14 @@ def _population_weight(simulator, param_name, value, host_properties,
             continue
         pdf = (pdf_exp_halfgauss if isinstance(dist, GenExpHalfGauss)
                else pdf_gengauss_asym)
+        if settings:
+            values = dict(settings)
+            if isinstance(dist, GenGaussAsym):
+                for field in ('sigma', 'sigma2', 'skew'):
+                    if field in values:
+                        array = jnp.asarray(values[field])
+                        values[field] = (array[..., 0], array[..., 1])
+            dist = replace(dist, **values)
         ratios.append(pdf(value, dist) / pdf(value, dist, rewgt))
     if len(ratios) == 1:
         return ratios[0]
@@ -543,19 +603,27 @@ def _population_weight(simulator, param_name, value, host_properties,
                                subpop_index[None, :], axis=0)[0]
 
 
-def _draw(param_name, dist, shifts, keys, redshifts, host_properties, drawn):
+def _draw(param_name, dist, shifts, keys, redshifts, host_properties, drawn, settings=None):
     """One component's draw, with the shifts on it applied."""
-    if not shifts:
+    if not shifts and not settings:
         sample = (sample_exp_halfgauss if isinstance(dist, GenExpHalfGauss)
                   else sample_gengauss_asym)
         return jax.vmap(lambda key: sample(key, dist))(keys)
     arrays, active = _shift_arrays(param_name, shifts, redshifts,
                                    host_properties, drawn)
+    settings = dict(settings or {})
+    bounds = settings.pop('range', None)
+    if bounds is not None:
+        bounds = jnp.broadcast_to(jnp.asarray(bounds), (keys.shape[0], 2))
+    if settings:
+        offsets, changed = distribution_shifts(dist, settings)
+        arrays = tuple(value + offset for value, offset in zip(arrays, offsets))
+        active = active | changed
     if isinstance(dist, GenExpHalfGauss):
-        return jax.vmap(lambda key, *values: sample_exp_halfgauss(key, dist, values))(
-            keys, *arrays)
-    return jax.vmap(lambda key, *values: sample_gengauss_asym(key, dist, values, active))(
-        keys, *arrays)
+        return jax.vmap(lambda key, limits, *values: sample_exp_halfgauss(
+            key, dist, values, bounds=limits))(keys, bounds, *arrays)
+    return jax.vmap(lambda key, limits, *values: sample_gengauss_asym(
+        key, dist, values, active, bounds=limits))(keys, bounds, *arrays)
 
 
 def _subpop_weights(simulator, redshifts, host_properties, n_sne):
@@ -838,23 +906,66 @@ def _missing_population(name):
         f"and GENRANGE_{name}, or a GENPDF map.", function_name="draw_model")
 
 
-def _parameter_sampler(simulator, redshifts, host_properties, keys_for,
-                       subpop_index, drawn):
+def _population_dependencies(dependencies, params, host_properties, drawn):
+    """Values available at this draw, under explicit physical quantity names."""
+    values = []
+    for name in dependencies:
+        if name == 'REDSHIFT_CMB':
+            value = params['sim_redshift_cmb']
+        elif name == 'REDSHIFT_HELIO':
+            value = params['sim_redshift_helio']
+        elif name.startswith('HOST.'):
+            value = host_properties[name.removeprefix('HOST.')]
+        else:
+            # Completed model draws retain their native precision in params.
+            # drawn also carries this stage's draws and dust population names.
+            value = params[name] if name in params else drawn[name]
+        values.append(value)
+    return values
+
+
+def _parameter_sampler(simulator, params, host_properties, keys_for,
+                       subpop_index, drawn, overrides=None, population_functions=()):
     """A draw of named population parameters that records each value in
     ``drawn``, so a later parameter's VARIATION may read it, and returns
     with it a callable giving SNANA's population weight so far,
     prob(nominal)/prob(reweighted) over every reweighted parameter
     (wgt_population_event, snlc_sim.c:31576)."""
+    redshifts = params['sim_redshift_cmb']
     weight = jnp.ones_like(redshifts)
+
+    overrides = overrides or {}
+    custom = {name: (kind, function, deps) for name, kind, function, deps in population_functions}
 
     def sample(param_name):
         nonlocal weight
-        value = _sample_population_parameter(
-            simulator, redshifts, host_properties, keys_for, param_name,
-            subpop_index, drawn)
+        given = overrides.get(param_name, {})
+        if not isinstance(given, Mapping):
+            value = given
+        else:
+            kind, function, deps = custom.get(param_name, (None, None, ()))
+            inputs = _population_dependencies(deps, params, host_properties, drawn)
+            keys = keys_for(stream_name(param_name, dict(simulator.model.configured_population)))
+            if kind in ('sample', 'relation'):
+                value = jax.vmap(lambda key, *args: function(key, *args, **given)
+                                 if kind == 'sample' else function(*args, **given))(keys, *inputs)
+                if value.shape != redshifts.shape:
+                    raise SNANAError(f"Function for {param_name} must return one scalar per event",
+                                     function_name="_parameter_sampler")
+            else:
+                if kind == 'settings':
+                    pop = simulator.model_settings.populations[param_name]
+                    def settings_for_event(key, *args):
+                        settings = function(*args, **given)
+                        validate_call_settings(param_name, pop, settings, conditional=True)
+                        return {field: jnp.asarray(value) for field, value in settings.items()}
+                    given = jax.vmap(settings_for_event)(keys, *inputs)
+                value = _sample_population_parameter(
+                    simulator, redshifts, host_properties, keys_for, param_name,
+                    subpop_index, drawn, given)
+                weight = weight * _population_weight(
+                    simulator, param_name, value, host_properties, subpop_index, given)
         drawn[param_name] = value
-        weight = weight * _population_weight(
-            simulator, param_name, value, host_properties, subpop_index)
         return value
 
     return sample, lambda: weight
@@ -880,7 +991,7 @@ def _keys_for(key, global_indices):
 def draw_model(simulator, params,
                host_properties: Optional[Dict[str, jnp.ndarray]],
                template_budget: Optional[np.ndarray] = None,
-               *, key) -> Dict[str, jnp.ndarray]:
+               *, key, overrides=None, population_functions=()) -> Dict[str, jnp.ndarray]:
     """What each event is (gen_modelPar, snlc_sim.c:12892-12910): the SUBPOP
     class, the model's parameters with the amplitude from the distance, and
     the per-event smears. SNANA draws them after the host, or before it when
@@ -899,7 +1010,8 @@ def draw_model(simulator, params,
 
     drawn = {}
     sample_param, wgt_population = _parameter_sampler(
-        simulator, redshifts, host_properties, keys_for, subpop_index, drawn)
+        simulator, params, host_properties, keys_for, subpop_index, drawn,
+        overrides=overrides, population_functions=population_functions)
 
     _phasecor_grid_arr = draw_phase_scatter(
         simulator.phasecor_cholesky_L,
@@ -965,15 +1077,16 @@ def draw_model(simulator, params,
 
 def draw_dust(simulator, params,
               host_properties: Optional[Dict[str, jnp.ndarray]], *,
-              key) -> Dict[str, jnp.ndarray]:
+              key, overrides=None, population_functions=()) -> Dict[str, jnp.ndarray]:
     """Host-galaxy AV and RV (gen_modelPar_dust, snlc_sim.c:12912), at the
     event's final redshift. SNANA draws them after the host; a weight map
     that reads them needs them before it. Returns the dust columns and the
     population weight with the dust's reweighting folded in."""
     sample_param, dust_weight = _parameter_sampler(
-        simulator, params['sim_redshift_cmb'], host_properties,
+        simulator, params, host_properties,
         _keys_for(key, params['sn_global_idx']),
-        _subpop_index(simulator, params), _population_values(simulator, params))
+        _subpop_index(simulator, params), _population_values(simulator, params),
+        overrides=overrides, population_functions=population_functions)
     av, rv, sim_av, sim_rv = _draw_host_dust(
         simulator, params['sim_redshift_cmb'].shape[0], sample_param,
         event_keys(key, 'AV', params['sn_global_idx']))
@@ -982,9 +1095,20 @@ def draw_dust(simulator, params,
 
 
 def draw_grey_offset(simulator, params,
-                     host_properties: Optional[Dict[str, jnp.ndarray]]):
+                     host_properties: Optional[Dict[str, jnp.ndarray]], *,
+                     overrides=None, population_functions=()):
     """GENMAG_OFF_GLOBAL per SN, with its redshift variation at the final
     zCMB, once the host's overrides are in (snlc_sim.c:12940)."""
+    for name, kind, function, deps in population_functions:
+        if name == 'GENMAG_OFF_GLOBAL':
+            given = (overrides or {}).get(name, {})
+            if not isinstance(given, Mapping):
+                return given
+            inputs = _population_dependencies(deps, params, host_properties,
+                                              _population_values(simulator, params))
+            # A dummy event axis also broadcasts relations without dependencies.
+            return jax.vmap(lambda _, *args: function(*args, **given))(
+                params['sim_redshift_cmb'], *inputs)
     return grey_offset(simulator, _subpop_index(simulator, params),
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),

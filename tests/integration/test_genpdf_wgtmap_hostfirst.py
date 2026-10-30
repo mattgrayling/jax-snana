@@ -270,14 +270,21 @@ def _narrow_genpdf_input(tmp_path: Path) -> Path:
 
 
 def test_conditional_genpdf_out_of_map_aborts_without_extrap(tmp_path):
-    """No EXTRAP bit: a host LOGMASS outside the GENPDF map aborts, matching
-    SNANA's interp_GRIDMAP (sntools_gridmap.c:574-582)."""
+    """No EXTRAP bit: a drawn host whose LOGMASS lies outside the GENPDF map
+    aborts the run, matching SNANA's interp_GRIDMAP (sntools_gridmap.c:574-582);
+    preparation accepts the catalogue, since a host is only checked once drawn."""
     inp = _narrow_genpdf_input(tmp_path)
-    cfg = dict(n_sne=200, random_seed=99003)
-    sim = sim_run.prepare(str(inp), **cfg)
-    resources = sim
+    sim = sim_run.prepare(str(inp), n_sne=200, random_seed=99003)
     with pytest.raises(SNANAError, match="outside map range"):
         sim_run.run_simulation(sim)
+
+
+def test_sbi_rejects_a_catalogue_outside_the_conditional_genpdf(tmp_path):
+    """SBI cannot stop at an event whose host lies outside the map, so it
+    rejects a catalogue that has such hosts when the pipeline is built."""
+    inp = _narrow_genpdf_input(tmp_path)
+    with pytest.raises(SNANAError, match="outside the map"):
+        sim_run.build_sbi_pipeline(str(inp), n_sne=200, random_seed=99003)
 
 
 def test_conditional_genpdf_out_of_map_clamps_with_extrap(tmp_path):

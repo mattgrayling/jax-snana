@@ -7,6 +7,8 @@ Covers both low-level helpers (``bifurcated_cdf``/``bifurcated_ppf``,
 plus the grid helpers ``_grid_params`` / ``_apply_grid_snapping``).
 """
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -422,3 +424,269 @@ def test_population_weight_undoes_a_reweighted_exponential():
     ratio = pdf_exp_halfgauss(x, d) / pdf_exp_halfgauss(x, d, 2.0)
 
     np.testing.assert_allclose(ratio, np.exp(np.asarray(x) / 0.4), rtol=1e-6)
+
+
+def test_traced_gaussian_settings_match_prepared_distribution_and_density():
+    """Numerical overrides use the same draw and density as configured values."""
+    from jax_snlc_sim.distributions import distribution_shifts
+
+    base = GenGaussAsym(peak=0., sigma=(.3, .4), range=(-2., 2.))
+    settings = {'peak': .2, 'sigma': (.4, .5), 'prob2': .2,
+                'peak2': -.4, 'sigma2': (.2, .3)}
+    changed = replace(base, **settings)
+    shifts, active = distribution_shifts(base, settings)
+    key = jax.random.PRNGKey(21)
+    actual = sample_gengauss_asym(key, base, shifts, active)
+    expected = sample_gengauss_asym(key, changed)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+    x = jnp.linspace(-1., 1., 21)
+    for reweighting in (1., 2.):
+        density = jax.jit(lambda peak: pdf_gengauss_asym(
+            x, replace(changed, peak=peak), reweighting))
+        np.testing.assert_allclose(density(settings['peak']),
+                                   pdf_gengauss_asym(x, changed, reweighting), rtol=1e-6)
+
+
+def test_traced_exponential_scale_has_finite_gradient():
+    """Inactive zero-width Gaussian terms do not contaminate dust gradients."""
+    from jax_snlc_sim.distributions import distribution_shifts
+
+    dist = GenExpHalfGauss(exp_tau=.3, range=(0., 2.))
+    keys = jax.random.split(jax.random.PRNGKey(28), 20)
+
+    def mean_draw(tau):
+        shifts, _ = distribution_shifts(dist, {'exp_tau': tau})
+        return jax.vmap(lambda key: sample_exp_halfgauss(key, dist, shifts))(keys).mean()
+
+    value = jnp.array(.4)
+    derivative = jax.jit(jax.grad(mean_draw))(value)
+    step = 1e-4
+    finite = (mean_draw(value + step) - mean_draw(value - step)) / (2 * step)
+    assert np.isfinite(derivative)
+    np.testing.assert_allclose(derivative, finite, rtol=2e-3)
+    x = jnp.array([.1, .5])
+    ratio = (pdf_exp_halfgauss(x, replace(dist, exp_tau=value))
+             / pdf_exp_halfgauss(x, replace(dist, exp_tau=value), 2.))
+    np.testing.assert_allclose(ratio, np.exp(np.asarray(x) / value), rtol=1e-6)
+
+
+@pytest.mark.parametrize('widths', [(0., .3), (.3, 0.)])
+def test_call_time_mixture_density_retains_one_sided_widths(widths):
+    """Safe divisors must not change the normalization of a one-sided component."""
+    g = GenGaussAsym(peak=0., sigma=(.4, .5), peak2=.2, sigma2=widths, prob2=.3)
+    x = jnp.array([-.5, .5])
+
+    def density(probability):
+        return pdf_gengauss_asym(x, replace(g, prob2=probability))
+
+    sigma = np.where(np.asarray(x) < 0., .4, .5)
+    width2 = np.where(np.asarray(x) < .2, *widths)
+    secondary = np.zeros(2)
+    present = width2 > 0.
+    secondary[present] = np.exp(-.5 * ((np.asarray(x)[present] - .2) / width2[present]) ** 2)
+    primary = np.exp(-.5 * (np.asarray(x) / sigma) ** 2)
+    normalized_secondary = secondary * (.4 + .5) / sum(widths)
+    expected = .7 * primary + .3 * normalized_secondary
+    np.testing.assert_allclose(jax.jit(density)(.3), expected, rtol=1e-6)
+    np.testing.assert_allclose(pdf_gengauss_asym(x, g), expected, rtol=1e-6)
+    derivative = jax.jacfwd(density)(.3)
+    np.testing.assert_allclose(derivative, normalized_secondary - primary, rtol=1e-6)
+
+
+def test_call_time_dust_density_omits_zero_width_gaussian():
+    """A zero-width Gaussian must not turn into a unit-width dust component."""
+    d = GenExpHalfGauss(exp_tau=.4, sigma=0., ratio=.5, range=(0., 2.))
+    x = jnp.array([.1, .5])
+
+    def density(tau):
+        return pdf_exp_halfgauss(x, replace(d, exp_tau=tau))
+
+    expected = np.exp(-np.asarray(x) / .4)
+    np.testing.assert_allclose(jax.jit(density)(.4), expected, rtol=1e-6)
+    np.testing.assert_allclose(pdf_exp_halfgauss(x, d), expected, rtol=1e-6)
+    derivative = jax.jacrev(density)(.4)
+    np.testing.assert_allclose(derivative, expected * np.asarray(x) / .4**2, rtol=1e-6)
+
+
+@pytest.mark.parametrize('ratio', [0., 2.])
+def test_call_time_pure_gaussian_dust_has_finite_reweighting(ratio):
+    """Removing the exponential leaves Gaussian reweighting, regardless of mixture ratio."""
+    d = GenExpHalfGauss(exp_tau=.4, sigma=0., ratio=ratio, range=(0., 2.))
+    x = jnp.array([.1, .5])
+
+    def weight(sigma):
+        gaussian = replace(d, exp_tau=0., sigma=sigma)
+        return pdf_exp_halfgauss(x, gaussian) / pdf_exp_halfgauss(x, gaussian, 2.)
+
+    expected = np.exp(.5 * (np.asarray(x) / .3) ** 2)
+    np.testing.assert_allclose(jax.jit(weight)(.3), expected, rtol=1e-6)
+    gradient = jax.jacrev(weight)(.3)
+    np.testing.assert_allclose(gradient, -expected * np.asarray(x)**2 / .3**3, rtol=1e-6)
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+@pytest.mark.parametrize('other_width', [0., 1e-20])
+def test_one_sided_gaussian_sampling_gradient(side, other_width):
+    """An absent or negligible side must not spoil the active width's gradient."""
+    from jax_snlc_sim.distributions import distribution_shifts
+
+    sigma = (.3, other_width) if side == 'left' else (other_width, .3)
+    dist = GenGaussAsym(sigma=sigma, range=(-2., 2.))
+    keys = jax.random.split(jax.random.PRNGKey(7), 32)
+
+    def draws(width):
+        sigma = (width, other_width) if side == 'left' else (other_width, width)
+        shifts, active = distribution_shifts(dist, {'sigma': sigma})
+        return jax.vmap(lambda key: sample_gengauss_asym(key, dist, shifts, active))(keys)
+
+    values = jax.jit(draws)(.3)
+    derivative = jax.jit(jax.jacrev(draws))(.3)
+    step = 1e-5
+    numerical = (draws(.3 + step) - draws(.3 - step)) / (2. * step)
+    assert np.isfinite(values).all()
+    assert np.isfinite(derivative).all()
+    np.testing.assert_allclose(derivative, numerical, rtol=2e-5, atol=1e-8)
+
+
+def test_small_positive_dust_mixture_weights_keep_their_ratio():
+    """Tiny component masses still select the dominant truncated exponential."""
+    from jax_snlc_sim.distributions import distribution_shifts
+
+    dist = GenExpHalfGauss(exp_tau=.01, sigma=2., ratio=1e-80, range=(1.7, 3.))
+    shifts, _ = distribution_shifts(dist, {'ratio': 1e-80})
+    keys = jax.random.split(jax.random.PRNGKey(19), 256)
+    values = jax.jit(jax.vmap(lambda key: sample_exp_halfgauss(key, dist, shifts)))(keys)
+    assert np.isfinite(values).all()
+    assert 1.705 < float(values.mean()) < 1.715
+
+
+@pytest.mark.parametrize('sigma', [0.1, 0.01, 0.001, 1.e-6])
+def test_truncated_normal_outside_support(sigma):
+    """Far-tail draws obey the bound and agree with SciPy's tail quantiles."""
+    from scipy.stats import truncnorm
+    keys = jax.random.split(jax.random.PRNGKey(78), 1000)
+    values = np.asarray(jax.jit(jax.vmap(
+        lambda key: _sample_truncated_normal(key, 1.1, sigma, 1.2, 6.)))(keys))
+    u = np.asarray(jax.vmap(jax.random.uniform)(keys))
+    expected = truncnorm.ppf(1. - u, (1.2 - 1.1) / sigma,
+                            (6. - 1.1) / sigma, loc=1.1, scale=sigma)
+    assert np.all(values >= 1.2)
+    np.testing.assert_allclose(values, expected, rtol=1.e-6, atol=1.e-7)
+    gradient = jax.grad(lambda scale: _sample_truncated_normal(
+        keys[0], 1.1, scale, 1.2, 6.))(sigma)
+    assert np.isfinite(gradient)
+
+
+def test_zero_width_distribution_limits():
+    """Zero-width conditional normals and exponentials have explicit limits."""
+    key = jax.random.PRNGKey(14)
+    for mean, expected in [(1.1, 1.2), (2., 2.), (7., 6.)]:
+        assert _sample_truncated_normal(key, mean, 0., 1.2, 6.) == expected
+        assert sample_truncated_gaussian(key, mean, 0., 0., 1.2, 6.) == expected
+    for tau in (0., 1.e-16, 1.e-8):
+        value = _sample_truncated_exponential(key, tau, 0.2, 6.)
+        assert np.isfinite(value) and value >= 0.2
+
+
+def test_truncated_normal_float32_tail():
+    """Tail interpolation remains bounded at the precision used in training."""
+    with jax.enable_x64(False):
+        key = jax.random.PRNGKey(9)
+        for sigma in (.01, .001, 1.e-6, 0.):
+            value = _sample_truncated_normal(key, 1.1, sigma, 1.2, 6.)
+            assert np.isfinite(value) and value >= jnp.float32(1.2)
+            assert value < 1.21
+
+
+@pytest.mark.parametrize('extra', [
+    {}, {'sigma': (100., 100.)}, {'prob2': .3, 'peak2': 4., 'sigma2': (.4, .6)},
+    {'skew': (.05, .05)}, {'peakrange': (2.8, 3.2)}, {'ngrid': 5},
+])
+def test_call_time_gaussian_bounds_match_configured_bounds(extra):
+    """Changing bounds preserves normal, mixture, flat, plateau, skew and grid laws."""
+    from dataclasses import replace
+
+    dist = GenGaussAsym(**dict({'peak': 3., 'sigma': (.3, .5), 'range': (3., 3.)}, **extra))
+    keys = jax.random.split(jax.random.PRNGKey(39), 128)
+    traces = []
+    @jax.jit
+    def draw(bounds):
+        traces.append(True)
+        return jax.vmap(lambda key: sample_gengauss_asym(key, dist, bounds=bounds))(keys)
+    for limits in ((1.2, 6.), (2.5, 3.5), (2.9, 2.91), (3., 3.)):
+        values = draw(jnp.asarray(limits))
+        configured = replace(dist, range=limits)
+        expected = jax.vmap(lambda key: sample_gengauss_asym(key, configured))(keys)
+        np.testing.assert_allclose(values, expected, rtol=1.e-5, atol=1.e-6)
+        assert np.isfinite(values).all()
+    assert len(traces) == 1
+
+
+def test_call_time_bounds_gradients_and_exponential_limit():
+    """Bounds remain traced, including a point distribution and its endpoint derivative."""
+    dist = GenGaussAsym(peak=3., sigma=(.4, .4), range=(2.61, 2.61))
+    exp = GenExpHalfGauss(exp_tau=.4, range=(0., .5))
+    keys = jax.random.split(jax.random.PRNGKey(91), 10000)
+    @jax.jit
+    def normal_mean(bounds):
+        return jax.vmap(lambda key: sample_gengauss_asym(key, dist, bounds=bounds))(keys).mean()
+    bounds = jnp.array([1.2, 4.])
+    gradient = jax.grad(normal_mean)(bounds)
+    step = 1.e-4
+    for i in range(2):
+        shift = jnp.eye(2)[i] * step
+        finite = (normal_mean(bounds + shift) - normal_mean(bounds - shift)) / (2 * step)
+        np.testing.assert_allclose(gradient[i], finite, rtol=1.e-3, atol=1.e-7)
+    np.testing.assert_allclose(jax.grad(normal_mean)(jnp.array([3., 3.])), [1., 0.])
+    values = jax.jit(jax.vmap(lambda key: sample_exp_halfgauss(
+        key, exp, bounds=jnp.array([0., 20.]))))(keys)
+    assert abs(float(values.mean()) - .4) < .012
+    fixed = jax.jit(lambda bounds: sample_exp_halfgauss(keys[0], exp, bounds=bounds))
+    assert fixed(jnp.array([.2, .2])) == .2
+    np.testing.assert_allclose(jax.grad(fixed)(jnp.array([.2, .2])), [1., 0.])
+
+
+@pytest.mark.parametrize('dynamic_bounds', [False, True])
+@pytest.mark.parametrize('mixture', [False, True])
+@pytest.mark.parametrize('prepared_widths', [(0., 0.), (.3, .3)])
+def test_grid_bounds_follow_call_time_widths(dynamic_bounds, mixture, prepared_widths):
+    """Grid expansion, mixture acceptance and snapping use the actual widths."""
+    from dataclasses import replace
+    from jax_snlc_sim.distributions import distribution_shifts
+
+    dist = GenGaussAsym(peak=1.1, sigma=prepared_widths, range=(1.2, 6.), ngrid=5,
+                       prob2=.4 if mixture else 0., peak2=4., sigma2=prepared_widths)
+    keys = jax.random.split(jax.random.PRNGKey(0), 256)
+    traces = []
+    @jax.jit
+    def draw(widths):
+        traces.append(True)
+        settings = {'sigma': widths}
+        if mixture:
+            settings['sigma2'] = widths[::-1]
+        shifts, active = distribution_shifts(dist, settings)
+        return jax.vmap(lambda key: sample_gengauss_asym(
+            key, dist, shifts, active,
+            bounds=jnp.array(dist.range) if dynamic_bounds else None))(keys)
+
+    for widths in ((0., 0.), (0., .3), (.3, 0.), (.3, .3)):
+        values = draw(jnp.array(widths))
+        configured = replace(dist, sigma=widths,
+                             sigma2=widths[::-1] if mixture else dist.sigma2)
+        expected = jax.vmap(lambda key: sample_gengauss_asym(key, configured))(keys)
+        assert np.all((values >= 1.2) & (values <= 6.))
+        np.testing.assert_allclose(values, expected, rtol=1.e-6, atol=1.e-7)
+    assert len(traces) == 1
+
+
+@pytest.mark.parametrize('tau, sigma, ratio', [(.4, 5.e-15, 1.e16), (5.e-15, .4, 0.)])
+def test_traced_dust_uses_static_component_thresholds(tau, sigma, ratio):
+    """Negligible widths select the same pure component with traced settings."""
+    dist = GenExpHalfGauss(exp_tau=tau, sigma=sigma, ratio=ratio, range=(0., 3.))
+    keys = jax.random.split(jax.random.PRNGKey(31), 128)
+    traced = jax.jit(jax.vmap(lambda key: sample_exp_halfgauss(
+        key, dist, (0., 0., 0., 0.))))(keys)
+    # The traced path reserves its first subkey for mixture selection.
+    expected = jax.vmap(lambda key: sample_exp_halfgauss(
+        jax.random.split(key)[1], dist))(keys)
+    np.testing.assert_allclose(traced, expected, rtol=1.e-6, atol=1.e-7)
