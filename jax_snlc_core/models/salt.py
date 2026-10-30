@@ -694,7 +694,8 @@ def _make_band_integrator(m0, m1, extrap_seds, basis, offset, phase_grid):
     ``bwz`` their redshift derivative. ``dc`` and ``dz`` are the colour and
     redshift components of the tangent direction.
     """
-    def _stack(c, bw, powers):
+    def _stack(data, c, bw, powers):
+        m0, m1, extrap_seds, basis, offset, _ = data
         cc = jnp.exp((c - offset) * basis)
         W = bw * cc[None, :]
         S = jnp.concatenate([W * basis[None, :] ** k for k in powers], axis=0)
@@ -704,7 +705,7 @@ def _make_band_integrator(m0, m1, extrap_seds, basis, offset, phase_grid):
         return [(A0[:, i*nf:(i+1)*nf], A1[:, i*nf:(i+1)*nf], B[..., i*nf:(i+1)*nf])
                 for i in range(len(powers))]
 
-    def _tangent(c, bw, dc, dbw, higher, power, bwz=None, dz=0.0):
+    def _tangent(data, c, bw, dc, dbw, higher, power, bwz=None, dz=0.0):
         """Tangent of the integral taken against ``CLW * basis**power``.
 
         Colour raises the power by one, which the caller supplies as
@@ -712,6 +713,7 @@ def _make_band_integrator(m0, m1, extrap_seds, basis, offset, phase_grid):
         power as the quantity being differentiated; they are constant under
         spec-z and vary with the fitted redshift under photo-z.
         """
+        m0, m1, extrap_seds, basis, offset, _ = data
         cc = jnp.exp((c - offset) * basis) * basis ** power
         if bwz is not None:
             # photo-z: products against d(bw)/dz, scaled by dz
@@ -725,21 +727,24 @@ def _make_band_integrator(m0, m1, extrap_seds, basis, offset, phase_grid):
         return (higher[0] * dc + A0, higher[1] * dc + A1, higher[2] * dc + Bw)
 
     @jax.custom_jvp
-    def _moments(c, bw, z, bwz):
-        val, first = _stack(c, bw, (0, 1))
+    def _moments(data, c, bw, z, bwz):
+        val, first = _stack(data, c, bw, (0, 1))
         return (*val, *first)
 
     @_moments.defjvp
     def _moments_jvp(primals, tangents):
-        c, bw, z, bwz = primals
-        dc, dbw, dz, _ = tangents
+        data, c, bw, z, bwz = primals
+        ddata, dc, dbw, dz, _ = tangents
         sg = jax.lax.stop_gradient
-        val, first, second = _stack(sg(c), sg(bw), (0, 1, 2))
-        return ((*val, *first),
-                (*_tangent(c, bw, dc, dbw, first, 0, bwz, dz),
-                 *_tangent(c, bw, dc, dbw, second, 1, bwz, dz)))
+        val, first, second = _stack(data, sg(c), sg(bw), (0, 1, 2))
+        _, asset_tangent = jax.jvp(lambda d: _stack(d, c, bw, (0, 1)),
+                                  (data,), (ddata,))
+        tangent = (*_tangent(data, c, bw, dc, dbw, first, 0, bwz, dz),
+                   *_tangent(data, c, bw, dc, dbw, second, 1, bwz, dz))
+        return (*val, *first), tuple(a + b for a, b in
+                                    zip(tangent, (*asset_tangent[0], *asset_tangent[1])))
 
-    def at_observations(integrals, phases, filters):
+    def at_observations(integrals, phases, filters, phase_grid):
         M0, M1, boundary = integrals
         values = tuple(hermite_interp_1d_select(
             phases, phase_grid, surface,
@@ -749,29 +754,34 @@ def _make_band_integrator(m0, m1, extrap_seds, basis, offset, phase_grid):
         return (*values, boundary[side, :, filters])
 
     @jax.custom_jvp
-    def integrate(c, bw, z, bwz, phases, filters):
-        return at_observations(_moments(c, bw, z, bwz)[:3], phases, filters)
+    def integrate(data, c, bw, z, bwz, phases, filters):
+        return at_observations(_moments(data, c, bw, z, bwz)[:3], phases, filters, data[5])
 
     @integrate.defjvp
     def integrate_jvp(primals, tangents):
-        c, bw, z, bwz, phases, filters = primals
-        dc, dbw, dz, _, dphases, _ = tangents
-        M0, M1, B, P0, P1, PB = _moments(c, bw, z, bwz)
+        data, c, bw, z, bwz, phases, filters = primals
+        ddata, dc, dbw, dz, _, dphases, _ = tangents
+        phase_grid = data[5]
+        M0, M1, B, P0, P1, PB = _moments(data, c, bw, z, bwz)
         value, phase_tangent = jax.jvp(
-            lambda phase: at_observations((M0, M1, B), phase, filters),
+            lambda phase: at_observations((M0, M1, B), phase, filters, phase_grid),
             (phases,), (dphases,))
-        colour = at_observations((P0, P1, PB), phases, filters)
+        colour = at_observations((P0, P1, PB), phases, filters, phase_grid)
         weights = at_observations(
-            _stack(c, dbw if bwz is None else bwz, (0,))[0], phases, filters)
+            _stack(data, c, dbw if bwz is None else bwz, (0,))[0], phases, filters, phase_grid)
         # Apply scalar tangents after lookup: transposition then reduces over
         # observations without scattering into shared phase/filter entries.
         tangent = tuple(phase_part + dc * colour_part
                         + (weight_part if bwz is None else dz * weight_part)
                         for phase_part, colour_part, weight_part
                         in zip(phase_tangent, colour, weights))
-        return value, tangent
+        _, asset_tangent = jax.jvp(
+            lambda d: at_observations(_stack(d, c, bw, (0,))[0], phases, filters, d[5]),
+            (data,), (ddata,))
+        return value, tuple(a + b for a, b in zip(tangent, asset_tangent))
 
-    return integrate
+    data = (m0, m1, extrap_seds, basis, offset, phase_grid)
+    return lambda c, bw, z, bwz, phases, filters: integrate(data, c, bw, z, bwz, phases, filters)
 
 
 def _precompute_colorlaw_basis(

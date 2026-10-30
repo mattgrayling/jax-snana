@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.stats import norm as jax_norm
+from jax.scipy.special import log_ndtr, ndtri
 
 from jax_snlc_core.logging import SNANAError
 
@@ -109,21 +110,32 @@ def bifurcated_ppf(u, peak, sigma_lo, sigma_hi):
     sigma_lo = jnp.maximum(sigma_lo, 1e-30)
     sigma_hi = jnp.maximum(sigma_hi, 1e-30)
     p_left = sigma_lo / (sigma_lo + sigma_hi)
-    x_left = peak + sigma_lo * jax_norm.ppf(u / (2.0 * p_left))
-    x_right = peak + sigma_hi * jax_norm.ppf(1.0 - (1.0 - u) / (2.0 * (1.0 - p_left)))
-    return jnp.where(u < p_left, x_left, x_right)
+    left = u < p_left
+    # Choose the side before division; normal symmetry gives the right tail.
+    tail_probability = jnp.where(left, u, 1.0 - u)
+    tail_probability /= 2.0 * jnp.where(left, p_left, 1.0 - p_left)
+    signed_sigma = jnp.where(left, sigma_lo, -sigma_hi)
+    return peak + signed_sigma * jax_norm.ppf(tail_probability)
 
 
 def sample_truncated_gaussian(key, peak, sigma_lo, sigma_hi, range_lo, range_hi):
-    """Sample from truncated bifurcated Gaussian via inverse CDF.
+    """Draw a bifurcated normal, retaining tail precision outside its peak.
 
-    Computes CDF at the range bounds, samples u ~ U(cdf_lo, cdf_hi),
-    then applies the inverse CDF. Result is exactly within [range_lo, range_hi].
+    When both widths vanish, use the limiting point within the bounds.
     """
-    cdf_lo = bifurcated_cdf(range_lo, peak, sigma_lo, sigma_hi)
-    cdf_hi = bifurcated_cdf(range_hi, peak, sigma_lo, sigma_hi)
+    central = (range_lo < peak) & (peak < range_hi)
+    # The unused central inverse must stay finite under differentiation.
+    c_lo = jnp.where(central, range_lo, peak - 1.)
+    c_hi = jnp.where(central, range_hi, peak + 1.)
+    cdf_lo = bifurcated_cdf(c_lo, peak, sigma_lo, sigma_hi)
+    cdf_hi = bifurcated_cdf(c_hi, peak, sigma_lo, sigma_hi)
     u = jax.random.uniform(key, minval=cdf_lo, maxval=cdf_hi)
-    return bifurcated_ppf(u, peak, sigma_lo, sigma_hi)
+    middle = bifurcated_ppf(u, peak, sigma_lo, sigma_hi)
+    sigma = jnp.where(peak <= range_lo, sigma_hi, sigma_lo)
+    tail = _sample_truncated_normal(key, peak, sigma, range_lo, range_hi)
+    value = jnp.where(central, middle, tail)
+    return jnp.where((sigma_lo == 0.) & (sigma_hi == 0.),
+                     jnp.clip(peak, range_lo, range_hi), value)
 
 
 
@@ -191,7 +203,7 @@ _PROB2_EPS = 1.0e-7       # PROB2 activation gate (:338)
 
 def _component_plan(sig_lo, sig_hi, skew_lo, skew_hi, pr_lo, pr_hi,
                     range_lo, range_hi, ngrid, sigma_shifted=False,
-                    skew_shifted=False):
+                    skew_shifted=False, range_shifted=False):
     """Static branch/grid plan for one mixture component.
 
     Mirrors the per-draw setup of getRan_GENGAUSS_ASYM (:372-404): the grid
@@ -200,12 +212,12 @@ def _component_plan(sig_lo, sig_hi, skew_lo, skew_hi, pr_lo, pr_hi,
     threshold is sigmax = 10 * (extended range).
 
     Branch order matches SNANA: delta, flat, skew, peakrange, bifurcated.
-    With ZVARIATION-shifted sigmas the flat-vs-bifurcated choice is per
-    event ('dyn_flat'); build-time validation guarantees shifted sigmas keep
-    the base sign, so the grid decision stays static.
+    Call-time bounds cannot select a fixed-point or flat branch at setup.
+    Their flat threshold is evaluated per event; the grid count stays fixed.
+    Grid snapping is enabled only for positive widths at the draw.
     """
-    do_grid = (ngrid >= 2 and range_hi > range_lo
-               and sig_lo > 0.0 and sig_hi > 0.0)
+    can_grid = sigma_shifted or (sig_lo > 0.0 and sig_hi > 0.0)
+    do_grid = ngrid >= 2 and can_grid and (range_shifted or range_hi > range_lo)
     if do_grid:
         _, _, lo, hi = _grid_params(range_lo, range_hi, ngrid)
     else:
@@ -216,15 +228,16 @@ def _component_plan(sig_lo, sig_hi, skew_lo, skew_hi, pr_lo, pr_hi,
                or skew_shifted)
     peakrange_on = (pr_hi - pr_lo) > _PEAKRANGE_EPS
 
-    if width < 1e-30:
+    if not range_shifted and width < 1e-30:
         branch = 'delta'
-    elif not sigma_shifted and sig_lo > 10.0 * width and sig_hi > 10.0 * width:
+    elif (not range_shifted and not sigma_shifted
+          and sig_lo > 10.0 * width and sig_hi > 10.0 * width):
         branch = 'flat'
     elif skew_on:
         branch = 'skew'
     elif peakrange_on:
         branch = 'peakrange'
-    elif sigma_shifted:
+    elif sigma_shifted or range_shifted:
         branch = 'dyn_flat'
     else:
         branch = 'bifurcated'
@@ -257,7 +270,7 @@ def _peakrange_mass(sig_lo, sig_hi, pr_lo, pr_hi, lo, hi):
     return (w_lo + flat_width + w_hi) / full
 
 
-def _component_mass(branch, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo, hi):
+def _component_mass(branch, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo, hi, range_shifted=False):
     """Accepted mass (probability of no outer restart) for one component.
 
     The skew branch has mass 1: getRan_skewGauss rejects proposals outside
@@ -269,21 +282,20 @@ def _component_mass(branch, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo, hi):
     parameters)."""
     if branch in ('delta', 'flat', 'skew'):
         return jnp.float32(1.0)
-    if branch == 'dyn_flat':
-        width = hi - lo
-        flat = (sig_lo > 10.0 * width) & (sig_hi > 10.0 * width)
-        m = (bifurcated_cdf(hi, peak, sig_lo, sig_hi)
-             - bifurcated_cdf(lo, peak, sig_lo, sig_hi))
-        return jnp.where(flat, 1.0, m)
     if branch == 'peakrange':
-        return _peakrange_mass(sig_lo, sig_hi, pr_lo, pr_hi, lo, hi)
-    return (bifurcated_cdf(hi, peak, sig_lo, sig_hi)
-            - bifurcated_cdf(lo, peak, sig_lo, sig_hi))
+        mass = _peakrange_mass(sig_lo, sig_hi, pr_lo, pr_hi, lo, hi)
+    else:
+        mass = (bifurcated_cdf(hi, peak, sig_lo, sig_hi)
+                - bifurcated_cdf(lo, peak, sig_lo, sig_hi))
+    if branch == 'dyn_flat' or range_shifted:
+        flat = (sig_lo > 10.0 * (hi - lo)) & (sig_hi > 10.0 * (hi - lo))
+        mass = jnp.where(flat, 1.0, mass)
+    return mass
 
 
 def _component_value(key, branch, peak, sig_lo, sig_hi, skew_lo, skew_hi,
                      pr_lo, pr_hi, lo, hi, range_lo, range_hi, ngrid,
-                     do_grid, traced_shifts=False):
+                     do_grid, traced_shifts=False, range_shifted=False):
     """Draw one value from a component's truncated law, grid-snapped when
     the component's DO_GRID is active."""
     if branch == 'delta':
@@ -313,8 +325,12 @@ def _component_value(key, branch, peak, sig_lo, sig_hi, skew_lo, skew_hi,
     else:
         val = sample_truncated_gaussian(key, peak, sig_lo, sig_hi, lo, hi)
 
+    if range_shifted and branch in ('skew', 'peakrange'):
+        flat = (sig_lo > 10.0 * (hi - lo)) & (sig_hi > 10.0 * (hi - lo))
+        val = jnp.where(flat, jax.random.uniform(key, minval=lo, maxval=hi), val)
     if do_grid:
-        val = _apply_grid_snapping(val, range_lo, range_hi, ngrid)
+        snapped = _apply_grid_snapping(val, range_lo, range_hi, ngrid)
+        val = jnp.where((sig_lo > 0.) & (sig_hi > 0.), snapped, val)
     return val
 
 
@@ -351,39 +367,54 @@ def _sample_from_precomputed_cdf(key, precomputed):
 
 
 def _sample_truncated_exponential(key, tau, range_lo, range_hi):
-    """Sample from truncated exponential via inverse CDF.
-
-    CDF: F(x) = 1 - exp(-x/tau), truncated to [range_lo, range_hi].
-    Inverse: x = -tau * ln(exp(-range_lo/tau) - u * (exp(-range_lo/tau) - exp(-range_hi/tau)))
-    """
-    exp_lo = jnp.exp(-range_lo / tau)
-    exp_hi = jnp.exp(-range_hi / tau)
+    """Truncated exponential, with its zero-scale limit at the lower bound."""
+    scale = jnp.where(tau == 0., 1., tau)
+    mass = -jnp.expm1(-(range_hi - range_lo) / scale)
     u = jax.random.uniform(key)
-    return -tau * jnp.log(exp_lo - u * (exp_lo - exp_hi))
+    return range_lo - tau * jnp.log1p(-u * mass)
 
 
 def _sample_truncated_halfnormal(key, sigma, range_lo, range_hi):
-    """Sample from truncated half-normal |N(0, sigma)| in [range_lo, range_hi].
+    """Half-normal restricted to the nonnegative part of the interval."""
+    return _sample_truncated_normal(key, 0., sigma, jnp.maximum(range_lo, 0.), range_hi)
 
-    For half-normal, CDF(x) = erf(x / (sigma*sqrt(2))) for x >= 0.
-    Using normal CDF: CDF_half(x) = 2*(Phi(x/sigma) - 0.5) for x >= 0.
+
+def _normal_log_quantile(log_p):
+    """Inverse normal log-CDF without exponentiating small tail probabilities.
+
+    Newton steps solve log(Phi(x)) = log_p in the negative tail. The ordinary
+    inverse handles the centre; both branches use finite inactive inputs.
     """
-    cdf_lo = jax_norm.cdf(range_lo / sigma)
-    cdf_hi = jax_norm.cdf(range_hi / sigma)
-    cdf_lo_mapped = jnp.maximum(cdf_lo, 0.5)
-    u = jax.random.uniform(key, minval=cdf_lo_mapped, maxval=cdf_hi)
-    return sigma * jax_norm.ppf(u)
+    tail_p = jnp.minimum(log_p, -2.)
+    x = -jnp.sqrt(-2. * tail_p)
+    def step(_, value):
+        log_cdf = log_ndtr(value)
+        derivative = jnp.exp(-0.5 * value * value - 0.5 * jnp.log(2. * jnp.pi) - log_cdf)
+        return value - (log_cdf - tail_p) / derivative
+    tail = jax.lax.fori_loop(0, 8, step, x)
+    centre = ndtri(jnp.exp(jnp.maximum(log_p, -2.)))
+    return jnp.where(log_p < -2., tail, centre)
 
 
 def _sample_truncated_normal(key, mean, sigma, range_lo, range_hi):
-    """Sample from truncated normal N(mean, sigma) in [range_lo, range_hi]."""
-    cdf_lo = jax_norm.cdf((range_lo - mean) / sigma)
-    cdf_hi = jax_norm.cdf((range_hi - mean) / sigma)
-    u = jax.random.uniform(key, minval=cdf_lo, maxval=cdf_hi)
-    return mean + sigma * jax_norm.ppf(u)
+    """Truncated normal using log-CDF interpolation in the nearer tail.
+
+    At zero width, return the mean projected onto the closed interval: the
+    limiting distribution as a positive width tends to zero.
+    """
+    scale = jnp.where(sigma == 0., 1., sigma)
+    reflect = mean < range_lo
+    lo = jnp.where(reflect, mean - range_hi, range_lo - mean) / scale
+    hi = jnp.where(reflect, mean - range_lo, range_hi - mean) / scale
+    log_lo, log_hi = log_ndtr(lo), log_ndtr(hi)
+    u = jax.random.uniform(key)
+    log_p = jnp.logaddexp(jnp.log1p(-u) + log_lo, jnp.log(u) + log_hi)
+    value = _normal_log_quantile(log_p)
+    value = mean + scale * jnp.where(reflect, -value, value)
+    return jnp.where(sigma == 0., jnp.clip(mean, range_lo, range_hi), value)
 
 
-def sample_exp_halfgauss(key, dist, shifts=None):
+def sample_exp_halfgauss(key, dist, shifts=None, *, bounds=None):
     """Sample from exponential + half-Gaussian hybrid distribution.
 
     Matches SNANA's sntools_genExpHalfGauss.c logic.
@@ -395,10 +426,13 @@ def sample_exp_halfgauss(key, dist, shifts=None):
     are evaluated and selected per SN with jnp.where.
 
     ``dist`` is a GenExpHalfGauss instance; ``shifts`` is an optional traced
-    per-field additive shift. Returns a sampled value within dist.range.
+    per-field additive shift. Optional traced ``bounds`` replace dist.range;
+    equal bounds return that point.
     """
-    if shifts is not None:
-        return _sample_exp_halfgauss_shifted(key, dist, shifts)
+    if shifts is not None or bounds is not None:
+        if shifts is None:
+            shifts = (0.,) * len(EXPHALFGAUSS_ZSHIFT_FIELDS)
+        return _sample_exp_halfgauss_shifted(key, dist, shifts, bounds)
     range_lo, range_hi = dist.range
     tau = dist.exp_tau
     sigma = dist.sigma
@@ -484,7 +518,28 @@ def _apply_grid_snapping(val, range_lo, range_hi, ngrid):
 
 
 
-def sample_gengauss_asym(key, g, shifts=None, active=frozenset()):
+def distribution_shifts(dist, settings):
+    """Call-time distribution settings as shifts of the prepared values.
+
+    Bounds are passed separately; grid size and plateau boundaries stay fixed.
+    The same shifts are used by the ordinary population-variation kernels.
+    """
+    if isinstance(dist, GenExpHalfGauss):
+        fields = EXPHALFGAUSS_ZSHIFT_FIELDS
+        values = {name: settings[name] - getattr(dist, name) for name in settings}
+    else:
+        fields = GENGAUSS_ZSHIFT_FIELDS
+        values = {}
+        for name, value in settings.items():
+            if name in ('sigma', 'sigma2', 'skew'):
+                for i, side in enumerate(('lo', 'hi')):
+                    values[f'{name}_{side}'] = jnp.asarray(value)[..., i] - getattr(dist, name)[i]
+            else:
+                values[name] = value - getattr(dist, name)
+    return tuple(values.get(name, 0.) for name in fields), frozenset(values)
+
+
+def sample_gengauss_asym(key, g, shifts=None, active=frozenset(), *, bounds=None):
     """Sample from a GenGaussAsym distribution.
 
     Composes SNANA's mixture semantics (getRan_GENGAUSS_ASYM,
@@ -505,7 +560,9 @@ def sample_gengauss_asym(key, g, shifts=None, active=frozenset()):
 
     ``g`` is a GenGaussAsym instance; ``shifts`` an optional traced
     per-field additive shift; ``active`` a static collection of shifted
-    field names. Returns a sampled value within g.range.
+    field names. Optional traced ``bounds`` replace g.range. Equal bounds
+    return that point; otherwise the bounds are used for truncation, mixture
+    masses and grid spacing.
     """
     if g.ngrid < 0 or g.ngrid > 100:
         raise SNANAError(f"Crazy NGRID={g.ngrid}",
@@ -513,9 +570,16 @@ def sample_gengauss_asym(key, g, shifts=None, active=frozenset()):
 
     d = (dict.fromkeys(GENGAUSS_ZSHIFT_FIELDS, 0.0) if shifts is None
          else dict(zip(GENGAUSS_ZSHIFT_FIELDS, shifts)))
-    traced = shifts is not None
+    range_shifted = bounds is not None
+    traced = shifts is not None or range_shifted
     active = frozenset(active)
-    range_lo, range_hi = g.range
+    range_lo, range_hi = g.range if bounds is None else bounds
+    point_distribution = False
+    if range_shifted:
+        point_distribution = range_lo == range_hi
+        # Evaluate the unused continuous draw on a nonzero interval so its
+        # derivatives stay finite when the requested distribution is a point.
+        range_hi = jnp.where(point_distribution, range_lo + 1., range_hi)
 
     sqrt_rewgt = (float(g.prob_expon_rewgt) ** 0.5
                   if g.prob_expon_rewgt != 1.0 else 1.0)
@@ -547,32 +611,41 @@ def sample_gengauss_asym(key, g, shifts=None, active=frozenset()):
 
     br1, lo1, hi1, grid1 = _component_plan(
         b1[1], b1[2], b1[3], b1[4], pr_lo, pr_hi,
-        range_lo, range_hi, g.ngrid, sigma_shifted, skew_shifted)
+        range_lo, range_hi, g.ngrid, sigma_shifted, skew_shifted, range_shifted=range_shifted)
+    if grid1:
+        positive_widths = (sig_lo > 0.) & (sig_hi > 0.)
+        lo1 = jnp.where(positive_widths, lo1, range_lo)
+        hi1 = jnp.where(positive_widths, hi1, range_hi)
 
     if not prob2_on:
-        return _component_value(
+        value = _component_value(
             key, br1, peak, sig_lo, sig_hi, skew_lo, skew_hi, pr_lo, pr_hi,
-            lo1, hi1, range_lo, range_hi, g.ngrid, grid1, traced)
+            lo1, hi1, range_lo, range_hi, g.ngrid, grid1, traced, range_shifted=range_shifted)
+        return jnp.where(point_distribution, range_lo, value)
 
     # Secondary component: degenerate peakrange, no skew (:545-553).
     br2, lo2, hi2, grid2 = _component_plan(
         b2[1], b2[2], 0.0, 0.0, 0.0, 0.0,
-        range_lo, range_hi, g.ngrid, sigma2_shifted, False)
+        range_lo, range_hi, g.ngrid, sigma2_shifted, False, range_shifted=range_shifted)
+    if grid2:
+        positive_widths = (sig2_lo > 0.) & (sig2_hi > 0.)
+        lo2 = jnp.where(positive_widths, lo2, range_lo)
+        hi2 = jnp.where(positive_widths, hi2, range_hi)
 
-    m1 = _component_mass(br1, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo1, hi1)
-    m2 = _component_mass(br2, peak2, sig2_lo, sig2_hi, 0.0, 0.0, lo2, hi2)
+    m1 = _component_mass(br1, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo1, hi1, range_shifted=range_shifted)
+    m2 = _component_mass(br2, peak2, sig2_lo, sig2_hi, 0.0, 0.0, lo2, hi2, range_shifted=range_shifted)
     total = (1.0 - prob2) * m1 + prob2 * m2
     eff_prob2 = prob2 * m2 / total
 
     k_sel, k1, k2 = jax.random.split(key, 3)
     v1 = _component_value(
         k1, br1, peak, sig_lo, sig_hi, skew_lo, skew_hi, pr_lo, pr_hi,
-        lo1, hi1, range_lo, range_hi, g.ngrid, grid1, traced)
+        lo1, hi1, range_lo, range_hi, g.ngrid, grid1, traced, range_shifted=range_shifted)
     v2 = _component_value(
         k2, br2, peak2, sig2_lo, sig2_hi, 0.0, 0.0, 0.0, 0.0,
-        lo2, hi2, range_lo, range_hi, g.ngrid, grid2, traced)
+        lo2, hi2, range_lo, range_hi, g.ngrid, grid2, traced, range_shifted=range_shifted)
     use2 = jax.random.uniform(k_sel) < eff_prob2
-    return jnp.where(use2, v2, v1)
+    return jnp.where(point_distribution, range_lo, jnp.where(use2, v2, v1))
 
 
 
@@ -607,8 +680,8 @@ def _skew_cdf_grids_traced(peak, sigma_lo, sigma_hi, skew_lo, skew_hi,
                            range_lo, range_hi, n_grid=1000):
     """Traced twin of precompute_skew_cdf for per-SN (shifted) parameters.
 
-    The value grid is static (RANGE is never z-shifted); only the density
-    depends on traced parameters.
+    The grid size is fixed; its bounds and the density can depend on traced
+    population settings.
     """
     x = jnp.linspace(range_lo, range_hi, n_grid)
     x_rel = x - peak
@@ -623,10 +696,13 @@ def _skew_cdf_grids_traced(peak, sigma_lo, sigma_hi, skew_lo, skew_hi,
     return x, cdf / cdf[-1]
 
 
-def _sample_exp_halfgauss_shifted(key, dist, shifts):
-    """Traced-shift path of sample_exp_halfgauss (ZVARIATION)."""
+def _sample_exp_halfgauss_shifted(key, dist, shifts, bounds=None):
+    """Exponential/half-Gaussian draw with traced settings and optional bounds."""
     d = dict(zip(EXPHALFGAUSS_ZSHIFT_FIELDS, shifts))
-    range_lo, range_hi = dist.range
+    range_lo, range_hi = dist.range if bounds is None else bounds
+    point_distribution = range_lo == range_hi
+    if bounds is not None:
+        range_hi = jnp.where(point_distribution, range_lo + 1., range_hi)
     tau = dist.exp_tau + d['exp_tau']
     peak = dist.peak + d['peak']
     sigma = dist.sigma + d['sigma']
@@ -636,33 +712,40 @@ def _sample_exp_halfgauss_shifted(key, dist, shifts):
         tau = tau / dist.prob_expon_rewgt
         sigma = sigma / jnp.sqrt(dist.prob_expon_rewgt)
 
-    if (range_hi - range_lo) < 1e-30:
+    if bounds is None and (range_hi - range_lo) < 1e-30:
         return jnp.float32(range_lo)
 
     key1, key2 = jax.random.split(key)
 
     val_flat = jax.random.uniform(key2, minval=range_lo, maxval=range_hi)
+    safe_tau = jnp.where(tau > 0., tau, 1.)
+    safe_sigma = jnp.where(sigma > _EXP_HALFGAUSS_EPS, sigma, 1.)
     val_exp = _sample_truncated_exponential(key2, tau, range_lo, range_hi)
-    val_norm = _sample_truncated_normal(key2, peak, sigma,
+    val_norm = _sample_truncated_normal(key2, peak, safe_sigma,
                                         range_lo, range_hi)
-    val_half = _sample_truncated_halfnormal(key2, sigma,
+    val_half = _sample_truncated_halfnormal(key2, safe_sigma,
                                             range_lo, range_hi)
     val_gauss = jnp.where(peak > 1e-4, val_norm, val_half)
 
-    w_exp = tau * (jnp.exp(-range_lo / tau) - jnp.exp(-range_hi / tau))
+    w_exp = tau * (jnp.exp(-range_lo / safe_tau) - jnp.exp(-range_hi / safe_tau))
     w_gauss = 0.5 * ratio * jnp.sqrt(2.0 * jnp.pi) * sigma
     u_comp = jax.random.uniform(key1)
-    val_mixed = jnp.where(u_comp < w_exp / (w_exp + w_gauss),
-                          val_exp, val_gauss)
+    mixture_weight = w_exp + w_gauss
+    # Pure branches can leave the unused mixture empty; positive weights stay exact.
+    exp_fraction = w_exp / jnp.where(mixture_weight == 0., 1., mixture_weight)
+    val_mixed = jnp.where(u_comp < exp_fraction, val_exp, val_gauss)
 
-    # ratio -> 0 takes the exponential where the eager path aborts (:337)
-    return jnp.where(
+    # Use the static path's pure-component thresholds; traced scales also
+    # support the zero-scale exponential limit.
+    value = jnp.where(
         (tau > 50.0) & (ratio == 0.0), val_flat,
-        jnp.where((tau > _EXP_HALFGAUSS_EPS) & (sigma < _EXP_HALFGAUSS_EPS),
+        jnp.where(((tau > _EXP_HALFGAUSS_EPS) & (sigma < _EXP_HALFGAUSS_EPS))
+                  | ((tau == 0.) & (sigma == 0.)),
                   val_exp,
                   jnp.where((sigma > _EXP_HALFGAUSS_EPS)
                             & (tau < _EXP_HALFGAUSS_EPS),
                             val_gauss, val_mixed)))
+    return jnp.where(point_distribution, range_lo, value)
 
 
 # SIM_WGT_POPULATION population functions (rewgt_genPDF, snlc_sim.c:31492)
@@ -677,30 +760,38 @@ def pdf_gengauss_asym(x, g, rewgt=1.0):
     pr_lo, pr_hi = g.peakrange
     if pr_hi - pr_lo <= _PEAKRANGE_EPS:
         pr_lo = pr_hi = g.peak
-    if sig_lo <= 0.0 and sig_hi <= 0.0:
-        return jnp.ones_like(x)
-    below = jnp.exp(-0.5 * ((x - pr_lo) / jnp.maximum(sig_lo, 1e-300)) ** 2)
-    above = jnp.exp(-0.5 * ((x - pr_hi) / jnp.maximum(sig_hi, 1e-300)) ** 2)
+    # Safe divisors keep inactive wings out of reverse-mode derivatives.
+    # The actual widths still determine the density and mixture normalization.
+    safe_lo = jnp.where(sig_lo > 0., sig_lo, 1.)
+    safe_hi = jnp.where(sig_hi > 0., sig_hi, 1.)
+    below = jnp.exp(-0.5 * ((x - pr_lo) / safe_lo) ** 2)
+    above = jnp.exp(-0.5 * ((x - pr_hi) / safe_hi) ** 2)
+    below = jnp.where(sig_lo > 0., below, x == pr_lo)
+    above = jnp.where(sig_hi > 0., above, x == pr_hi)
     value = jnp.where(x < pr_lo, below, jnp.where(x < pr_hi, 1.0, above))
-    if g.prob2 <= 0.0:
-        return value
     sig2_lo, sig2_hi = g.sigma2[0] / scale, g.sigma2[1] / scale
     sig2 = jnp.where(x < g.peak2, sig2_lo, sig2_hi)
-    second = jnp.exp(-0.5 * ((x - g.peak2) / sig2) ** 2)
-    sig_ratio = (sig_hi + sig_lo) / (sig2_hi + sig2_lo)
-    return (1.0 - g.prob2) * value + g.prob2 * second * sig_ratio
+    second = jnp.exp(-0.5 * ((x - g.peak2) / jnp.where(sig2 > 0., sig2, 1.)) ** 2)
+    second = jnp.where(sig2 > 0., second, x == g.peak2)
+    width2 = sig2_hi + sig2_lo
+    sig_ratio = (sig_hi + sig_lo) / jnp.where((g.prob2 == 0.) & (width2 == 0.), 1., width2)
+    mixture = (1.0 - g.prob2) * value + g.prob2 * second * sig_ratio
+    return jnp.where((sig_lo <= 0.) & (sig_hi <= 0.), 1., mixture)
 
 
 def pdf_exp_halfgauss(x, d, rewgt=1.0):
     """funVal_GEN_EXP_HALFGAUSS (sntools_genExpHalfGauss.c:150): the
     exponential with tau divided by rewgt, plus ratio times the half
-    Gaussian with sigma divided by sqrt(rewgt)."""
+    Gaussian with sigma divided by sqrt(rewgt). With no exponential component,
+    the sampler draws the Gaussian alone, independently of the mixture ratio."""
     tau = d.exp_tau / rewgt
-    value = jnp.exp(-x / tau)
-    if d.ratio > 0.0:
-        sigma = d.sigma / np.sqrt(rewgt)
-        value = value + d.ratio * jnp.exp(-0.5 * ((x - d.peak) / sigma) ** 2)
-    return value
+    value = jnp.exp(-x / jnp.where(tau > 0., tau, 1.))
+    value = jnp.where(tau > 0., value, 0.)
+    sigma = d.sigma / np.sqrt(rewgt)
+    gaussian = jnp.exp(-0.5 * ((x - d.peak) / jnp.where(sigma > 0., sigma, 1.)) ** 2)
+    gaussian = jnp.where(sigma > 0., gaussian, x == d.peak)
+    pure_gaussian = (tau < _EXP_HALFGAUSS_EPS) & (sigma > _EXP_HALFGAUSS_EPS)
+    return jnp.where(pure_gaussian, gaussian, value + d.ratio * gaussian)
 
 
 jax.tree_util.register_dataclass(

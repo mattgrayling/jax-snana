@@ -459,3 +459,35 @@ def test_wrong_host_photoz_follows_the_lookup_redshift(snana_fixture,
         zgen = _f(h, "HOSTGAL_PHOTOZ") - table["ZPHOT"][gal] + ztrue
         assert np.all(np.abs(zgen - ztrue)[wrong] < 0.05), side
         assert np.all(np.abs(zgen - zhel)[wrong] > 0.06), side
+
+
+@pytest.mark.parametrize('drawn_rv', [0., 3.1])
+@pytest.mark.parametrize('host_dust', ['RV', 'RV AV', 'RV EBV'])
+def test_host_rv_preserves_drawn_av(tmp_path, data_root, host_dust, drawn_rv):
+    """SNANA preserves drawn AV when RV changes; host AV/EBV can replace it."""
+    with open_text(str(data_root / 'hostlib/JAX_TEST.HOSTLIB')) as stream:
+        lines = stream.read().splitlines()
+    values = {'RV': '2.7', 'AV': '.4', 'EBV': '.2'}
+    for i, line in enumerate(lines):
+        if line.startswith('VARNAMES:'):
+            lines[i] += ' ' + host_dust
+        elif line.startswith('GAL:'):
+            lines[i] += ' ' + ' '.join(values[name] for name in host_dust.split())
+    hostlib = tmp_path / 'dust.HOSTLIB'
+    hostlib.write_text('\n'.join(lines) + '\n')
+    path = tmp_path / 'sim.input'
+    _write_input(path, mskopt=322, hostlib=str(hostlib), n_sne=4)
+    with path.open('a') as stream:
+        stream.write('\nGENRANGE_EBV_HOST: .1 .1\n'
+                     f'GENPEAK_RV: {drawn_rv}\nGENRANGE_RV: {drawn_rv} {drawn_rv}\n')
+    simulator = sim_run.prepare(str(path), n_sne=4, batch_size=2)
+    results, _, _ = sim_run.run_simulation(simulator)
+    parameters = results['parameters']
+    assert len(parameters['av']) > 0
+    assert 'drawn_ebv_host' not in parameters
+    for name in ('rv', 'sim_rv'):
+        np.testing.assert_allclose(parameters[name], 2.7)
+    # snlc_sim.c:13072-13082 preserves AV unless a host AV/EBV column replaces it.
+    expected_av = {'RV': .1 * drawn_rv, 'RV AV': .4, 'RV EBV': .54}[host_dust]
+    for name in ('av', 'sim_av'):
+        np.testing.assert_allclose(parameters[name], expected_av)

@@ -9,10 +9,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Optional, Tuple
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from jax_snlc_core.input_settings import build_dataclass, convert
 from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import canonical_property_name
 from jax_snlc_sim.distributions import (EXPHALFGAUSS_ZSHIFT_FIELDS, GENGAUSS_ZSHIFT_FIELDS,
                                         GenExpHalfGauss, GenGaussAsym, flat_distribution,
                                         mixture_mass, validate_gaussian)
@@ -120,6 +122,73 @@ def component_names(param_name: str):
     return ({f: tuple(t.format(p=param_name) for t in names)
              for f, names in GENGAUSS_COMPONENT_NAMES.items()},
             GENGAUSS_ZSHIFT_FIELDS)
+
+
+def validate_population_overrides(simulator, overrides, function_kinds):
+    """Check how call-time populations interact with configured simulation rules.
+
+    Settings retain the configured distribution and its reweighting; arrays,
+    samplers and relations replace the draw and supply no probability density.
+    Conditional functions validate their returned fields when they are traced.
+    """
+    if overrides and (simulator.host_settings.mskopt & 64 or simulator.survey.use_simlib_salt2):
+        raise SNANAError("SBI parameter overrides cannot be combined with HOSTLIB USESNPAR "
+                         "or USE_SIMLIB_SALT2 overrides",
+                         function_name="build_sbi_pipeline")
+    for name, value in overrides.items():
+        if name == 'GENMAG_OFF_GLOBAL':
+            if name not in function_kinds:
+                raise SNANAError("GENMAG_OFF_GLOBAL needs a registered relation",
+                                 function_name="build_sbi_pipeline")
+            continue
+        pop = simulator.model_settings.populations[name]
+        if name in ('AV', 'EBV_HOST') and simulator.host_settings.genav_wv07:
+            raise SNANAError("SBI dust overrides cannot be combined with GENAV_WV07",
+                             function_name="build_sbi_pipeline")
+        if not isinstance(value, Mapping) or function_kinds.get(name) in ('sample', 'relation'):
+            if ((pop.genpdf is not None and pop.genpdf.expon_rewgt != 1.)
+                    or any(d.prob_expon_rewgt != 1. for d in pop.distributions)):
+                raise SNANAError(f"{name}: custom draws have no density for population reweighting",
+                                 function_name="build_sbi_pipeline")
+            continue
+        if pop.genpdf is not None:
+            raise SNANAError(f"{name} uses a fixed GENPDF map; supply samples or a sampler",
+                             function_name="build_sbi_pipeline")
+        if function_kinds.get(name) == 'settings':
+            continue
+        validate_call_settings(name, pop, value)
+
+
+def validate_call_settings(name, pop, settings, *, conditional=False):
+    """Check the static fields/shapes of call-time distribution settings.
+
+    Conditional functions replace fields, so a configured variation cannot
+    also modify those fields. Numerical values remain traced inputs.
+    """
+    gaussian = not isinstance(pop.distributions[0], GenExpHalfGauss)
+    allowed = ({'peak', 'sigma', 'skew', 'prob2', 'peak2', 'sigma2'} if gaussian
+               else {'exp_tau', 'peak', 'sigma', 'ratio'}) | {'range'}
+    unknown = set(settings) - allowed
+    if unknown:
+        raise SNANAError(f"{name}: call-time settings {sorted(unknown)} are unsupported; "
+                         f"choose from {sorted(allowed)}", function_name="build_sbi_pipeline")
+    if settings and 'range' not in settings and any(
+            dist.range[0] == dist.range[1] for dist in pop.distributions):
+        raise SNANAError(f"{name} has fixed support; supply a range or exact samples",
+                         function_name="build_sbi_pipeline")
+    fields, _ = component_names(name)
+    shifted = {entry.parname for shifts in pop.shifts for entry in shifts}
+    for field, value in settings.items():
+        paired = gaussian and field in ('sigma', 'sigma2', 'skew')
+        expected = (2,) if paired or field == 'range' else ()
+        if jnp.asarray(value).shape != expected:
+            raise SNANAError(f"{name}.{field} needs shape {expected}",
+                             function_name="build_sbi_pipeline")
+        targets = ((*fields[field + '_lo'], *fields[field + '_hi']) if paired
+                   else fields.get(field, ()))
+        if conditional and shifted.intersection(targets):
+            raise SNANAError(f"Conditional settings and VARIATION both set {name}.{field}",
+                             function_name="build_sbi_pipeline")
 
 
 def validate(param_name: str, pop: Population, ranges) -> None:
@@ -386,3 +455,37 @@ def validate_config_populations(config, sed_model, hostlib) -> None:
         ranges[name] = span
     for param_name, pop in config.model.populations.items():
         validate(param_name, pop, ranges)
+
+
+def checked_genpdf_maps(model):
+    """The conditional GENPDF maps whose host values must lie inside them,
+    as ``(parameter, host column, grid)``: none when GENPDF_OPTMASK bit 1
+    (EXTRAP) clamps values to the map's edges instead."""
+    if model.genpdf_optmask & 1:
+        return []
+    return [(param_name, canonical_property_name(name), grid)
+            for param_name, pop in model.populations.items() if pop.genpdf is not None
+            for name, grid in zip(pop.genpdf.cond_varnames, pop.genpdf.cond_grids)]
+
+
+def outside_map(values, grid):
+    """Where ``values`` lie outside ``grid`` by more than SNANA's tolerance
+    of 1e-14 of its range (interp_GRIDMAP, sntools_gridmap.c:574-582). Written
+    with array operators, so it takes numpy and JAX arrays alike."""
+    tolerance = 1.0e-14 * (grid[-1] - grid[0])
+    return (values < grid[0] - tolerance) | (values > grid[-1] + tolerance)
+
+
+def validate_genpdf_coverage(simulator):
+    """For SBI, every catalogue value of a conditional GENPDF's host
+    property must lie inside the map. Ordinary simulation checks each
+    drawn host instead, as SNANA does; compiled SBI cannot stop at one."""
+    for param_name, column, grid in checked_genpdf_maps(simulator.model_settings):
+        values = np.asarray(simulator.hostlib.catalogue.columns[
+            simulator.hostlib.selector.varnames.index(column)])
+        if outside_map(values, np.asarray(grid)).any():
+            raise SNANAError(
+                f"GENPDF for {param_name}: HOSTLIB '{column}' has values outside "
+                f"the map's range [{grid[0]}, {grid[-1]}]. Extend the map or set "
+                "GENPDF_OPTMASK bit 1 (EXTRAP) to clamp.",
+                function_name="build_sbi_pipeline")
