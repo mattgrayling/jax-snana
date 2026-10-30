@@ -60,12 +60,13 @@ from jax_snlc_sim.zvariation import REDSHIFT, shift_array
 logger = logging.getLogger(__name__)
 
 
-def prepare_population_functions(simulator, names, conditional_settings, samplers,
-                                 relations, dependencies):
-    """Resolve function dependencies against the simulator's population draw order.
+def prepare_population_functions(simulator, names, registrations):
+    """Resolve each function's dependencies against the simulator's population draw order.
 
-    Targets are canonical population names. Dependency names may use input aliases.
-    The model and dust can precede host selection when its weights require them.
+    ``registrations`` maps each kind ('settings', 'sample', 'relation') to
+    ``{population name: (function, dependencies)}``, the names canonical.
+    Dependency names may use input aliases. The model and dust can precede
+    host selection when its weights require them.
     """
     functions = []
     registered = set()
@@ -74,9 +75,8 @@ def prepare_population_functions(simulator, names, conditional_settings, sampler
     order = [*model_order, *[name for name in ('RV', 'AV', 'EBV_HOST') if name in populations],
              'GENMAG_OFF_GLOBAL']
     redshifts = {'REDSHIFT_CMB', 'REDSHIFT_HELIO'}
-    for kind, supplied in (('settings', conditional_settings), ('sample', samplers),
-                           ('relation', relations)):
-        for name, function in supplied.items():
+    for kind, supplied in registrations.items():
+        for name, (function, dependencies) in supplied.items():
             if name in registered:
                 raise SNANAError(f"Multiple population functions for {name}",
                                  function_name="build_sbi_pipeline")
@@ -94,7 +94,7 @@ def prepare_population_functions(simulator, names, conditional_settings, sampler
                 earlier = [quantity for quantity in earlier if quantity != 'EBV_HOST']
             if before_host and not simulator.model_before_host:
                 earlier = [quantity for quantity in earlier if quantity not in model_order]
-            for dep in dependencies.get(name, ()):
+            for dep in dependencies:
                 if dep.startswith('HOST.'):
                     column = dep.removeprefix('HOST.')
                     if (before_host or simulator.hostlib is None
@@ -113,10 +113,6 @@ def prepare_population_functions(simulator, names, conditional_settings, sampler
                                  function_name="build_sbi_pipeline")
             functions.append((name, kind, function, tuple(deps)))
             registered.add(name)
-    unused = set(dependencies) - registered
-    if unused:
-        raise SNANAError(f"Dependencies have no population function: {sorted(unused)}",
-                         function_name="build_sbi_pipeline")
     return tuple(functions)
 
 
