@@ -49,7 +49,7 @@ from jax_snlc_sim.distributions import (GenExpHalfGauss, GenGaussAsym, distribut
 from jax_snlc_sim.genpdf import pdf_genpdf, sample_genpdf, sample_genpdf_conditional
 from jax_snlc_sim.lensing import lensing_offset
 from jax_snlc_sim.population import (checked_genpdf_maps, component_names, outside_map,
-                                     stream_name, validate_call_settings)
+                                     stream_name, validate_call_hyperparameters)
 from jax_snlc_sim.scatter import (draw_phase_scatter, draw_coherent_scatter,
                                    draw_filter_scatter, draw_model_scatter,
                                    scale_model_scatter)
@@ -60,58 +60,35 @@ from jax_snlc_sim.zvariation import REDSHIFT, shift_array
 logger = logging.getLogger(__name__)
 
 
-def prepare_population_functions(simulator, names, registrations):
-    """Resolve each function's dependencies against the simulator's population draw order.
+def prepare_population_functions(simulator, registrations):
+    """The registered functions as ``(name, kind, function)``, after checking
+    that each names a parameter this run draws, and only once.
 
-    ``registrations`` maps each kind ('settings', 'sample', 'relation') to
-    ``{population name: (function, dependencies)}``, the names canonical.
-    Dependency names may use input aliases. The model and dust can precede
-    host selection when its weights require them.
+    ``registrations`` maps each kind ('samplers', 'conditional_samplers',
+    'conditional_hyperparameters') to ``{population name: function}``, the
+    names canonical.
     """
     functions = []
     registered = set()
     populations = simulator.model_settings.populations
-    model_order = list(simulator.model.drawn_parameters(populations))
-    order = [*model_order, *[name for name in ('RV', 'AV', 'EBV_HOST') if name in populations],
-             'GENMAG_OFF_GLOBAL']
-    redshifts = {'REDSHIFT_CMB', 'REDSHIFT_HELIO'}
+    drawn = {*simulator.model.drawn_parameters(populations),
+             *(p.key for p in HOST_DUST_PARAMETERS if p.key in populations)}
     for kind, supplied in registrations.items():
-        for name, (function, dependencies) in supplied.items():
+        for name, function in supplied.items():
             if name in registered:
                 raise SNANAError(f"Multiple population functions for {name}",
                                  function_name="build_sbi_pipeline")
-            if name == 'GENMAG_OFF_GLOBAL' and kind != 'relation':
-                raise SNANAError("GENMAG_OFF_GLOBAL accepts a deterministic relation",
-                                 function_name="build_sbi_pipeline")
-            deps = []
-            if name in model_order:
-                before_host = simulator.model_before_host
-            else:
-                before_host = name != 'GENMAG_OFF_GLOBAL' and simulator.dust_before_host
-            earlier = order[:order.index(name)]
-            # EBV is converted into AV by the completed dust stage.
             if name == 'GENMAG_OFF_GLOBAL':
-                earlier = [quantity for quantity in earlier if quantity != 'EBV_HOST']
-            if before_host and not simulator.model_before_host:
-                earlier = [quantity for quantity in earlier if quantity not in model_order]
-            for dep in dependencies:
-                if dep.startswith('HOST.'):
-                    column = dep.removeprefix('HOST.')
-                    if (before_host or simulator.hostlib is None
-                            or column not in simulator.hostlib.selector.varnames):
-                        raise SNANAError(f"{name} requires unavailable host column {column}; "
-                                         "host dependencies must be loaded and drawn after host selection",
-                                         function_name="build_sbi_pipeline")
-                elif dep not in redshifts:
-                    dep = names.get(dep.lower(), dep)
-                    if dep not in earlier:
-                        raise SNANAError(f"{name} depends on {dep}, which is not drawn before it",
-                                         function_name="build_sbi_pipeline")
-                deps.append(dep)
-            if name == 'GENMAG_OFF_GLOBAL' and simulator.model_settings._offset_shifts.get(name):
-                raise SNANAError(f"A relation and configured variations both set {name}",
+                if kind == 'conditional_hyperparameters':
+                    raise SNANAError("GENMAG_OFF_GLOBAL has no distribution, so it takes a sampler",
+                                     function_name="build_sbi_pipeline")
+                if simulator.model_settings._offset_shifts.get(name):
+                    raise SNANAError(f"A sampler and configured variations both set {name}",
+                                     function_name="build_sbi_pipeline")
+            elif name not in drawn:
+                raise SNANAError(f"This model does not draw {name}, so it cannot take a function",
                                  function_name="build_sbi_pipeline")
-            functions.append((name, kind, function, tuple(deps)))
+            functions.append((name, kind, function))
             registered.add(name)
     return tuple(functions)
 
@@ -517,8 +494,8 @@ def draw_input_failures(simulator, redshifts, host_properties):
     return code
 
 
-def _sample_population_parameter(simulator, redshifts, host_properties,
-                                 keys_for, param_name, subpop_index, drawn, settings=None):
+def _sample_population_parameter(simulator, redshifts, host_properties, keys_for,
+                                 param_name, subpop_index, drawn, hyperparameters=None):
     """Sample a named population parameter from its record.
 
     One component means every class draws it the same way, which is the
@@ -553,7 +530,7 @@ def _sample_population_parameter(simulator, redshifts, host_properties,
         return jax.vmap(lambda key: sample_genpdf(key, genpdf))(keys)
 
     per_class = [_draw(param_name, dist, shifts, keys, redshifts,
-                       host_properties, drawn, settings)
+                       host_properties, drawn, hyperparameters)
                  for dist, shifts in zip(pop.distributions, pop.shifts)]
     if len(per_class) == 1:
         return per_class[0]
@@ -561,7 +538,7 @@ def _sample_population_parameter(simulator, redshifts, host_properties,
 
 
 def _population_weight(simulator, param_name, value, host_properties,
-                       subpop_index, settings=None):
+                       subpop_index, hyperparameters=None):
     """prob(nominal)/prob(reweighted) at the drawn value, one where the
     parameter's distribution carries no GENPDF_EXPON_REWGT. A GENPDF map is
     read at the map's own coordinate; a class-dependent parameter reads the
@@ -584,8 +561,8 @@ def _population_weight(simulator, param_name, value, host_properties,
             continue
         pdf = (pdf_exp_halfgauss if isinstance(dist, GenExpHalfGauss)
                else pdf_gengauss_asym)
-        if settings:
-            values = dict(settings)
+        if hyperparameters:
+            values = dict(hyperparameters)
             if isinstance(dist, GenGaussAsym):
                 for field in ('sigma', 'sigma2', 'skew'):
                     if field in values:
@@ -599,20 +576,21 @@ def _population_weight(simulator, param_name, value, host_properties,
                                subpop_index[None, :], axis=0)[0]
 
 
-def _draw(param_name, dist, shifts, keys, redshifts, host_properties, drawn, settings=None):
+def _draw(param_name, dist, shifts, keys, redshifts, host_properties, drawn,
+          hyperparameters=None):
     """One component's draw, with the shifts on it applied."""
-    if not shifts and not settings:
+    if not shifts and not hyperparameters:
         sample = (sample_exp_halfgauss if isinstance(dist, GenExpHalfGauss)
                   else sample_gengauss_asym)
         return jax.vmap(lambda key: sample(key, dist))(keys)
     arrays, active = _shift_arrays(param_name, shifts, redshifts,
                                    host_properties, drawn)
-    settings = dict(settings or {})
-    bounds = settings.pop('range', None)
+    hyperparameters = dict(hyperparameters or {})
+    bounds = hyperparameters.pop('range', None)
     if bounds is not None:
         bounds = jnp.broadcast_to(jnp.asarray(bounds), (keys.shape[0], 2))
-    if settings:
-        offsets, changed = distribution_shifts(dist, settings)
+    if hyperparameters:
+        offsets, changed = distribution_shifts(dist, hyperparameters)
         arrays = tuple(value + offset for value, offset in zip(arrays, offsets))
         active = active | changed
     if isinstance(dist, GenExpHalfGauss):
@@ -902,22 +880,15 @@ def _missing_population(name):
         f"and GENRANGE_{name}, or a GENPDF map.", function_name="draw_model")
 
 
-def _population_dependencies(dependencies, params, host_properties, drawn):
-    """Values available at this draw, under explicit physical quantity names."""
-    values = []
-    for name in dependencies:
-        if name == 'REDSHIFT_CMB':
-            value = params['sim_redshift_cmb']
-        elif name == 'REDSHIFT_HELIO':
-            value = params['sim_redshift_helio']
-        elif name.startswith('HOST.'):
-            value = host_properties[name.removeprefix('HOST.')]
-        else:
-            # Completed model draws retain their native precision in params.
-            # drawn also carries this stage's draws and dust population names.
-            value = params[name] if name in params else drawn[name]
-        values.append(value)
-    return values
+def _event_values(params, step_draws):
+    """Each event's values simulated so far, under their names in the
+    results, for a registered function: everything completed before this
+    step, and this step's own draws, with the host dust under its output name
+    (EBV_HOST has none, being converted into AV)."""
+    output_names = {p.key: p.param for p in HOST_DUST_PARAMETERS}
+    current = {output_names.get(name, name): value for name, value in step_draws.items()
+               if name != 'EBV_HOST'}
+    return {**params, **current}
 
 
 def _parameter_sampler(simulator, params, host_properties, keys_for,
@@ -929,39 +900,44 @@ def _parameter_sampler(simulator, params, host_properties, keys_for,
     (wgt_population_event, snlc_sim.c:31576)."""
     redshifts = params['sim_redshift_cmb']
     weight = jnp.ones_like(redshifts)
+    step_draws = {}
 
     overrides = overrides or {}
-    custom = {name: (kind, function, deps) for name, kind, function, deps in population_functions}
+    functions = {name: (kind, function) for name, kind, function in population_functions}
 
     def sample(param_name):
         nonlocal weight
         given = overrides.get(param_name, {})
+        kind, function = functions.get(param_name, (None, None))
         if not isinstance(given, Mapping):
             value = given
-        else:
-            kind, function, deps = custom.get(param_name, (None, None, ()))
-            inputs = _population_dependencies(deps, params, host_properties, drawn)
+        elif kind in ('samplers', 'conditional_samplers'):
             keys = keys_for(stream_name(param_name, dict(simulator.model.configured_population)))
-            if kind in ('sample', 'relation'):
-                value = jax.vmap(lambda key, *args: function(key, *args, **given)
-                                 if kind == 'sample' else function(*args, **given))(keys, *inputs)
-                if value.shape != redshifts.shape:
-                    raise SNANAError(f"Function for {param_name} must return one scalar per event",
-                                     function_name="_parameter_sampler")
+            if kind == 'samplers':
+                value = jax.vmap(lambda key: function(key, **given))(keys)
             else:
-                if kind == 'settings':
-                    pop = simulator.model_settings.populations[param_name]
-                    def settings_for_event(key, *args):
-                        settings = function(*args, **given)
-                        validate_call_settings(param_name, pop, settings, conditional=True)
-                        return {field: jnp.asarray(value) for field, value in settings.items()}
-                    given = jax.vmap(settings_for_event)(keys, *inputs)
-                value = _sample_population_parameter(
-                    simulator, redshifts, host_properties, keys_for, param_name,
-                    subpop_index, drawn, given)
-                weight = weight * _population_weight(
-                    simulator, param_name, value, host_properties, subpop_index, given)
+                value = jax.vmap(lambda key, event: function(key, event, **given))(
+                    keys, _event_values(params, step_draws))
+            if value.shape != redshifts.shape:
+                raise SNANAError(f"The sampler for {param_name} must return one value per event",
+                                 function_name="_parameter_sampler")
+        else:
+            if kind == 'conditional_hyperparameters':
+                pop = simulator.model_settings.populations[param_name]
+
+                def hyperparameters_for_event(event):
+                    hyperparameters = function(event, **given)
+                    validate_call_hyperparameters(param_name, pop, hyperparameters)
+                    return {field: jnp.asarray(value)
+                            for field, value in hyperparameters.items()}
+                given = jax.vmap(hyperparameters_for_event)(_event_values(params, step_draws))
+            value = _sample_population_parameter(
+                simulator, redshifts, host_properties, keys_for, param_name,
+                subpop_index, drawn, given)
+            weight = weight * _population_weight(
+                simulator, param_name, value, host_properties, subpop_index, given)
         drawn[param_name] = value
+        step_draws[param_name] = value
         return value
 
     return sample, lambda: weight
@@ -1092,19 +1068,21 @@ def draw_dust(simulator, params,
 
 def draw_grey_offset(simulator, params,
                      host_properties: Optional[Dict[str, jnp.ndarray]], *,
-                     overrides=None, population_functions=()):
+                     key=None, overrides=None, population_functions=()):
     """GENMAG_OFF_GLOBAL per SN, with its redshift variation at the final
-    zCMB, once the host's overrides are in (snlc_sim.c:12940)."""
-    for name, kind, function, deps in population_functions:
-        if name == 'GENMAG_OFF_GLOBAL':
-            given = (overrides or {}).get(name, {})
-            if not isinstance(given, Mapping):
-                return given
-            inputs = _population_dependencies(deps, params, host_properties,
-                                              _population_values(simulator, params))
-            # A dummy event axis also broadcasts relations without dependencies.
-            return jax.vmap(lambda _, *args: function(*args, **given))(
-                params['sim_redshift_cmb'], *inputs)
+    zCMB, once the host's overrides are in (snlc_sim.c:12940). ``key`` is
+    needed only when a sampler is registered for it."""
+    given = (overrides or {}).get('GENMAG_OFF_GLOBAL', {})
+    if not isinstance(given, Mapping):
+        return given
+    functions = {name: (kind, function) for name, kind, function in population_functions}
+    if 'GENMAG_OFF_GLOBAL' in functions:
+        kind, function = functions['GENMAG_OFF_GLOBAL']
+        keys = event_keys(key, 'GENMAG_OFF_GLOBAL', params['sn_global_idx'])
+        if kind == 'samplers':
+            return jax.vmap(lambda event_key: function(event_key, **given))(keys)
+        return jax.vmap(lambda event_key, event: function(event_key, event, **given))(
+            keys, params)
     return grey_offset(simulator, _subpop_index(simulator, params),
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),

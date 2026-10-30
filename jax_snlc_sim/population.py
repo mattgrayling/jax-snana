@@ -127,9 +127,10 @@ def component_names(param_name: str):
 def validate_population_overrides(simulator, overrides, function_kinds):
     """Check how call-time populations interact with configured simulation rules.
 
-    Settings retain the configured distribution and its reweighting; arrays,
-    samplers and relations replace the draw and supply no probability density.
-    Conditional functions validate their returned fields when they are traced.
+    Hyperparameters retain the configured distribution and its reweighting;
+    arrays and samplers replace the draw and supply no probability density.
+    Conditional functions validate the hyperparameters they return when they
+    are traced.
     """
     if overrides and (simulator.host_settings.mskopt & 64 or simulator.survey.use_simlib_salt2):
         raise SNANAError("SBI parameter overrides cannot be combined with HOSTLIB USESNPAR "
@@ -137,15 +138,17 @@ def validate_population_overrides(simulator, overrides, function_kinds):
                          function_name="build_sbi_pipeline")
     for name, value in overrides.items():
         if name == 'GENMAG_OFF_GLOBAL':
-            if name not in function_kinds:
-                raise SNANAError("GENMAG_OFF_GLOBAL needs a registered relation",
+            if isinstance(value, Mapping) and name not in function_kinds:
+                raise SNANAError("GENMAG_OFF_GLOBAL takes per-event values or the "
+                                 "keyword arguments of a registered sampler",
                                  function_name="build_sbi_pipeline")
             continue
         pop = simulator.model_settings.populations[name]
         if name in ('AV', 'EBV_HOST') and simulator.host_settings.genav_wv07:
             raise SNANAError("SBI dust overrides cannot be combined with GENAV_WV07",
                              function_name="build_sbi_pipeline")
-        if not isinstance(value, Mapping) or function_kinds.get(name) in ('sample', 'relation'):
+        if (not isinstance(value, Mapping)
+                or function_kinds.get(name) in ('samplers', 'conditional_samplers')):
             if ((pop.genpdf is not None and pop.genpdf.expon_rewgt != 1.)
                     or any(d.prob_expon_rewgt != 1. for d in pop.distributions)):
                 raise SNANAError(f"{name}: custom draws have no density for population reweighting",
@@ -154,40 +157,33 @@ def validate_population_overrides(simulator, overrides, function_kinds):
         if pop.genpdf is not None:
             raise SNANAError(f"{name} uses a fixed GENPDF map; supply samples or a sampler",
                              function_name="build_sbi_pipeline")
-        if function_kinds.get(name) == 'settings':
+        if function_kinds.get(name) == 'conditional_hyperparameters':
             continue
-        validate_call_settings(name, pop, value)
+        validate_call_hyperparameters(name, pop, value)
 
 
-def validate_call_settings(name, pop, settings, *, conditional=False):
-    """Check the static fields/shapes of call-time distribution settings.
+def validate_call_hyperparameters(name, pop, hyperparameters):
+    """Check the names and shapes of call-time distribution hyperparameters.
 
-    Conditional functions replace fields, so a configured variation cannot
-    also modify those fields. Numerical values remain traced inputs.
+    The numerical values remain traced inputs, and any configured VARIATION
+    still applies on top of them.
     """
     gaussian = not isinstance(pop.distributions[0], GenExpHalfGauss)
     allowed = ({'peak', 'sigma', 'skew', 'prob2', 'peak2', 'sigma2'} if gaussian
                else {'exp_tau', 'peak', 'sigma', 'ratio'}) | {'range'}
-    unknown = set(settings) - allowed
+    unknown = set(hyperparameters) - allowed
     if unknown:
-        raise SNANAError(f"{name}: call-time settings {sorted(unknown)} are unsupported; "
+        raise SNANAError(f"{name}: hyperparameters {sorted(unknown)} cannot be changed; "
                          f"choose from {sorted(allowed)}", function_name="build_sbi_pipeline")
-    if settings and 'range' not in settings and any(
+    if hyperparameters and 'range' not in hyperparameters and any(
             dist.range[0] == dist.range[1] for dist in pop.distributions):
         raise SNANAError(f"{name} has fixed support; supply a range or exact samples",
                          function_name="build_sbi_pipeline")
-    fields, _ = component_names(name)
-    shifted = {entry.parname for shifts in pop.shifts for entry in shifts}
-    for field, value in settings.items():
+    for field, value in hyperparameters.items():
         paired = gaussian and field in ('sigma', 'sigma2', 'skew')
         expected = (2,) if paired or field == 'range' else ()
         if jnp.asarray(value).shape != expected:
             raise SNANAError(f"{name}.{field} needs shape {expected}",
-                             function_name="build_sbi_pipeline")
-        targets = ((*fields[field + '_lo'], *fields[field + '_hi']) if paired
-                   else fields.get(field, ()))
-        if conditional and shifted.intersection(targets):
-            raise SNANAError(f"Conditional settings and VARIATION both set {name}.{field}",
                              function_name="build_sbi_pipeline")
 
 
