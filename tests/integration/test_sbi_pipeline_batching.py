@@ -504,27 +504,6 @@ def test_call_time_mean_includes_redshift_variation(tmp_path):
     np.testing.assert_allclose(parameters['c'], .02 + .1 * parameters['sim_redshift_cmb'])
 
 
-def test_exact_samples_replace_conditional_genpdf(tmp_path):
-    """Exact samples replace a prepared conditional population draw."""
-    from tests.integration.test_genpdf_wgtmap_hostfirst import (
-        _write_input as write_host_input,
-        _write_logmass_only_wgtmap,
-        _write_genpdf_c_logmass,
-    )
-
-    genpdf = tmp_path / 'color.dat'
-    wgtmap = tmp_path / 'host.wgtmap'
-    path = tmp_path / 'sim.input'
-    _write_genpdf_c_logmass(genpdf)
-    _write_logmass_only_wgtmap(wgtmap)
-    write_host_input(path, hostlib=None, wgtmap=wgtmap, genpdf=genpdf)
-    simulator = sim_run.prepare(str(path), n_sne=40, batch_size=20)
-    pipeline = sim_run.build_sbi_pipeline(simulator)
-    key = jax.random.PRNGKey(0)
-    results, _ = pipeline(key, params={'c': jnp.zeros(40)})
-    np.testing.assert_array_equal(results['parameters']['c'], 0.)
-
-
 @pytest.mark.parametrize('conditional', [False, True])
 def test_call_time_settings_update_population_weights(tmp_path, conditional):
     """Reweighting uses the same mean and width supplied for the colour draw."""

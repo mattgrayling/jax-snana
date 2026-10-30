@@ -13,6 +13,7 @@ Exercises:
 import os
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
 
@@ -285,6 +286,20 @@ def test_sbi_rejects_a_catalogue_outside_the_conditional_genpdf(tmp_path):
     inp = _narrow_genpdf_input(tmp_path)
     with pytest.raises(SNANAError, match="outside the map"):
         sim_run.build_sbi_pipeline(str(inp), n_sne=200, random_seed=99003)
+
+
+def test_sbi_exact_samples_replace_conditional_genpdf(tmp_path):
+    """Exact samples replace a prepared conditional population draw."""
+    genpdf = tmp_path / 'color.dat'
+    wgtmap = tmp_path / 'host.wgtmap'
+    path = tmp_path / 'sim.input'
+    _write_genpdf_c_logmass(genpdf)
+    _write_logmass_only_wgtmap(wgtmap)
+    _write_input(path, hostlib=None, wgtmap=wgtmap, genpdf=genpdf)
+    simulator = sim_run.prepare(str(path), n_sne=40, batch_size=20)
+    pipeline = sim_run.build_sbi_pipeline(simulator)
+    results, _ = pipeline(jax.random.PRNGKey(0), params={'c': np.zeros(40)})
+    np.testing.assert_array_equal(results['parameters']['c'], 0.)
 
 
 def test_conditional_genpdf_out_of_map_clamps_with_extrap(tmp_path):
