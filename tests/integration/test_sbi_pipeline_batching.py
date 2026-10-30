@@ -595,12 +595,10 @@ GENSIGMA_VPEC: 300
         return offset + jnp.where(mass > 10., .5, -.5) * (step + slope * zhel)
 
     options = dict(
-        conditional_settings={'AV': av_settings, 'RV': rv_settings},
-        samplers={'THETA': draw_theta},
-        relations={'GENMAG_OFF_GLOBAL': magnitude},
-        dependencies={'AV': ('HOST.LOGMASS',), 'RV': ('HOST.LOGMASS',),
-                      'THETA': ('HOST.LOGMASS',),
-                      'GENMAG_OFF_GLOBAL': ('HOST.LOGMASS', 'REDSHIFT_HELIO')})
+        conditional_settings={'AV': (av_settings, ['HOST.LOGMASS']),
+                              'RV': (rv_settings, ['HOST.LOGMASS'])},
+        samplers={'THETA': (draw_theta, ['HOST.LOGMASS'])},
+        relations={'GENMAG_OFF_GLOBAL': (magnitude, ['HOST.LOGMASS', 'REDSHIFT_HELIO'])})
     coefficients = {'AV': {'low': .1, 'high': .3},
                     'RV': {'low': 1.1, 'high': 3., 'width': .001},
                     'THETA': {'mean': .1, 'slope': .2, 'width': .4},
@@ -659,8 +657,7 @@ def test_conditional_settings_conflict_with_variations(tmp_path):
 def test_population_relations_use_earlier_draws(simulator):
     """A deterministic model parameter is computed before derived amplitudes."""
     pipeline = sim_run.build_sbi_pipeline(
-        simulator, relations={'SALT2alpha': lambda x1, slope: .14 + slope * x1},
-        dependencies={'SALT2alpha': ('x1',)})
+        simulator, relations={'SALT2alpha': (lambda x1, slope: .14 + slope * x1, ['x1'])})
     parameters = pipeline(jax.random.PRNGKey(4), params={'SALT2alpha': {'slope': .01}})[0]['parameters']
     np.testing.assert_allclose(parameters['SALT2alpha'], .14 + .01 * parameters['x1'])
     expected = compute_expected_x0_scale(parameters['mu'], parameters['SALT2alpha'],
@@ -683,13 +680,10 @@ def test_conditional_settings_keep_other_variations(tmp_path):
 def test_population_dependencies_require_existing_order(simulator):
     """Dependencies cannot refer to a later draw or an absent host catalogue."""
     with pytest.raises(SNANAError, match='not drawn before'):
-        sim_run.build_sbi_pipeline(simulator,
-                                  relations={'x1': lambda color: color},
-                                  dependencies={'x1': ('c',)})
+        sim_run.build_sbi_pipeline(simulator, relations={'x1': (lambda color: color, ['c'])})
     with pytest.raises(SNANAError, match='unavailable host column'):
-        sim_run.build_sbi_pipeline(simulator,
-                                  relations={'x1': lambda mass: mass - 10.},
-                                  dependencies={'x1': ('HOST.LOGMASS',)})
+        sim_run.build_sbi_pipeline(
+            simulator, relations={'x1': (lambda mass: mass - 10., ['HOST.LOGMASS'])})
 
 
 def test_population_dependencies_preserve_precision(tmp_path):
@@ -700,8 +694,8 @@ def test_population_dependencies_preserve_precision(tmp_path):
                     "GENSIGMA_RV: 0.2 0.2\nGENTAU_AV: 0.2\nGENRANGE_AV: 0.0 5.0\n")
     pipeline = sim_run.build_sbi_pipeline(
         str(path), n_sne=4, batch_size=2,
-        relations={'RV': lambda x1: x1 + 2., 'GENMAG_OFF_GLOBAL': lambda x1: x1},
-        dependencies={'RV': ('x1',), 'GENMAG_OFF_GLOBAL': ('x1',)})
+        relations={'RV': (lambda x1: x1 + 2., ['x1']),
+                   'GENMAG_OFF_GLOBAL': (lambda x1: x1, ['x1'])})
     values = jnp.full(4, 1.00000001, dtype=jnp.float64)
     parameters = jax.jit(pipeline)(jax.random.PRNGKey(0), params={'x1': values})[0]['parameters']
     assert parameters['rv'].dtype == values.dtype
@@ -743,8 +737,7 @@ def test_conditional_ranges_follow_the_mean(simulator):
         return {'peak': mean, 'sigma': (width, width),
                 'range': (mean - 3. * width, mean + 3. * width)}
     pipeline = sim_run.build_sbi_pipeline(
-        simulator, conditional_settings={'c': color_settings},
-        dependencies={'c': ('x1',)})
+        simulator, conditional_settings={'c': (color_settings, ['x1'])})
     key = jax.random.PRNGKey(0)
     @jax.jit
     def draw(intercept):

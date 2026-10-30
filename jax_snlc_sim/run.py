@@ -1082,7 +1082,7 @@ def simulate_surveys(simulator, key, events, overrides, *, n_sne, population_fun
 
 
 def build_sbi_pipeline(inputs=None, *, conditional_settings=None, samplers=None,
-                       relations=None, dependencies=None, **settings):
+                       relations=None, **settings):
     """Build ``pipeline(key, params=None, *, events=None)`` for SBI.
 
     ``inputs`` accepts the same input path, settings mapping or SimulationConfig
@@ -1095,11 +1095,13 @@ def build_sbi_pipeline(inputs=None, *, conditional_settings=None, samplers=None,
     prepared distributions. Model aliases such as THETA and SALT2c are accepted.
     ``conditional_settings`` functions return distribution fields; ``samplers``
     return custom draws; ``relations`` return deterministic population values
-    or GENMAG_OFF_GLOBAL. ``dependencies`` lists positional input quantities for
-    each function (HOST.<column>, REDSHIFT_CMB, REDSHIFT_HELIO, or earlier draws).
-    Coefficients come from that target's ``params`` mapping as keyword arguments.
-    Only samplers receive an event key, before their dependencies. The simulator
-    batches the functions and computes dependent quantities afterwards.
+    or GENMAG_OFF_GLOBAL. Each maps a population name to a function, or to
+    ``(function, dependencies)`` where the dependencies are the function's
+    positional inputs (HOST.<column>, REDSHIFT_CMB, REDSHIFT_HELIO, or earlier
+    draws). Coefficients come from that target's ``params`` mapping as keyword
+    arguments. Only samplers receive an event key, before their dependencies.
+    The simulator batches the functions and computes dependent quantities
+    afterwards.
 
     ``events`` replaces complete per-event inputs, including placement and
     scatter, and sets the event count. It cannot be combined with ``params``
@@ -1109,10 +1111,15 @@ def build_sbi_pipeline(inputs=None, *, conditional_settings=None, samplers=None,
     Returns ``(results, selection)`` as JAX arrays, without host-side
     runtime validation. HOSTLIB references are catalogue row indices.
     """
-    dependencies = dependencies or {}
+    registrations = {
+        kind: {name: entry if isinstance(entry, tuple) else (entry, ())
+               for name, entry in (supplied or {}).items()}
+        for kind, supplied in (('settings', conditional_settings), ('sample', samplers),
+                               ('relation', relations))}
     host_columns = tuple(dict.fromkeys(
-        dep.removeprefix("HOST.") for deps in dependencies.values()
-        for dep in deps if dep.startswith("HOST.")))
+        dep.removeprefix("HOST.") for supplied in registrations.values()
+        for _, dependencies in supplied.values()
+        for dep in dependencies if dep.startswith("HOST.")))
     if isinstance(inputs, LightCurveSimulator):
         if settings:
             raise SNANAError("Apply setup settings before loading the simulator",
@@ -1148,8 +1155,8 @@ def build_sbi_pipeline(inputs=None, *, conditional_settings=None, samplers=None,
         return resolved
 
     population_functions = prepare_population_functions(
-        simulator, names, resolve_names(conditional_settings), resolve_names(samplers),
-        resolve_names(relations), resolve_names(dependencies))
+        simulator, names,
+        {kind: resolve_names(supplied) for kind, supplied in registrations.items()})
     function_kinds = {name: kind for name, kind, _, _ in population_functions}
 
     def pipeline_fn(key, params=None, *, events=None):

@@ -93,10 +93,10 @@ reweighting.
 ## Conditional populations
 
 A parameter can also depend on other quantities, such as a host property or the
-redshift. You register a function for it when you build the pipeline, list what
-it depends on, and pass the function's coefficients on each call. For example,
-a colour distribution whose mean changes with host mass, and a mass step in the
-magnitude offset:
+redshift. When you build the pipeline, register a function for it together with
+the list of quantities it depends on, then pass the function's coefficients on
+each call. For example, a colour distribution whose mean changes with host mass,
+and a mass step in the magnitude offset:
 
 ```python
 def colour_settings(mass, mean, slope, scatter):
@@ -107,10 +107,8 @@ def mass_step(mass, step):
 
 pipeline = sim_run.build_sbi_pipeline(
     "examples/quickstart/sim_host_variation.input", n_sne=n_sne,
-    conditional_settings={"SALT2c": colour_settings},
-    relations={"GENMAG_OFF_GLOBAL": mass_step},
-    dependencies={"SALT2c": ("HOST.LOGMASS",),
-                  "GENMAG_OFF_GLOBAL": ("HOST.LOGMASS",)},
+    conditional_settings={"SALT2c": (colour_settings, ["HOST.LOGMASS"])},
+    relations={"GENMAG_OFF_GLOBAL": (mass_step, ["HOST.LOGMASS"])},
 )
 results, selection = pipeline(jax.random.PRNGKey(3), params={
     "SALT2c": {"mean": 0.0, "slope": 0.02, "scatter": 0.05},
@@ -121,9 +119,10 @@ results, selection = pipeline(jax.random.PRNGKey(3), params={
 There are three kinds of function. `conditional_settings` functions return new
 settings for the input-file distribution, `samplers` return a random draw and
 take a key before their dependencies, and `relations` return a value with no
-randomness. `GENMAG_OFF_GLOBAL` takes only a relation. Each function receives
-its dependencies in the order listed, and its coefficients by name. A dependency
-can be:
+randomness. `GENMAG_OFF_GLOBAL` takes only a relation. A function with no
+dependencies, such as the sampler above, is given on its own. Each function
+receives its dependencies in the order listed, and its coefficients by name. A
+dependency can be:
 
 - `HOST.<column>`, a HOSTLIB column, which is loaded automatically when you
   build the pipeline from an input file, and must already be loaded in a
