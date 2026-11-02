@@ -16,7 +16,7 @@ from jax_snlc_core.cosmology import zhelio_to_zcmb
 from jax_snlc_core.models import MODEL_REGISTRY, FittedModel
 from jax_snlc_core.noise import fluxcal_errcalc
 from jax_snlc_core.snana_files import (HOSTGAL_PREFIXES, HOSTGAL_PROPERTY_NULL, SNANA_NULLFLOAT,
-                                       FitresTable, jax_version_comment, load_survey_ids,
+                                       FitresTable, jax_snana_version_comment, load_survey_ids,
                                        program_comment, snana_version_comment,
                                        write_varnames_table)
 from jax_snlc_core.utils import LIGHT_KM
@@ -637,11 +637,11 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
 
 def header_comments(table, version_photometry, extra=()):
     """The comment lines every snlc_fit table starts with: the data version,
-    any ``extra`` lines, the SNANA, program and jax versions, and the table's
-    name."""
+    any ``extra`` lines, the SNANA, program and jax-snana versions, and the
+    table's name."""
     comments = [f"VERSION_PHOTOMETRY: {version_photometry}"] if version_photometry else []
     return comments + list(extra) + [snana_version_comment(), program_comment("snlc_fit.py"),
-                                     jax_version_comment(), f"TABLE_NAME:    {table}"]
+                                     jax_snana_version_comment(), f"TABLE_NAME:    {table}"]
 
 
 def build_fitres_table(results, redshifts, mu_ref, model, sim_truth=None,

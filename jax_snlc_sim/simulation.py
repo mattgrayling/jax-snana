@@ -294,9 +294,6 @@ class Model:
     #: ZVARIATION or a SUBPOP class for a redshift-dependent or class-dependent
     #: brightness.
     genmag_off_global: float = field(default=0.0, metadata={})
-    #: A further magnitude added to the events of a NON1A template library
-    #: alone, leaving any Ia population in the same run untouched.
-    genmag_off_non1a: float = field(default=0.0, metadata={})
     #: SNANA GENMAG_OFF_MODEL; magnitude offsets added to the model in each
     #: band. SNANA inputs give one value per GENFILTERS band, in that order;
     #: Python/YAML takes a mapping such as {g: 0.003, r: 0.0}.

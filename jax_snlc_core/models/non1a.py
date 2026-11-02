@@ -11,9 +11,9 @@ so phase interpolation uses the original data with no resampling loss.
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Annotated, Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +24,7 @@ from jax_snlc_core.interpolation import linear_between, linear_bin
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import resolve_fits_path
 
+from .input_keys import SIM_ONLY
 from .roles import SimulatedModel
 from .sed_model import (SED_WAVELENGTH_RANGE, SNModel, compute_explosion_tshift,
                         late_time_decay, late_time_tables, read_sed_file, resample_surfaces,
@@ -110,6 +111,11 @@ class NON1ASEDModel(SNModel, SimulatedModel):
     uses_nonia_rates = True
     non1a_templates = True
     mjd_explode_anchor = 'optmask'
+
+    #: A magnitude added to every event, with its template's MAGOFF
+    #: (pick_NON1ASED, snlc_sim.c:14462). Read by the simulator only.
+    genmag_off_non1a: Annotated[float, SIM_ONLY] = field(
+        default=0.0, metadata={"static": True})
 
     per_template_wavelength_bounds: jax.Array = None
     wavelength_grid: jax.Array = None
@@ -347,14 +353,14 @@ class NON1ASEDModel(SNModel, SimulatedModel):
                                                bool),
                   'n_templates': len(rows)}
         # SNTYPE and SNTAG share an array, so read every named column first
-        for name, (field, dtype, _) in columns.items():
+        for name, (config_key, dtype, _) in columns.items():
             position = declared.get(name)
-            if position is not None and field not in config:
-                config[field] = _col([_value(e, name, position) for e in rows],
-                                     dtype)
-        for name, (field, dtype, default) in columns.items():
-            if field not in config:
-                config[field] = _col([default] * len(rows), dtype)
+            if position is not None and config_key not in config:
+                config[config_key] = _col([_value(e, name, position) for e in rows],
+                                          dtype)
+        for name, (config_key, dtype, default) in columns.items():
+            if config_key not in config:
+                config[config_key] = _col([default] * len(rows), dtype)
         return {'non1a_config': config}
 
     def _listed_indices(self, indices):
@@ -467,7 +473,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
         sntype = dump_columns.get('SNTYPE', np.zeros(n_entries)).astype(np.int32)
         return {
             'template_idx': template_idx,
-            'magoff': magoff_values,
+            'magoff': magoff_values + self.genmag_off_non1a,
             'magsmear': np.zeros(n_entries, dtype=np.float32),
             'sntype': sntype,
             'non1a_index': non1a_indices.astype(np.int32),
@@ -535,7 +541,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
         non1a_indices = index_arr[template_sel_idx]
         template_idx = stack_pos_arr[template_sel_idx]
 
-        magoff = magoff_arr[template_sel_idx]
+        magoff = magoff_arr[template_sel_idx] + self.genmag_off_non1a
         magsmear_sigma = magsmear_arr[template_sel_idx]
         sntype = sntype_arr[template_sel_idx]
 

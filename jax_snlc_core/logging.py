@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from jax_snlc_core import __version__
+
 
 DR_EVIL_ABORT_FACE = r"""
 
@@ -139,15 +141,20 @@ def done(logger: logging.Logger, name: str) -> None:
 
 
 def version_string() -> str:
-    """``jax-<git short-SHA>``; ``jax`` if the working tree is not a git clone."""
+    """The running jax-snana version: the release, with the commit appended
+    (``0.1.0+gc840264a``) when the code runs from a clone of the repository.
+    An installed copy reports the release alone, even inside another git
+    repository."""
+    root = Path(__file__).parents[1]
+    if not (root / '.git').exists():
+        return __version__
     try:
-        out = subprocess.run(
-            ['git', 'rev-parse', '--short', 'HEAD'], capture_output=True,
-            text=True, cwd=Path(__file__).parent, timeout=2)
-        sha = out.stdout.strip()
-        return f"jax-{sha}" if out.returncode == 0 and sha else "jax"
+        out = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], capture_output=True,
+                             text=True, cwd=root, timeout=2)
     except (OSError, subprocess.TimeoutExpired):
-        return "jax"
+        return __version__
+    sha = out.stdout.strip()
+    return f"{__version__}+g{sha}" if out.returncode == 0 and sha else __version__
 
 
 def startup(logger: logging.Logger, prog: str, argv) -> None:

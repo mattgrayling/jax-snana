@@ -86,4 +86,12 @@ jobs:
         run: |
           pip install coverage
           coverage combine coverage-*
-          coverage report --fail-under=65
+          coverage lcov -o coverage.lcov
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage.lcov
+
+      - name: Check coverage
+        run: coverage report --fail-under=65

@@ -8,7 +8,8 @@ The input key `double_precision` chooses the frame and defaults to single
 (`jax_snlc_core.utils`); importing this package fixes nothing.
 """
 
-__version__ = "0.1.0"
+from jax_snlc_core import __version__
+
 __author__ = "Matthew Grayling"
 
 from .config import BBCConfig, build_config, parse_bbc_input

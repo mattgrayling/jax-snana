@@ -317,7 +317,7 @@ def test_usesnpar_snmagshift_only_column(tmp_path):
     inp = tmp_path / "input.input"
     _write_input(inp, mskopt=322, hostlib=str(hostlib))
     _, results = _run(inp)
-    gamma = np.asarray(results["parameters"]["snmagshift"])
+    gamma = np.asarray(results["parameters"]["gammaDM"])
     assert np.isclose(gamma, 0.04, atol=1e-6).mean() > 0.9
 
 

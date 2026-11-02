@@ -1670,7 +1670,7 @@ def compute_spectra_for_mask(simulator, results, mask, *,
         return {}, jnp.zeros(n_sne)
 
     grey, host_shift, magnitude_shift = grey_offsets(
-        results['parameters'], simulator.config.model, simulator.model.non1a_templates)
+        results['parameters'], simulator.config.model)
     sn_flux_factor = jnp.power(10.0, -0.4 * (grey + host_shift + magnitude_shift))
     static_data_with_model = dict(
         simulator.photometry_data, sn_flux_factor=sn_flux_factor,

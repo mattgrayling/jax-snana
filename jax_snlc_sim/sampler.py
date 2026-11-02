@@ -26,7 +26,6 @@ and dN/dz tables read here are built once by ``build_simulation``.
 """
 
 import logging
-from collections.abc import Mapping
 from dataclasses import replace
 from functools import partial
 from typing import Dict, Optional, Tuple
@@ -48,8 +47,8 @@ from jax_snlc_sim.distributions import (GenExpHalfGauss, GenGaussAsym, distribut
                                         sample_truncated_gaussian)
 from jax_snlc_sim.genpdf import pdf_genpdf, sample_genpdf, sample_genpdf_conditional
 from jax_snlc_sim.lensing import lensing_offset
-from jax_snlc_sim.population import (checked_genpdf_maps, component_names, outside_map,
-                                     stream_name, validate_call_hyperparameters)
+from jax_snlc_sim.population import (checked_genpdf_maps, component_names, has_distribution,
+                                     outside_map, stream_name, validate_call_hyperparameters)
 from jax_snlc_sim.scatter import (draw_phase_scatter, draw_coherent_scatter,
                                    draw_filter_scatter, draw_model_scatter,
                                    scale_model_scatter)
@@ -62,35 +61,54 @@ logger = logging.getLogger(__name__)
 
 def prepare_population_functions(simulator, registrations):
     """The registered functions as ``(name, kind, function)``, after checking
-    that each names a parameter this run draws, and only once.
+    that each quantity has only one, and that a conditional hyperparameter
+    function has a distribution to change.
 
     ``registrations`` maps each kind ('samplers', 'conditional_samplers',
-    'conditional_hyperparameters') to ``{population name: function}``, the
-    names canonical.
+    'conditional_hyperparameters') to ``{name: function}``, the names
+    canonical.
     """
     functions = []
     registered = set()
-    populations = simulator.model_settings.populations
-    drawn = {*simulator.model.drawn_parameters(populations),
-             *(p.key for p in HOST_DUST_PARAMETERS if p.key in populations)}
     for kind, supplied in registrations.items():
         for name, function in supplied.items():
             if name in registered:
-                raise SNANAError(f"Multiple population functions for {name}",
+                raise SNANAError(f"More than one function is registered for {name}",
                                  function_name="build_sbi_pipeline")
-            if name == 'GENMAG_OFF_GLOBAL':
-                if kind == 'conditional_hyperparameters':
-                    raise SNANAError("GENMAG_OFF_GLOBAL has no distribution, so it takes a sampler",
-                                     function_name="build_sbi_pipeline")
-                if simulator.model_settings._offset_shifts.get(name):
-                    raise SNANAError(f"A sampler and configured variations both set {name}",
-                                     function_name="build_sbi_pipeline")
-            elif name not in drawn:
-                raise SNANAError(f"This model does not draw {name}, so it cannot take a function",
+            if kind == 'conditional_hyperparameters' and not has_distribution(simulator, name):
+                raise SNANAError(f"{name} has no distribution to change, so it takes a sampler",
                                  function_name="build_sbi_pipeline")
             functions.append((name, kind, function))
             registered.add(name)
     return tuple(functions)
+
+
+#: The SBI inputs of an ordinary simulation, which set nothing.
+NO_SBI_INPUTS = {'values': {}, 'hyperparameters': {}, 'arguments': {}}
+
+
+def sbi_value(name, sbi_inputs, functions, keys, events, usual_draw):
+    """Each event's value of ``name``: the values the SBI inputs give it,
+    else the draw of the sampler registered for it, else ``usual_draw()``.
+
+    ``functions`` maps each name to ``(kind, function)``; ``keys`` are the
+    events' keys for its random stream, and ``events`` each event's values,
+    which a conditional sampler reads.
+    """
+    if name in sbi_inputs['values']:
+        return sbi_inputs['values'][name]
+    kind, function = functions.get(name, (None, None))
+    arguments = sbi_inputs['arguments'].get(name, {})
+    if kind == 'samplers':
+        value = jax.vmap(lambda key: function(key, **arguments))(keys)
+    elif kind == 'conditional_samplers':
+        value = jax.vmap(lambda key, event: function(key, event, **arguments))(keys, events)
+    else:
+        return usual_draw()
+    if value.shape != (keys.shape[0],):
+        raise SNANAError(f"The sampler for {name} must return one value per event",
+                         function_name="sbi_value")
+    return value
 
 
 @partial(jax.jit, static_argnums=(1,))
@@ -647,6 +665,20 @@ def grey_offset(simulator, subpop_index, redshifts, host_properties, drawn,
     return grey
 
 
+def drawn_dust_parameters(simulator):
+    """The host-dust population parameters the dust draw samples: RV, and EBV
+    or else AV, unless GENAV_WV07 draws AV itself."""
+    populations = simulator.model_settings.populations
+    drawn = ['RV'] if 'RV' in populations else []
+    if simulator.host_settings.genav_wv07:
+        return tuple(drawn)
+    if 'EBV_HOST' in populations:
+        drawn.append('EBV_HOST')
+    elif 'AV' in populations:
+        drawn.append('AV')
+    return tuple(drawn)
+
+
 def _draw_host_dust(simulator, batch_n_sne, sample_param, av_keys):
     """Host-galaxy AV and RV, and the pair SNANA reports.
 
@@ -657,7 +689,8 @@ def _draw_host_dust(simulator, batch_n_sne, sample_param, av_keys):
     drawn values stay 0 and 3.1 for the extinction maths, only the reported
     pair differs.
     """
-    if 'RV' in simulator.model_settings.populations:
+    drawn = drawn_dust_parameters(simulator)
+    if 'RV' in drawn:
         rv = sample_param('RV')
     else:
         rv = jnp.full(batch_n_sne, 3.1)
@@ -665,10 +698,10 @@ def _draw_host_dust(simulator, batch_n_sne, sample_param, av_keys):
     if simulator.host_settings.genav_wv07:
         av = _sample_wv07_av(simulator.host_settings, av_keys)
         dogen_av = True
-    elif 'EBV_HOST' in simulator.model_settings.populations:
+    elif 'EBV_HOST' in drawn:
         av = sample_param('EBV_HOST') * rv
         dogen_av = True
-    elif 'AV' in simulator.model_settings.populations:
+    elif 'AV' in drawn:
         av = sample_param('AV')
         dogen_av = True
     else:
@@ -881,18 +914,20 @@ def _missing_population(name):
 
 
 def _event_values(params, step_draws):
-    """Each event's values simulated so far, under their names in the
-    results, for a registered function: everything completed before this
-    step, and this step's own draws, with the host dust under its output name
-    (EBV_HOST has none, being converted into AV)."""
+    """Each event's values simulated so far, by result name, for a
+    registered function to read. EBV has no result name, since it becomes
+    AV."""
     output_names = {p.key: p.param for p in HOST_DUST_PARAMETERS}
-    current = {output_names.get(name, name): value for name, value in step_draws.items()
-               if name != 'EBV_HOST'}
+    current = {}
+    for name, value in step_draws.items():
+        output_name = output_names.get(name, name)
+        if output_name is not None:
+            current[output_name] = value
     return {**params, **current}
 
 
 def _parameter_sampler(simulator, params, host_properties, keys_for,
-                       subpop_index, drawn, overrides=None, population_functions=()):
+                       subpop_index, drawn, sbi_inputs, population_functions):
     """A draw of named population parameters that records each value in
     ``drawn``, so a later parameter's VARIATION may read it, and returns
     with it a callable giving SNANA's population weight so far,
@@ -901,41 +936,35 @@ def _parameter_sampler(simulator, params, host_properties, keys_for,
     redshifts = params['sim_redshift_cmb']
     weight = jnp.ones_like(redshifts)
     step_draws = {}
-
-    overrides = overrides or {}
     functions = {name: (kind, function) for name, kind, function in population_functions}
+    aliases = dict(simulator.model.configured_population)
 
     def sample(param_name):
-        nonlocal weight
-        given = overrides.get(param_name, {})
-        kind, function = functions.get(param_name, (None, None))
-        if not isinstance(given, Mapping):
-            value = given
-        elif kind in ('samplers', 'conditional_samplers'):
-            keys = keys_for(stream_name(param_name, dict(simulator.model.configured_population)))
-            if kind == 'samplers':
-                value = jax.vmap(lambda key: function(key, **given))(keys)
-            else:
-                value = jax.vmap(lambda key, event: function(key, event, **given))(
-                    keys, _event_values(params, step_draws))
-            if value.shape != redshifts.shape:
-                raise SNANAError(f"The sampler for {param_name} must return one value per event",
-                                 function_name="_parameter_sampler")
-        else:
+        events = _event_values(params, step_draws)
+
+        def draw_from_distribution():
+            nonlocal weight
+            hyperparameters = sbi_inputs['hyperparameters'].get(param_name)
+            kind, function = functions.get(param_name, (None, None))
             if kind == 'conditional_hyperparameters':
                 pop = simulator.model_settings.populations[param_name]
+                arguments = sbi_inputs['arguments'].get(param_name, {})
 
                 def hyperparameters_for_event(event):
-                    hyperparameters = function(event, **given)
-                    validate_call_hyperparameters(param_name, pop, hyperparameters)
-                    return {field: jnp.asarray(value)
-                            for field, value in hyperparameters.items()}
-                given = jax.vmap(hyperparameters_for_event)(_event_values(params, step_draws))
+                    returned = function(event, **arguments)
+                    validate_call_hyperparameters(param_name, pop, returned)
+                    return {field: jnp.asarray(value) for field, value in returned.items()}
+                hyperparameters = jax.vmap(hyperparameters_for_event)(events)
             value = _sample_population_parameter(
                 simulator, redshifts, host_properties, keys_for, param_name,
-                subpop_index, drawn, given)
+                subpop_index, drawn, hyperparameters)
             weight = weight * _population_weight(
-                simulator, param_name, value, host_properties, subpop_index, given)
+                simulator, param_name, value, host_properties, subpop_index, hyperparameters)
+            return value
+
+        value = sbi_value(param_name, sbi_inputs, functions,
+                          keys_for(stream_name(param_name, aliases)), events,
+                          draw_from_distribution)
         drawn[param_name] = value
         step_draws[param_name] = value
         return value
@@ -963,7 +992,7 @@ def _keys_for(key, global_indices):
 def draw_model(simulator, params,
                host_properties: Optional[Dict[str, jnp.ndarray]],
                template_budget: Optional[np.ndarray] = None,
-               *, key, overrides=None, population_functions=()) -> Dict[str, jnp.ndarray]:
+               *, key, sbi_inputs, population_functions) -> Dict[str, jnp.ndarray]:
     """What each event is (gen_modelPar, snlc_sim.c:12892-12910): the SUBPOP
     class, the model's parameters with the amplitude from the distance, and
     the per-event smears. SNANA draws them after the host, or before it when
@@ -983,7 +1012,7 @@ def draw_model(simulator, params,
     drawn = {}
     sample_param, wgt_population = _parameter_sampler(
         simulator, params, host_properties, keys_for, subpop_index, drawn,
-        overrides=overrides, population_functions=population_functions)
+        sbi_inputs, population_functions)
 
     _phasecor_grid_arr = draw_phase_scatter(
         simulator.phasecor_cholesky_L,
@@ -1027,9 +1056,11 @@ def draw_model(simulator, params,
         # the drawn class, carried as truth; -1 when none are declared
         'subpop': (subpop_index if subpop_index is not None
                    else jnp.full(batch_n_sne, -1, dtype=jnp.int32)),
-        # coherent smear and MAGOFF (snlc_sim.c:8483-8491)
+        # coherent smear, MAGOFF and the host mass step, which a HOSTLIB
+        # weight map or an SBI call can set later (snlc_sim.c:8483-8491, :9585)
         'magsmear': jnp.zeros(batch_n_sne),
         'magoff': jnp.zeros(batch_n_sne),
+        'gammaDM': jnp.zeros(batch_n_sne),
         'template_idx': jnp.zeros(batch_n_sne, dtype=jnp.int32),
     }
     if _phasecor_grid_arr is not None:
@@ -1049,7 +1080,7 @@ def draw_model(simulator, params,
 
 def draw_dust(simulator, params,
               host_properties: Optional[Dict[str, jnp.ndarray]], *,
-              key, overrides=None, population_functions=()) -> Dict[str, jnp.ndarray]:
+              key, sbi_inputs, population_functions) -> Dict[str, jnp.ndarray]:
     """Host-galaxy AV and RV (gen_modelPar_dust, snlc_sim.c:12912), at the
     event's final redshift. SNANA draws them after the host; a weight map
     that reads them needs them before it. Returns the dust columns and the
@@ -1058,7 +1089,7 @@ def draw_dust(simulator, params,
         simulator, params, host_properties,
         _keys_for(key, params['sn_global_idx']),
         _subpop_index(simulator, params), _population_values(simulator, params),
-        overrides=overrides, population_functions=population_functions)
+        sbi_inputs, population_functions)
     av, rv, sim_av, sim_rv = _draw_host_dust(
         simulator, params['sim_redshift_cmb'].shape[0], sample_param,
         event_keys(key, 'AV', params['sn_global_idx']))
@@ -1067,22 +1098,9 @@ def draw_dust(simulator, params,
 
 
 def draw_grey_offset(simulator, params,
-                     host_properties: Optional[Dict[str, jnp.ndarray]], *,
-                     key=None, overrides=None, population_functions=()):
+                     host_properties: Optional[Dict[str, jnp.ndarray]]):
     """GENMAG_OFF_GLOBAL per SN, with its redshift variation at the final
-    zCMB, once the host's overrides are in (snlc_sim.c:12940). ``key`` is
-    needed only when a sampler is registered for it."""
-    given = (overrides or {}).get('GENMAG_OFF_GLOBAL', {})
-    if not isinstance(given, Mapping):
-        return given
-    functions = {name: (kind, function) for name, kind, function in population_functions}
-    if 'GENMAG_OFF_GLOBAL' in functions:
-        kind, function = functions['GENMAG_OFF_GLOBAL']
-        keys = event_keys(key, 'GENMAG_OFF_GLOBAL', params['sn_global_idx'])
-        if kind == 'samplers':
-            return jax.vmap(lambda event_key: function(event_key, **given))(keys)
-        return jax.vmap(lambda event_key, event: function(event_key, event, **given))(
-            keys, params)
+    zCMB, once the host's overrides are in (snlc_sim.c:12940)."""
     return grey_offset(simulator, _subpop_index(simulator, params),
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),

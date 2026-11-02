@@ -1494,7 +1494,6 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         uses.
         """
         x0 = np.asarray(parameters['x0'])
-        n = len(x0)
         # SALT2mBcalc (genmag_SALT2.c:3031); NULLFLOAT for the x0 sentinel
         mb = np.where(x0 > 0,
                       SALT2_MB_OFFSET - 2.5 * np.log10(np.where(x0 > 0, x0, 1.0)),
@@ -1506,8 +1505,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
             'SIM_SALT2mB': mb,
             'SIM_SALT2alpha': parameters['SALT2alpha'],
             'SIM_SALT2beta': parameters['SALT2beta'],
-            # HOSTLIB SNMAGSHIFT correction; 0 when unset (snlc_sim.c:9585)
-            'SIM_SALT2gammaDM': parameters.get('snmagshift', np.zeros(n)),
+            'SIM_SALT2gammaDM': parameters['gammaDM'],
         }
 
     # SNANA's name lists, verbatim (snlc_sim.c:16461-16507, :16524-16531)

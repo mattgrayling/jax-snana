@@ -112,7 +112,7 @@ def test_spectral_brightness(spectral_baseline, settings):
 def test_spectral_event_offsets(spectral_baseline):
     simulation, resources, config, baseline, baseline_spectra = spectral_baseline
     params = dict(baseline['parameters'])
-    offsets = {'magoff': .11, 'magsmear': .23, 'lensdmu': -.07, 'snmagshift': .19}
+    offsets = {'magoff': .11, 'magsmear': .23, 'lensdmu': -.07, 'gammaDM': .19}
     for name, offset in offsets.items():
         params[name] = np.asarray(params.get(name, np.zeros(1))) + offset
     result = dict(baseline, parameters=params)

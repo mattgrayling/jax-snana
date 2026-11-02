@@ -209,6 +209,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
         # template_idx below), the host-lookup redshift and match flag
         'magsmear': np.zeros(n_entries, dtype=np.float32),
         'magoff': np.zeros(n_entries, dtype=np.float32),
+        'gammaDM': np.zeros(n_entries, dtype=np.float32),
         'template_idx': np.zeros(n_entries, dtype=np.int32),
         'mushift': np.zeros(n_entries, dtype=np.float32),
         'sim_redshift_host': redshift_host,

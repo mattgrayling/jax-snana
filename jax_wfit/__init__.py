@@ -8,8 +8,7 @@ Python calls retain the active precision when it is omitted. Importing this
 package does not change precision.
 """
 
-__version__ = "0.1.0"
-
+from jax_snlc_core import __version__
 from .config import WFITConfig
 from .hubble import HubbleDiagram, hubble_diagram_from_covariance
 from .run import fit_cosmology, run_wfit
