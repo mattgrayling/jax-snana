@@ -975,7 +975,7 @@ def apply_host_snpar_overrides(simulator, params,
         return params
     hostlib_mskopt = simulator.host_settings.mskopt
     if (hostlib_mskopt & (4 | 64)) and 'SNMAGSHIFT' in host_properties:
-        params['snmagshift'] = host_properties['SNMAGSHIFT']
+        params['gammaDM'] = host_properties['SNMAGSHIFT']
     if hostlib_mskopt & 64:
         spellings = model_spellings(simulator.model)
         host_values = {spellings[column.lower()]: value

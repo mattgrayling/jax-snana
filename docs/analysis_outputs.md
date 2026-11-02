@@ -30,8 +30,9 @@ Header metadata includes:
 
 - `VERSION_PHOTOMETRY`: the data version the fit read.
 - `SNANA_VERSION`: the SNANA compatibility identifier.
-- `JAX_VERSION`: this package, its version and the revision of the checkout
-  that ran it.
+- `JAX-SNANA_VERSION`: the jax-snana version that wrote the file, followed
+  by the commit, as in `0.1.0+gc840264a`, when it ran from a clone of the
+  repository.
 
 For simulated data, the header also records the simulation cosmology from
 its README: `SIM_OMEGA_MATTER`,

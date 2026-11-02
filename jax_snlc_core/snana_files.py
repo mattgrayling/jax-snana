@@ -35,7 +35,7 @@ from astropy.io import fits
 from astropy.table import Table
 from jax.scipy.ndimage import map_coordinates
 
-from jax_snlc_core import __version__, logging as log
+from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError, version_string
 
 logger = logging.getLogger(__name__)
@@ -573,8 +573,6 @@ def load_snana_dump(dump_path: str, dedup_cid: bool = False) -> SnanaDumpData:
     return SnanaDumpData(columns=columns)
 
 
-DISTRIBUTION = "jax-snana"
-
 # must parse as >= 11.02 for the VPEC sign (correct_sign_vpec_data)
 SNANA_VERSION_STRING = "v12_02d-12-g74dfb2c5-JAX"
 
@@ -592,9 +590,10 @@ def program_comment(program):
     return f"PROGRAM:       {program}"
 
 
-def jax_version_comment():
-    """The line that says which jax wrote the file, beside SNANA_VERSION."""
-    return f"JAX_VERSION: {DISTRIBUTION} {__version__} {version_string()}"
+def jax_snana_version_comment():
+    """The header line giving the jax-snana version that wrote the file,
+    beside SNANA_VERSION."""
+    return f"JAX-SNANA_VERSION: {version_string()}"
 
 
 def snana_value_strings(name, values):

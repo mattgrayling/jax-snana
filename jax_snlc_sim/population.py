@@ -55,6 +55,11 @@ HOST_DUST_PARAMETERS = (
                       hostlib_column='EBV', exp_halfgauss=True),
 )
 
+#: The magnitude shifts SBI can set besides the population parameters, the
+#: global offset and the host mass step, by result name with SNANA's spellings.
+MAGNITUDE_SHIFTS = {'genmag_off': ('GENMAG_OFF_GLOBAL',),
+                    'gammaDM': ('SALT2gammaDM', 'SNMAGSHIFT')}
+
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
@@ -124,42 +129,41 @@ def component_names(param_name: str):
             GENGAUSS_ZSHIFT_FIELDS)
 
 
-def validate_population_overrides(simulator, overrides, function_kinds):
-    """Check how call-time populations interact with configured simulation rules.
+def has_distribution(simulator, name):
+    """Whether the input draws ``name`` from a distribution whose
+    hyperparameters a call can change, rather than from a GENPDF map or not
+    at all."""
+    pop = simulator.model_settings.populations.get(name)
+    return pop is not None and bool(pop.distributions)
 
-    Hyperparameters retain the configured distribution and its reweighting;
-    arrays and samplers replace the draw and supply no probability density.
-    Conditional functions validate the hyperparameters they return when they
-    are traced.
+
+def validate_sbi_inputs(simulator, values, hyperparameters, function_kinds):
+    """Check an SBI call's inputs against the simulation's rules.
+
+    Given values and samplers replace a quantity's usual draw, so they have
+    no probability density for population reweighting. Hyperparameters change
+    a distribution, so they need one. Conditional hyperparameter functions
+    check what they return when they are traced.
     """
-    if overrides and (simulator.host_settings.mskopt & 64 or simulator.survey.use_simlib_salt2):
-        raise SNANAError("SBI parameter overrides cannot be combined with HOSTLIB USESNPAR "
-                         "or USE_SIMLIB_SALT2 overrides",
-                         function_name="build_sbi_pipeline")
-    for name, value in overrides.items():
-        if name == 'GENMAG_OFF_GLOBAL':
-            if isinstance(value, Mapping) and name not in function_kinds:
-                raise SNANAError("GENMAG_OFF_GLOBAL takes per-event values or the "
-                                 "keyword arguments of a registered sampler",
-                                 function_name="build_sbi_pipeline")
-            continue
-        pop = simulator.model_settings.populations[name]
-        if name in ('AV', 'EBV_HOST') and simulator.host_settings.genav_wv07:
-            raise SNANAError("SBI dust overrides cannot be combined with GENAV_WV07",
+    if ((values or hyperparameters or function_kinds)
+            and (simulator.host_settings.mskopt & 64 or simulator.survey.use_simlib_salt2)):
+        raise SNANAError("SBI inputs cannot be combined with HOSTLIB USESNPAR or "
+                         "USE_SIMLIB_SALT2, which take the parameters from the HOSTLIB "
+                         "or SIMLIB", function_name="build_sbi_pipeline")
+    populations = simulator.model_settings.populations
+    sampled = [*values, *(name for name, kind in function_kinds.items()
+                          if kind in ('samplers', 'conditional_samplers'))]
+    for name in sampled:
+        pop = populations.get(name)
+        if pop is not None and ((pop.genpdf is not None and pop.genpdf.expon_rewgt != 1.)
+                                or any(d.prob_expon_rewgt != 1. for d in pop.distributions)):
+            raise SNANAError(f"{name}: given values and samplers have no density for "
+                             "population reweighting", function_name="build_sbi_pipeline")
+    for name, given in hyperparameters.items():
+        if not has_distribution(simulator, name):
+            raise SNANAError(f"{name} has no distribution to change; give it values or a sampler",
                              function_name="build_sbi_pipeline")
-        if (not isinstance(value, Mapping)
-                or function_kinds.get(name) in ('samplers', 'conditional_samplers')):
-            if ((pop.genpdf is not None and pop.genpdf.expon_rewgt != 1.)
-                    or any(d.prob_expon_rewgt != 1. for d in pop.distributions)):
-                raise SNANAError(f"{name}: custom draws have no density for population reweighting",
-                                 function_name="build_sbi_pipeline")
-            continue
-        if pop.genpdf is not None:
-            raise SNANAError(f"{name} uses a fixed GENPDF map; supply samples or a sampler",
-                             function_name="build_sbi_pipeline")
-        if function_kinds.get(name) == 'conditional_hyperparameters':
-            continue
-        validate_call_hyperparameters(name, pop, value)
+        validate_call_hyperparameters(name, populations[name], given)
 
 
 def validate_call_hyperparameters(name, pop, hyperparameters):

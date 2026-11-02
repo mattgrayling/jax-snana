@@ -19,6 +19,7 @@ import numpy as np
 from jax_snlc_core import logging as log
 from jax_snlc_core.filters import filter_band
 from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.random import event_keys
 from jax_snlc_core.snana_files import MAG_ZEROFLUX, SNANA_NULLFLOAT
 from jax_snlc_core.utils import eval_genpoly, require_precision
 from jax_snlc_sim.atmosphere import compute_atmosphere_for_mask
@@ -34,15 +35,16 @@ from jax_snlc_sim.photometry import (check_crazy_flux, check_finite_flux, simula
 from jax_snlc_sim.inputs import parse_input
 from jax_snlc_sim.lensing import apply_lensdmu_smear
 from jax_snlc_sim.simulation import run_key
-from jax_snlc_sim.sampler import (PREFILTER_REASON_CODES, draw_dust,
+from jax_snlc_sim.sampler import (NO_SBI_INPUTS, PREFILTER_REASON_CODES, draw_dust,
                                   draw_grey_offset, draw_input_checks, draw_input_failures,
-                                  draw_model, draw_placement, prepare_population_functions)
+                                  draw_model, draw_placement, drawn_dust_parameters,
+                                  prepare_population_functions, sbi_value)
 from jax_snlc_sim.selection import (apply_selection_effects, evaluate_selection,
                                     finalize_selection, generated_record, kept_mask)
 from jax_snlc_sim.observations import SIMLIB_EPOCH_KEYS, epoch_layout, keep_events
 from jax_snlc_sim.simulation import LightCurveSimulator, SimulationConfig
-from jax_snlc_sim.population import (HOST_DUST_PARAMETERS, model_spellings,
-                                     validate_genpdf_coverage, validate_population_overrides)
+from jax_snlc_sim.population import (HOST_DUST_PARAMETERS, MAGNITUDE_SHIFTS, model_spellings,
+                                     stream_name, validate_genpdf_coverage, validate_sbi_inputs)
 from jax_snlc_sim.spectra import (compute_sed_true_synmags, compute_spectra_for_mask,
                                   sed_true_epochs)
 from jax_snlc_sim.cutwin import check_generic_cut_names
@@ -111,7 +113,7 @@ def initial_batch_state(simulator, capacity):
 
 @jax.jit(static_argnames=("population_functions",))
 def photometry_stage(simulator, key, start_index, n_events,
-                     host_state, params, template_budget, *, overrides=None,
+                     host_state, params, template_budget, *, sbi_inputs=NO_SBI_INPUTS,
                      population_functions=()):
     """The forward model up to the photometry for one batch, every draw off
     the root ``key``, in SNANA's order (gen_event_driver,
@@ -152,13 +154,13 @@ def photometry_stage(simulator, key, start_index, n_events,
                 simulator, parameters['sim_redshift_cmb'], host_properties)
         return {**parameters, **draw_model(
             simulator, parameters, host_properties,
-            template_budget, key=key, overrides=overrides,
+            template_budget, key=key, sbi_inputs=sbi_inputs,
             population_functions=population_functions)}
 
     def with_dust(parameters, host_properties):
         return {**parameters, **draw_dust(
             simulator, parameters, host_properties, key=key,
-            overrides=overrides, population_functions=population_functions)}
+            sbi_inputs=sbi_inputs, population_functions=population_functions)}
 
     if model_first:
         batch_parameters = with_model(batch_parameters, None)
@@ -206,9 +208,19 @@ def photometry_stage(simulator, key, start_index, n_events,
     batch_parameters = apply_host_snpar_overrides(
         simulator, batch_parameters, host_properties)
     if not supplied:
-        batch_parameters['genmag_off'] = draw_grey_offset(
-            simulator, batch_parameters, host_properties, key=key,
-            overrides=overrides, population_functions=population_functions)
+        # the host mass step and the global offset, as the SBI inputs set
+        # them or as the input file does
+        functions = {name: (kind, function) for name, kind, function in population_functions}
+        global_indices = batch_parameters['sn_global_idx']
+        batch_parameters['gammaDM'] = sbi_value(
+            'gammaDM', sbi_inputs, functions,
+            event_keys(key, stream_name('gammaDM', MAGNITUDE_SHIFTS), global_indices),
+            batch_parameters, lambda: batch_parameters['gammaDM'])
+        batch_parameters['genmag_off'] = sbi_value(
+            'genmag_off', sbi_inputs, functions,
+            event_keys(key, stream_name('genmag_off', MAGNITUDE_SHIFTS), global_indices),
+            batch_parameters,
+            lambda: draw_grey_offset(simulator, batch_parameters, host_properties))
     batch_obs_schedule['phases'] = epoch_phases(batch_obs_schedule,
                                                 batch_parameters)
     apply_random_coord_shift(simulator, batch_parameters,
@@ -275,12 +287,12 @@ def batch_tables(simulator) -> BatchTables:
 
 @jax.jit(static_argnames=("population_functions",))
 def simulate_batch(simulator, key, start_index, n_events, host_state,
-                   params=None, template_budget=None, *, overrides=None,
+                   params=None, template_budget=None, *, sbi_inputs=NO_SBI_INPUTS,
                    population_functions=()):
     """Generate and select a batch, sharing one program across realisations."""
     results, record, host_state = photometry_stage(
         simulator, key, start_index, n_events, host_state, params,
-        template_budget, overrides=overrides, population_functions=population_functions)
+        template_budget, sbi_inputs=sbi_inputs, population_functions=population_functions)
     selection, host_state = selection_stage(
         simulator, results, record, host_state, key, start_index, n_events)
     return results, selection, record, host_state
@@ -1047,27 +1059,25 @@ def apply_selection(simulator, results):
 
 
 @jax.jit(static_argnames=("n_sne", "population_functions"))
-def simulate_surveys(simulator, key, overrides, *, n_sne, population_functions):
+def simulate_surveys(simulator, key, sbi_inputs, *, n_sne, population_functions):
     """The SBI forward model: ``n_sne`` events in batches under one compiled
-    program, with the call's population overrides and the registered
-    functions. Per-event samples are split across the batches; hyperparameters
-    apply to every batch. Returns ``(results, selection)`` for all events."""
+    program, with the call's inputs and the registered functions. The given
+    values are split across the batches; hyperparameters and function
+    arguments apply to every batch. Returns ``(results, selection)`` for all
+    events."""
     batch_size = simulator.batch_size
     n_batches = -(-n_sne // batch_size)
     offsets = jnp.arange(n_batches, dtype=jnp.int32) * batch_size
     n_events = jnp.minimum(n_sne - offsets, batch_size)
-    hyperparameters = {name: value for name, value in overrides.items()
-                       if isinstance(value, Mapping)}
-    samples = {name: value for name, value in overrides.items() if not isinstance(value, Mapping)}
     chunks = jax.tree.map(
         lambda x: x.reshape(n_batches, batch_size, *x.shape[1:]),
-        pad_events(samples, n_sne, n_batches * batch_size))
+        pad_events(sbi_inputs['values'], n_sne, n_batches * batch_size))
 
     def chunk(host_state, xs):
-        start_index, n_events, samples = xs
+        start_index, n_events, values = xs
         results, selection, _, host_state = simulate_batch(
             simulator, key, start_index, n_events, host_state,
-            overrides={**hyperparameters, **samples},
+            sbi_inputs={**sbi_inputs, 'values': values},
             population_functions=population_functions)
         return host_state, (results, selection)
 
@@ -1092,15 +1102,20 @@ def build_sbi_pipeline(inputs=None, *, samplers=None, conditional_samplers=None,
     the pipeline. An already-loaded LightCurveSimulator can also be supplied,
     without setup settings.
 
-    ``params`` maps population names to distribution hyperparameters or
-    exact arrays of ``simulator.n_sne`` values. Omitted populations use their
-    prepared distributions. Model aliases such as THETA and SALT2c are accepted.
+    The quantities a call can set are the population parameters the run
+    draws and the magnitude shifts ``genmag_off`` and ``gammaDM``, named as
+    in ``results['parameters']``; SNANA's spellings, such as SALT2x1 or
+    GENMAG_OFF_GLOBAL, are also accepted. ``params`` maps each to exact
+    arrays of ``simulator.n_sne`` values, to new hyperparameters for its
+    distribution, or to the keyword arguments of its registered function.
+    Given values and samplers replace the input file's draw, including any
+    VARIATION or HOSTLIB weight-map shift.
+
     ``samplers``, ``conditional_samplers`` and ``conditional_hyperparameters``
-    each map a population name to a function, called once per event with
-    that population's ``params`` mapping as keyword arguments. A sampler
-    returns the event's value of a population or of GENMAG_OFF_GLOBAL from the
-    event's random key. A conditional function also receives, after any key, a
-    mapping of the event's values simulated so far, under their names in
+    each map a name to a function, called once per event with its keyword
+    arguments. A sampler returns the event's value from the event's random
+    key. A conditional function also receives, after any key, a mapping of
+    the event's values simulated so far, under their names in
     ``results['parameters']``; a conditional hyperparameter function returns
     the event's hyperparameters for the configured distribution.
 
@@ -1122,23 +1137,24 @@ def build_sbi_pipeline(inputs=None, *, samplers=None, conditional_samplers=None,
         raise SNANAError("SBI cannot compile a SPECID map requiring host-side spectra",
                          function_name="build_sbi_pipeline")
     validate_genpdf_coverage(simulator)
-    populations = simulator.model_settings.populations
     names = {**model_spellings(simulator.model),
              **{alias.lower(): p.key for p in HOST_DUST_PARAMETERS
                 for alias in (p.key, *p.input_names)},
-             "genmag_off_global": "GENMAG_OFF_GLOBAL"}
-    available = {*populations, "GENMAG_OFF_GLOBAL"}
+             **{spelling.lower(): name for name, aliases in MAGNITUDE_SHIFTS.items()
+                for spelling in (name, *aliases)}}
+    settable = {*simulator.model.drawn_parameters(simulator.model_settings.populations),
+                *drawn_dust_parameters(simulator), *MAGNITUDE_SHIFTS}
 
     def resolve_names(parameters):
         resolved = {}
         for given, value in (parameters or {}).items():
             name = names.get(given.lower())
-            if name not in available:
-                raise SNANAError(f"Unknown or unconfigured population {given!r}; "
-                                 f"choose from {sorted(available)}",
+            if name not in settable:
+                raise SNANAError(f"{given!r} cannot be set in this simulation; "
+                                 f"choose from {sorted(settable)}",
                                  function_name="build_sbi_pipeline")
             if name in resolved:
-                raise SNANAError(f"Parameter {name} was supplied more than once",
+                raise SNANAError(f"{name} was given more than once",
                                  function_name="build_sbi_pipeline")
             resolved[name] = value
         return resolved
@@ -1151,21 +1167,22 @@ def build_sbi_pipeline(inputs=None, *, samplers=None, conditional_samplers=None,
 
     def pipeline_fn(key, params=None):
         n_sne = simulator.n_sne
-        overrides = resolve_names(params)
-        for name, value in overrides.items():
-            if isinstance(value, Mapping):
-                overrides[name] = dict(value)
-            else:
-                value = jnp.asarray(value)
-                if value.shape != (n_sne,):
+        values, hyperparameters, arguments = {}, {}, {}
+        for name, given in resolve_names(params).items():
+            if not isinstance(given, Mapping):
+                values[name] = jnp.asarray(given)
+                if values[name].shape != (n_sne,):
                     raise SNANAError(f"{name} needs one sample per event: expected {(n_sne,)}, "
-                                     f"got {value.shape}",
+                                     f"got {values[name].shape}",
                                      function_name="build_sbi_pipeline")
-                overrides[name] = value
-        for name in function_kinds:
-            overrides.setdefault(name, {})
-        validate_population_overrides(simulator, overrides, function_kinds)
-        return simulate_surveys(simulator, key, overrides,
+            elif name in function_kinds:
+                arguments[name] = dict(given)
+            else:
+                hyperparameters[name] = dict(given)
+        validate_sbi_inputs(simulator, values, hyperparameters, function_kinds)
+        sbi_inputs = {'values': values, 'hyperparameters': hyperparameters,
+                      'arguments': arguments}
+        return simulate_surveys(simulator, key, sbi_inputs,
                                 n_sne=n_sne, population_functions=population_functions)
 
     pipeline_fn.filter_names = list(simulator.filter_names)

@@ -844,13 +844,10 @@ def precompute_restframe_filters(simulator, redshifts,
         mw_att_all)
 
 
-def grey_offsets(parameters, model, non1a_templates):
+def grey_offsets(parameters, model):
     """SN brightness offsets, grouped by the photometric validity checks."""
     grey_shift = jnp.asarray(parameters['genmag_off'])
-    if non1a_templates:
-        grey_shift = grey_shift + model.genmag_off_non1a
-    host_shift = jnp.asarray(
-        parameters.get('snmagshift', jnp.zeros_like(grey_shift)))
+    host_shift = jnp.asarray(parameters['gammaDM'])
     magnitude_shift = (parameters['magoff'] + parameters['magsmear']
                        + parameters['lensdmu'] + parameters['mushift']
                        + model.mag_offset)
@@ -942,15 +939,12 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
             jnp.asarray(sn_parameters['_gensmear_randoms']),
             simulator.wavelength_grid)
 
-    model = simulator.model
-
     pair_fluxcal = simulate_photometry(
         simulator, sed_params, mjds, filter_indices, mask,
         restframe_filters, smear_frac)
 
-    # grey offsets: GENMAG_OFF_GLOBAL (snlc_sim.c:12941) and GENMAG_OFF_NON1A (:14460)
-    grey, host_shift, magnitude_shift = grey_offsets(
-        sn_parameters, simulator.model_settings, model.non1a_templates)
+    # the grey offset GENMAG_OFF_GLOBAL (snlc_sim.c:12941)
+    grey, host_shift, magnitude_shift = grey_offsets(sn_parameters, simulator.model_settings)
     off_frac = jnp.power(10.0, -0.4 * grey)[:, None]
     pair_fluxcal = pair_fluxcal * off_frac
 
@@ -966,20 +960,19 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
     # Keep padding finite through the offsets; outputs are masked below.
     pair_fluxcal = jnp.where(mask, pair_fluxcal, 0.0)
 
-    # HOSTLIB SNMAGSHIFT: genmag += shift (snlc_sim.c:8490)
-    if 'snmagshift' in sn_parameters:
-        host_shift = host_shift[:, None]
-        pair_magnitudes = jnp.where(
-            pair_magnitudes < 90,
-            pair_magnitudes + host_shift,
-            pair_magnitudes
-        )
-        flux_scale = jnp.power(10.0, -0.4 * host_shift)
-        pair_fluxcal = jnp.where(
-            pair_fluxcal != 0,
-            pair_fluxcal * flux_scale,
-            pair_fluxcal
-        )
+    # the host mass step: genmag += SALT2gammaDM (snlc_sim.c:8490)
+    host_shift = host_shift[:, None]
+    pair_magnitudes = jnp.where(
+        pair_magnitudes < 90,
+        pair_magnitudes + host_shift,
+        pair_magnitudes
+    )
+    flux_scale = jnp.power(10.0, -0.4 * host_shift)
+    pair_fluxcal = jnp.where(
+        pair_fluxcal != 0,
+        pair_fluxcal * flux_scale,
+        pair_fluxcal
+    )
 
     # MAGOFF + MAGSMEAR + MAG_OFFSET_GENPDF (snlc_sim.c:8491)
     genmag_off_model = simulator.model_settings.genmag_off_model

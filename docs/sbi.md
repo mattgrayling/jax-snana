@@ -33,16 +33,20 @@ distribution changed to peak at 0.5 with a width of 0.4 on each side. Without
 `n_sne`, the number of events set by the input file is used.
 
 `params` maps a parameter name, such as `theta` for BayeSN or `c` for SALT, to
-new hyperparameters for its distribution, such as its peak and width. They are
-the fields listed with their input-file keys in
+new hyperparameters for its distribution, such as its peak and width. Names are
+those in `results["parameters"]`, and SNANA's spellings, such as `THETA` or
+`SALT2c`, are also accepted. The hyperparameters are the fields listed with
+their input-file keys in
 {ref}`Population distributions <sim-population-settings>`, except `peakrange`
 and `ngrid`, which cannot be changed. Hyperparameters you leave out keep their
 input-file values, and any `VARIATION` in the input file still applies on top
 of the new ones.
 
 If you already have samples, pass one value per event instead of
-hyperparameters, for a population parameter or for the magnitude offset
-`GENMAG_OFF_GLOBAL`. The values are used as given:
+hyperparameters, for a population parameter, the global magnitude offset
+`genmag_off` (SNANA's `GENMAG_OFF_GLOBAL`) or the host mass step `gammaDM`. The
+values are used as given, in place of the input file's draw, including any
+`VARIATION` or HOSTLIB weight-map shift:
 
 ```python
 theta = jnp.linspace(-1.0, 1.0, n_sne)
@@ -148,19 +152,19 @@ def mass_step(key, event, step):
 simulate = sim_run.build_sbi_pipeline(
     "examples/quickstart/sim_host.input", n_sne=n_sne,
     conditional_hyperparameters={"x1": stretch_by_mass},
-    conditional_samplers={"GENMAG_OFF_GLOBAL": mass_step},
+    conditional_samplers={"gammaDM": mass_step},
 )
 results, selection = simulate(jax.random.PRNGKey(3), params={
     "x1": {"slope": -0.3},
-    "GENMAG_OFF_GLOBAL": {"step": 0.06},
+    "gammaDM": {"step": 0.06},
 })
 ```
 
-The magnitude offset `GENMAG_OFF_GLOBAL` has no input-file distribution, so it
-takes either one value per event or a sampler.
+The mass step `gammaDM` and the global offset `genmag_off` have no input-file
+distribution, so they take either one value per event or a sampler.
 
-This conditional sampler draws the SALT2 colour with a scatter of 0.1 about a mean that
-depends on x1 and redshift:
+This conditional sampler draws the SALT2 colour with a scatter of 0.1 about a
+mean that depends on x1 and redshift:
 
 ```python
 def draw_colour(key, event, slope):

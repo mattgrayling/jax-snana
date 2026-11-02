@@ -296,27 +296,30 @@ def test_zero_width_population_plateau(tmp_path):
     assert alpha.std() > .015
 
 
-def test_magnitude_offset_gradients(tmp_path):
-    """A magnitude offset scales every flux by 10^(-0.4 offset), with the
-    matching gradient."""
+@pytest.mark.parametrize('shift, column', [('GENMAG_OFF_GLOBAL', 'genmag_off'),
+                                           ('gammaDM', 'gammaDM')])
+def test_magnitude_shift_gradients(tmp_path, shift, column):
+    """A magnitude shift scales every flux by 10^(-0.4 shift), with the
+    matching gradient, and is recorded with the event's parameters."""
     inp = tmp_path / "input.input"
     _write_input(inp)
     simulator = sim_run.prepare(str(inp), n_sne=32, batch_size=16)
     pipeline_fn = sim_run.build_sbi_pipeline(
-        simulator, samplers={'GENMAG_OFF_GLOBAL': lambda key, offset: offset})
+        simulator, samplers={shift: lambda key, offset: offset})
     key = jax.random.PRNGKey(0)
 
-    def fluxes(offset):
-        params = {'GENMAG_OFF_GLOBAL': {'offset': offset}}
-        return pipeline_fn(key, params=params)[0]['fluxcals']
+    def results(offset):
+        return pipeline_fn(key, params={shift: {'offset': offset}})[0]
 
-    plain = np.asarray(fluxes(0.0))
+    plain = np.asarray(results(0.0)['fluxcals'])
     index = np.unravel_index(np.argmax(np.where(np.isfinite(plain), plain, -np.inf)),
                              plain.shape)
-    value, gradient = jax.jit(jax.value_and_grad(lambda o: fluxes(o)[index]))(0.03)
+    value, gradient = jax.jit(jax.value_and_grad(
+        lambda o: results(o)['fluxcals'][index]))(0.03)
     expected = plain[index] * 10.0 ** (-0.4 * 0.03)
     np.testing.assert_allclose(value, expected, rtol=1e-5)
     np.testing.assert_allclose(gradient, -0.4 * np.log(10) * expected, rtol=1e-5)
+    np.testing.assert_allclose(results(0.03)['parameters'][column], 0.03)
 
 
 @pytest.fixture(scope='module')
@@ -395,13 +398,13 @@ def test_custom_sampler_and_exact_samples_are_batch_invariant(simulator):
 
 
 @pytest.mark.parametrize('params, message', [
-    ({'SIM_THETA': jnp.zeros(7)}, 'Unknown or unconfigured population'),
+    ({'SIM_THETA': jnp.zeros(7)}, 'cannot be set in this simulation'),
     ({'c': jnp.zeros(6)}, 'one sample per event'),
     ({'c': jnp.zeros(8)}, 'one sample per event'),
     ({'c': {'ngrid': 10}}, 'cannot be changed'),
     ({'c': {'sigma': .1}}, 'needs shape'),
     ({'c': jnp.zeros(7), 'SALT2c': jnp.zeros(7)}, 'more than once'),
-    ({'GENMAG_OFF_GLOBAL': {'step': .1}}, 'per-event values or the keyword arguments'),
+    ({'GENMAG_OFF_GLOBAL': {'step': .1}}, 'has no distribution to change'),
 ])
 def test_invalid_parameter_forms_are_named(simulator, params, message):
     """Reject ambiguous names, wrong lengths and structural changes before compiling."""
@@ -411,9 +414,10 @@ def test_invalid_parameter_forms_are_named(simulator, params, message):
 
 @pytest.mark.parametrize('functions, message', [
     ({'samplers': {'c': lambda key: 0.},
-      'conditional_hyperparameters': {'c': lambda event: {}}}, 'Multiple population functions'),
+      'conditional_hyperparameters': {'c': lambda event: {}}}, 'More than one function'),
     ({'conditional_hyperparameters': {'GENMAG_OFF_GLOBAL': lambda event: {}}},
      'takes a sampler'),
+    ({'conditional_hyperparameters': {'gammaDM': lambda event: {}}}, 'takes a sampler'),
 ])
 def test_invalid_population_functions_are_named(simulator, functions, message):
     """Conflicting functions are refused when building."""
@@ -421,12 +425,23 @@ def test_invalid_population_functions_are_named(simulator, functions, message):
         sim_run.build_sbi_pipeline(simulator, **functions)
 
 
-def test_per_event_magnitude_offsets(simulator):
-    """GENMAG_OFF_GLOBAL takes one value per event without a registered sampler."""
-    offsets = jnp.linspace(-.1, .1, simulator.n_sne)
-    results, _ = sim_run.build_sbi_pipeline(simulator)(
-        jax.random.PRNGKey(0), params={'GENMAG_OFF_GLOBAL': offsets})
-    np.testing.assert_allclose(results['parameters']['genmag_off'], offsets)
+def test_given_shifts_replace_the_input(tmp_path):
+    """Given values replace the input file's global offset, including its
+    redshift variation, and set the mass step, under SNANA's spellings."""
+    path = tmp_path / 'sim.input'
+    _write_input(path)
+    with path.open('a') as stream:
+        stream.write("\nGENMAG_OFF_GLOBAL: 0.2\nZVARIATION_POLY: GENMAG_OFF_GLOBAL 0.0,0.1\n")
+    simulate = sim_run.build_sbi_pipeline(str(path), n_sne=4, batch_size=2)
+    key = jax.random.PRNGKey(0)
+    plain = simulate(key)[0]['parameters']
+    np.testing.assert_allclose(plain['genmag_off'], .2 + .1 * plain['sim_redshift_cmb'],
+                               rtol=1e-6)
+    np.testing.assert_array_equal(plain['gammaDM'], 0.)
+    offsets, steps = jnp.linspace(-.1, .1, 4), jnp.linspace(0., .06, 4)
+    given = simulate(key, params={'GENMAG_OFF_GLOBAL': offsets, 'SNMAGSHIFT': steps})[0]
+    np.testing.assert_allclose(given['parameters']['genmag_off'], offsets)
+    np.testing.assert_allclose(given['parameters']['gammaDM'], steps)
 
 
 def test_conditional_sampler_reads_earlier_draws_and_redshift(simulator):
@@ -550,20 +565,23 @@ def test_conditional_functions_read_the_event(tmp_path, snana_fixture):
     def draw_av(key, event, scale):
         return scale * event['rv']
 
-    def magnitude(key, event, step, slope):
-        return (jnp.where(event['host_LOGMASS'] > 10., -step, 0.)
-                + slope * event['sim_redshift_cmb'] + event['rv'])
+    def mass_step(key, event, step):
+        return jnp.where(event['host_LOGMASS'] > 10., -step, 0.)
+
+    def magnitude(key, event, slope):
+        return slope * event['sim_redshift_cmb'] + event['rv']
 
     pipeline = sim_run.build_sbi_pipeline(
         str(path), n_sne=8, batch_size=3,
         conditional_hyperparameters={'RV': rv_hyperparameters},
-        conditional_samplers={'THETA': draw_theta, 'AV': draw_av,
+        conditional_samplers={'THETA': draw_theta, 'AV': draw_av, 'gammaDM': mass_step,
                               'GENMAG_OFF_GLOBAL': magnitude})
     parameters = pipeline(jax.random.PRNGKey(23), params={
         'RV': {'low': 2., 'high': 3.},
         'THETA': {'mean': .1, 'slope': .2},
         'AV': {'scale': .1},
-        'GENMAG_OFF_GLOBAL': {'step': .1, 'slope': .2}})[0]['parameters']
+        'gammaDM': {'step': .1},
+        'GENMAG_OFF_GLOBAL': {'slope': .2}})[0]['parameters']
     mass = np.asarray(parameters['host_LOGMASS'])
     redshift = np.asarray(parameters['sim_redshift_cmb'])
     rv = np.where(mass > 10., 3., 2.)
@@ -571,8 +589,8 @@ def test_conditional_functions_read_the_event(tmp_path, snana_fixture):
     np.testing.assert_allclose(parameters['rv'], rv, rtol=1e-6)
     np.testing.assert_allclose(parameters['av'], .1 * rv, rtol=1e-6)
     np.testing.assert_allclose(parameters['theta'], .1 + .2 * (mass - 10.), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(parameters['genmag_off'],
-                               np.where(mass > 10., -.1, 0.) + .2 * redshift + rv,
+    np.testing.assert_allclose(parameters['gammaDM'], np.where(mass > 10., -.1, 0.))
+    np.testing.assert_allclose(parameters['genmag_off'], .2 * redshift + rv,
                                rtol=1e-5, atol=1e-6)
 
 
