@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from jax_pipeline import Covariance
+from jax_pipeline.pippin import _cov_extra_options
 from jax_snlc_core.snana_files import FitresTable, dense_factorized_covariance
 
 
@@ -148,13 +149,14 @@ def test_renormalised_velocity_subtraction_matches_file_interface(tmp_path, mode
 @pytest.mark.parametrize("flags", ["--write_mask_cov 7 --write_format_cov text",
                                   "--write_mask_cov 7 --label_cov_rows"])
 def test_pippin_covariance_writer_flags_roundtrip(tmp_path, flags):
-    from jax_pipeline.pippin import _cov_extra_options
     frame = pd.DataFrame({"CID": ["A", "B"], "IDSURVEY": [1, 1], "FIELD": ["X", "X"],
                           "zHD": [0.1, 0.2], "zHEL": [0.1, 0.2],
                           "MUMODEL": [38., 40.], "MU": [38., 40.], "MUERR": [0.1, 0.2]})
     table = FitresTable(frame, list(frame), {"ISDATA_REAL": "1"})
     source = SimpleNamespace(name="distances", systematics=lambda: ((), ()), grid_cells=lambda: [(0, 0)])
-    stage = Covariance("cov", distances=source, mode="unbinned", **_cov_extra_options("C", flags))
+    writer_keys, label_cov_rows, mxsize_test_posdef = _cov_extra_options("C", flags)
+    stage = Covariance("cov", distances=source, mode="unbinned", overrides=writer_keys,
+                       label_cov_rows=label_cov_rows, mxsize_test_posdef=mxsize_test_posdef)
     result = stage.run({"distances": {"nominal": {"FITRES": table, "M0DIF": table}}}, tmp_path)
     np.testing.assert_allclose(result["covariances"]["ALL"]["matrix"], np.diag([100., 25.]), rtol=1e-6)
     assert len(list(tmp_path.glob("*.gz"))) == 3

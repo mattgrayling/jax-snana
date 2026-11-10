@@ -20,7 +20,7 @@ enter through :class:`Data`, and fitted tables made elsewhere through
 name, ``inputs()`` and ``run()``, and is used like the built-in ones. Running the same graph
 again loads every stage whose inputs have not changed.
 
-Tables returned by Fit, Classify and BBC are
+Tables returned by Fit, Classify, Merge and BBC are
 :class:`~jax_snlc_core.snana_files.FitresTable` objects, with the rows in ``df``
 and the ``# KEY: value`` header as strings in ``meta``. Covariance returns its
 Hubble diagram as a pandas DataFrame and its covariance entries as dictionaries
@@ -45,12 +45,12 @@ records what was loaded and what was rerun.
 
 from jax_snlc_core.utils import configure_precision
 
-from .classify import Classify, Train
+from .classify import Classify, Merge, Train, register_classifier
 from .run import cosmology_summary, run
 from .stages import BBC, Cosmology, Covariance, Data, Fit, Sim, Stage
 
 __all__ = [
     "run", "cosmology_summary", "configure_precision", "Stage",
-    "Data", "Sim", "Fit", "Train", "Classify", "BBC", "Covariance",
-    "Cosmology",
+    "Data", "Sim", "Fit", "Train", "Classify", "Merge", "BBC", "Covariance",
+    "Cosmology", "register_classifier",
 ]

@@ -159,6 +159,15 @@ def test_warns_on_unrecognized_key(tmp_path, caplog):
     assert "GENMAG_TYPOO" in caplog.text
 
 
+def test_key_snana_never_uses_is_ignored(tmp_path, caplog):
+    """SNANA reads HOSTLIB_GENRANGE_NSIGZ and never applies its cut, so jax
+    accepts it and logs that it is ignored."""
+    with caplog.at_level(logging.INFO, logger="jax_snlc_sim.inputs"):
+        _parse_with_extra(tmp_path, "HOSTLIB_GENRANGE_NSIGZ: -3.0 3.0\n")
+    assert "HOSTLIB_GENRANGE_NSIGZ is ignored" in caplog.text
+    assert "Unrecognized SNANA input key" not in caplog.text
+
+
 @pytest.mark.parametrize("line", [
     # SNANA aborts on these too (parse_input_OBSOLETE)
     "EXTINC_MILKYWAY: 1", "RVMW: 3.1", "GEN_SNDATA_SIM: 1", "SPECTYPE: 1",
@@ -167,7 +176,7 @@ def test_warns_on_unrecognized_key(tmp_path, caplog):
     "HOSTNOISE_FILE: some.DAT", "GENMODEL_ERRSCALE: 0.1", "FUDGEOPT_FLUXERR: 1",
     # SNANA parses these and never reads them back
     "EFFERR_STOPGEN: 0.5", "USE_SIMLIB_MAGOBS: 1", "GENRANGE_TOBS: -5.0 5.0",
-    "HOSTLIB_GENRANGE_NSIGZ: -3.0 3.0", "STRETCH_TEMPLATE_FILE: some.dat",
+    "STRETCH_TEMPLATE_FILE: some.dat",
     "GENSMEAR_RANFLAT_FIX: 0.5", "GENSMEAR_RANFlat_FIX: 0.5",
     # command-line only; SNANA aborts on it in an input file
     "HOSTLIB_MSKOPT_ADD: 8",

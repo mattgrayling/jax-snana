@@ -2,12 +2,13 @@
 
 The BEAMS fixture's contaminated table carries a fabricated probability and no
 truth, so the tests build their own contaminated table from the fixture's
-Type Ia data and its core-collapse prior sample, both of which carry
-SIM_TEMPLATE_INDEX. The toy classifier then has truth to read, and every
+Type Ia data and its core-collapse prior sample. The fixtures have no TYPE
+column, so the tests add one, as SNANA's fit writes it, from
+SIM_TEMPLATE_INDEX. The Perfect classifier then has truth to read, and every
 promise of the classification path is pinned: the column values, the join
 onto every fitted table, the distance fit reading it, a cut on it reaching
-the bias-correction sample, a MUOPT swapping classifiers, training handing a
-model to classifying, and a second run loading it all.
+the bias-correction sample, a MUOPT choosing another merged classifier,
+training handing a model to classifying, and a second run loading it all.
 
 SuperNNova runs where it is installed: trained on a jax simulation of Type Ia
 and core-collapse events, it must read jax's files as it reads SNANA's, and
@@ -17,6 +18,7 @@ its probabilities must carry through to the distance fit.
 import importlib.util
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +28,7 @@ import yaml
 from astropy.io import fits
 from astropy.table import Table
 
-from jax_pipeline import BBC, Classify, Fit, Sim, Train, run
+from jax_pipeline import BBC, Classify, Fit, Merge, Sim, Train, run
 from jax_pipeline.classify import Perfect
 from jax_pipeline.supernnova import SuperNNova
 from jax_salt2mu import parse_bbc_input, run_bbc_fit
@@ -66,24 +68,47 @@ _KEYS = {"nzbin": 10, "zmin": 0.1, "zmax": 1.0, "u1": 1, "u2": 1,
 
 
 
+#: the types the tables are given: Type Ia, and core collapse
+_IA_TYPE, _CC_TYPE = 1, 20
+
+
+def _typed(df: pd.DataFrame) -> pd.DataFrame:
+    """The table with TYPE, the event type SNANA's fit writes, made from the
+    simulation truth: Type Ia for SIM_TEMPLATE_INDEX 0, core collapse otherwise."""
+    return df.assign(TYPE=np.where(df["SIM_TEMPLATE_INDEX"].astype(int) == 0, _IA_TYPE, _CC_TYPE))
+
+
+def _write_fitres(df: pd.DataFrame, path: Path) -> Path:
+    """The table written to ``path`` as a FITRES file."""
+    columns = {name: df[name].to_numpy() for name in df}
+    write_varnames_table(str(path), list(df), columns, fmt={})
+    return path
+
+
 @pytest.fixture(scope="module")
 def contaminated(tmp_path_factory):
     """The Ia data with the core-collapse sample mixed in, CIDs kept apart,
-    over the columns both carry."""
+    over the columns both carry, with their types."""
     ia = read_fitres(_DATA).df
     cc = read_fitres(_CCPRIOR).df
     cc["CID"] = (cc["CID"].astype(int) + 100_000).astype(str)
     mixed = pd.concat([ia[cc.columns], cc], ignore_index=True)
-    path = tmp_path_factory.mktemp("contaminated") / "CONTAM.FITRES"
-    write_varnames_table(str(path), list(mixed),
-                         {name: mixed[name].to_numpy() for name in mixed}, fmt={})
-    return path
+    return _write_fitres(_typed(mixed), tmp_path_factory.mktemp("contaminated") / "CONTAM.FITRES")
+
+
+@pytest.fixture(scope="module")
+def typed_corrections(tmp_path_factory):
+    """The bias-correction and core-collapse samples with their types, so
+    Perfect can classify them too."""
+    directory = tmp_path_factory.mktemp("typed")
+    biascor = _write_fitres(_typed(read_fitres(_BIASCOR).df), directory / "biascor.FITRES")
+    ccprior = _write_fitres(_typed(read_fitres(_CCPRIOR).df), directory / "ccprior.FITRES")
+    return {"biascor": biascor, "ccprior": ccprior}
 
 
 def _with_truth_column(table, prob_ia, prob_cc):
     """The classifier's column added by hand, for a direct fit to compare to."""
-    values = np.where(table.df["SIM_TEMPLATE_INDEX"].astype(int) == 0, prob_ia, prob_cc)
-    table.df[_COLUMN] = values
+    table.df[_COLUMN] = np.where(table.df["TYPE"].astype(int) == _IA_TYPE, prob_ia, prob_cc)
     return table
 
 
@@ -91,12 +116,13 @@ def _with_truth_column(table, prob_ia, prob_cc):
                                            (0.99999, 1.234567890123456e-8)])
 def test_classification_probabilities(contaminated, tmp_path, prob_ia, prob_cc):
     fitted = Fit("fitted", fitres=contaminated)
-    classified = Classify("classified", Perfect(prob_ia=prob_ia, prob_cc=prob_cc), fit=fitted)
+    classified = Classify("classified", Perfect(ia_types=(_IA_TYPE,), prob_ia=prob_ia, prob_cc=prob_cc),
+                          fit=fitted)
 
     results = run(classified, outdir=tmp_path)
     df = results["classified"][_NOMINAL].df
 
-    truth = df["SIM_TEMPLATE_INDEX"].astype(int) == 0
+    truth = df["TYPE"].astype(int) == _IA_TYPE
     assert truth.any() and (~truth).any()
     np.testing.assert_array_equal(df[_COLUMN], np.where(truth, prob_ia, prob_cc))
     assert (tmp_path / "classified" / "predictions.csv").is_file()
@@ -107,7 +133,8 @@ def test_the_distance_fit_reads_the_joined_column(contaminated, tmp_path):
     """A BEAMS fit through the pipeline equals one on tables carrying the same
     column by hand, so the column reached the distance fit."""
     fitted = Fit("fitted", fitres=contaminated)
-    classified = Classify("classified", Perfect(prob_ia=0.9, prob_cc=0.1), fit=fitted)
+    classified = Classify("classified", Perfect(ia_types=(_IA_TYPE,), prob_ia=0.9, prob_cc=0.1),
+                          fit=fitted)
     bbc = BBC("distances", data=classified, biascor=Fit("biascor", fitres=_BIASCOR),
               ccprior=Fit("ccprior", fitres=_CCPRIOR), overrides=_KEYS)
 
@@ -123,54 +150,84 @@ def test_the_distance_fit_reads_the_joined_column(contaminated, tmp_path):
                                   read_fitres(str(tmp_path / "direct.M0DIF")).df["MUDIF"])
 
 
-def test_a_cut_on_the_column_reaches_every_table(contaminated, tmp_path):
+def test_a_cut_on_the_column_reaches_every_table(contaminated, typed_corrections, tmp_path):
     """SALT2mu applies a CUTWIN to the bias-correction sample too, so that
     sample must carry the column; classified on both, the cut runs and
-    removes the contaminants."""
+    removes the contaminants. A cut on varname_pIa cuts on that column
+    (SALT2mu.c:8352-8355)."""
     fitted = Fit("fitted", fitres=contaminated)
-    toy = Perfect(prob_ia=0.9, prob_cc=0.1)
-    data = Classify("classified", toy, fit=fitted)
-    biascor = Classify("biascor_classified", toy, fit=Fit("biascor", fitres=_BIASCOR))
-    ccprior = Classify("ccprior_classified", toy, fit=Fit("ccprior", fitres=_CCPRIOR))
+    perfect = Perfect(ia_types=(_IA_TYPE,), prob_ia=0.9, prob_cc=0.1)
+    data = Classify("classified", perfect, fit=fitted)
+    biascor = Classify("biascor_classified", perfect, fit=Fit("biascor", fitres=typed_corrections["biascor"]))
+    ccprior = Classify("ccprior_classified", perfect, fit=Fit("ccprior", fitres=typed_corrections["ccprior"]))
     cut = BBC("cut", data=data, biascor=biascor, ccprior=ccprior,
               overrides={**_KEYS, f"CUTWIN {_COLUMN}": "0.5 1.0"})
+    aliased = BBC("aliased", data=data, biascor=biascor, ccprior=ccprior,
+                  overrides={**_KEYS, "CUTWIN varname_pIa": "0.5 1.0"})
     uncut = BBC("uncut", data=data, biascor=biascor, ccprior=ccprior, overrides=_KEYS)
 
-    results = run(cut, uncut, outdir=tmp_path)
+    results = run(cut, aliased, uncut, outdir=tmp_path)
 
     def nfit(name):
         return int(results[name][_NOMINAL]["M0DIF"].df["NFIT"].sum())
 
     assert nfit("cut") < nfit("uncut")
+    assert nfit("aliased") == nfit("cut")
 
 
-def test_a_muopt_swaps_the_classifier(contaminated, tmp_path):
+def test_a_muopt_chooses_another_merged_classifier(contaminated, tmp_path):
+    """A merge of two classifications of one fit carries both columns, so a
+    MUOPT chooses the other classifier with varname_pIa alone, and fits the
+    distances that classifier gives on its own."""
     fitted = Fit("fitted", fitres=contaminated)
-    sharp = Classify("sharp", Perfect(prob_ia=0.99, prob_cc=0.01), fit=fitted)
-    vague = Classify("vague", Perfect(prob_ia=0.6, prob_cc=0.4), fit=fitted)
-    bbc = BBC("distances", data=sharp, biascor=Fit("biascor", fitres=_BIASCOR),
-              ccprior=Fit("ccprior", fitres=_CCPRIOR), overrides=_KEYS,
-              muopts={"vague": {"datafile": vague}})
+    sharp = Classify("sharp", Perfect(ia_types=(_IA_TYPE,), prob_ia=0.99, prob_cc=0.01,
+                                      column="PROB_SHARP"), fit=fitted)
+    vague = Classify("vague", Perfect(ia_types=(_IA_TYPE,), prob_ia=0.6, prob_cc=0.4,
+                                      column="PROB_VAGUE"), fit=fitted)
+    biascor = Fit("biascor", fitres=_BIASCOR)
+    ccprior = Fit("ccprior", fitres=_CCPRIOR)
+    merged = BBC("merged", data=Merge("merge", [sharp, vague]), biascor=biascor, ccprior=ccprior,
+                 overrides={**_KEYS, "varname_pIa": "PROB_SHARP"},
+                 muopts={"vague": {"varname_pIa": "PROB_VAGUE"}})
+    alone = BBC("alone", data=vague, biascor=biascor, ccprior=ccprior,
+                overrides={**_KEYS, "varname_pIa": "PROB_VAGUE"})
 
-    results = run(bbc, outdir=tmp_path)
-    grid = results["distances"]
+    results = run(merged, alone, outdir=tmp_path)
 
-    assert set(bbc.inputs()) == {"data:sharp", "data:vague", "biascor:biascor", "ccprior:ccprior"}
-    assert not np.array_equal(grid["vague"]["M0DIF"].df["MUDIF"],
-                              grid[_NOMINAL]["M0DIF"].df["MUDIF"])
+    np.testing.assert_array_equal(results["merged"]["vague"]["M0DIF"].df["MUDIF"],
+                                  results["alone"][_NOMINAL]["M0DIF"].df["MUDIF"])
+    assert not np.array_equal(results["merged"]["vague"]["M0DIF"].df["MUDIF"],
+                              results["merged"][_NOMINAL]["M0DIF"].df["MUDIF"])
+
+
+@dataclass(frozen=True)
+class _ConstantClassifier:
+    """Trains by saving one probability, which it then gives every event."""
+
+    probability: float
+    column: str = _COLUMN
+
+    def train(self, fit, photometry, outdir) -> Path:
+        model = Path(outdir) / "constant.model"
+        model.write_text(str(self.probability))
+        return model
+
+    def predict(self, fit, photometry, model) -> pd.Series:
+        return pd.Series(float(Path(model).read_text()),
+                         index=fit.df["CID"].astype(str), name=self.column)
 
 
 def test_training_hands_its_model_to_the_classifier(contaminated, tmp_path):
     """The model a training stage wrote is what the classifier uses."""
     fitted = Fit("fitted", fitres=contaminated)
-    trained = Train("trained", Perfect(prob_ia=0.7, prob_cc=0.3), fit=fitted)
-    classified = Classify("classified", Perfect(), fit=fitted, model=trained)
+    trained = Train("trained", _ConstantClassifier(0.7), fit=fitted)
+    classified = Classify("classified", _ConstantClassifier(0.0), fit=fitted, model=trained)
 
     results = run(classified, outdir=tmp_path)
     df = results["classified"][_NOMINAL].df
 
-    assert results["trained"] == tmp_path / "trained" / "perfect.model"
-    assert set(df[_COLUMN].unique()) == {0.7, 0.3}
+    assert results["trained"] == tmp_path / "trained" / "constant.model"
+    assert set(df[_COLUMN].unique()) == {0.7}
 
 
 def test_predictions_made_elsewhere_are_joined_as_classify_joins_them(contaminated,
@@ -193,7 +250,8 @@ def test_predictions_made_elsewhere_are_joined_as_classify_joins_them(contaminat
 
 def test_a_second_run_loads_the_predictions(contaminated, tmp_path):
     fitted = Fit("fitted", fitres=contaminated)
-    classified = Classify("classified", Perfect(prob_ia=0.99999, prob_cc=1e-8), fit=fitted)
+    classified = Classify("classified", Perfect(ia_types=(_IA_TYPE,), prob_ia=0.99999, prob_cc=1e-8),
+                          fit=fitted)
 
     once = run(classified, outdir=tmp_path)
     again = run(classified, outdir=tmp_path)
@@ -431,20 +489,47 @@ def test_external_predictions_preserve_padded_cids(tmp_path):
         np.testing.assert_allclose(result["PROB_IA"], [0.95, 0.25, 0.1])
 
 
-def test_replacing_predictions_keeps_column_names_unique(tmp_path):
-    """Replacing a probability and adding another preserves metadata on run and reload."""
+def test_predictions_add_columns_the_fit_lacks(tmp_path):
+    """Imported predictions add their columns, kept on run and reload; a
+    column the fitted table already has is refused."""
     fitted = tmp_path / 'input.FITRES'
     fitted.write_text('VARNAMES: CID PROB_IA\nSN: 1 .2\nSN: 2 .3\n')
     predictions = tmp_path / 'predictions.csv'
-    predictions.write_text('CID,PROB_IA,PROB_OTHER\n1,.9,.1\n')
+    predictions.write_text('CID,PROB_OTHER\n1,.1\n')
     stage = Classify('classified', fit=Fit('fit', fitres=fitted), predictions=predictions)
     for _ in range(2):
         table = run(stage, outdir=tmp_path / 'run')['classified'][_NOMINAL]
         assert table.varnames == ['CID', 'PROB_IA', 'PROB_OTHER']
         assert table.varnames_by_file == [table.varnames]
         assert list(table.df.columns) == table.varnames
-        np.testing.assert_allclose(table.df['PROB_IA'], [.9, 0.])
+        np.testing.assert_allclose(table.df['PROB_IA'], [.2, .3])
         np.testing.assert_allclose(table.df['PROB_OTHER'], [.1, 0.])
+    predictions.write_text('CID,PROB_IA\n1,.9\n')
+    with pytest.raises(SNANAError, match=r"already has \['PROB_IA'\]"):
+        run(stage, outdir=tmp_path / 'replaced')
+
+
+def test_a_merge_joins_each_classifications_columns(tmp_path):
+    """A merge gives one fit's tables the columns of each of its
+    classifications, and refuses a classification of another fit."""
+    fitres = tmp_path / 'fit.FITRES'
+    fitres.write_text('VARNAMES: CID zHD\nSN: 10 0.1\nSN: 11 0.2\n')
+    first_predictions = tmp_path / 'first.csv'
+    first_predictions.write_text('CID,PROB_A\n10,0.7\n')
+    second_predictions = tmp_path / 'second.csv'
+    second_predictions.write_text('CID,PROB_B\n11,0.4\n')
+    fit = Fit('fit', fitres=fitres)
+    first = Classify('first', fit=fit, predictions=first_predictions)
+    second = Classify('second', fit=fit, predictions=second_predictions)
+
+    table = run(Merge('merged', [first, second]), outdir=tmp_path / 'run')['merged'][_NOMINAL]
+
+    assert table.varnames == ['CID', 'zHD', 'PROB_A', 'PROB_B']
+    assert list(table.df['PROB_A']) == [0.7, 0.0]
+    assert list(table.df['PROB_B']) == [0.0, 0.4]
+    other = Classify('other', fit=Fit('other_fit', fitres=fitres), predictions=first_predictions)
+    with pytest.raises(SNANAError, match='other classifies other_fit, not fit'):
+        Merge('merged', [first, other])
 
 
 @pytest.mark.parametrize('head_gz,phot_gz', [(False, True), (True, False)])

@@ -102,8 +102,6 @@ _REJECTED_OPTIONS = {
         'SNTABLE_APPEND_VARNAME', 'SNTABLE_APPEND_VALUE'),
     **_refused('remapping filter labels in output tables is not supported',
         'SNTABLE_FILTER_REMAP'),
-    **_refused('ROOT output is not supported',
-        ROOTFILE_OUT=_IGNORE_FILENAMES),
     **_refused('MARZ output is not supported',
         MARZFILE_OUT=_IGNORE_FILENAMES),
     **_refused('user-tag files are not supported',
@@ -191,8 +189,8 @@ _REJECTED_OPTIONS = {
 # Reasons are also read by the documentation generator.
 _REJECTED_KEYS = {key: reason for key, (reason, _) in _REJECTED_OPTIONS.items()}
 
-# Keys SNANA itself gives no behaviour.
-_INERT_KEYS = frozenset({
+# Keys logged as ignored.
+_IGNORED_KEYS = frozenset({
     # only extends SURVEY_FILTERS (snana.F90:12530)
     'NONSURVEY_FILTERS',
     # the model interpolation option, written but never read upstream
@@ -216,6 +214,8 @@ _INERT_KEYS = frozenset({
     'JOBSPLIT_EXTERNAL',
     # declared, never read in the fitter
     'STRETCH_TEMPLATE_FILE',
+    # jax writes no ROOT table
+    'ROOTFILE_OUT',
 })
 
 
@@ -306,12 +306,19 @@ def read_fit_input(input_file: Union[str, Path]):
 
     Namelists begin with a section header. YAML uses SNANA syntax when it
     contains SNLCINP/FITINP sections or SNANA-style capitalised input names.
+    A submit_batch CONFIG block, ending at the first line that contains
+    ``#END_YAML`` as Pippin finds it, is skipped, as snlc_fit skips it.
     """
     path = Path(input_file)
     if not path.is_file():
         raise SNANAError(f"Input file not found: {input_file}",
                          function_name="read_fit_input")
-    text = path.read_text()
+    lines = path.read_text().splitlines()
+    for index, line in enumerate(lines):
+        if "#END_YAML" in line:
+            lines = lines[index + 1:]
+            break
+    text = "\n".join(lines)
     first_line = next((line.strip() for line in text.splitlines()
                        if line.strip() and not line.lstrip().startswith(('!', '#'))), '')
     if re.fullmatch(r'&(?:SNLCINP|FITINP)\s*(?:!.*)?', first_line, re.IGNORECASE):
@@ -1153,7 +1160,7 @@ def _read_inival_inistp(raw: UsedTrackingDict, kw: dict) -> None:
     """Split the family: named settings first, the rest name parameters."""
     inival, inistp, grids = {}, {}, {}
     for key in [k for k in raw if k.startswith(("INIVAL_", "INISTP_"))]:
-        if key in raw.used or key in _INERT_KEYS:
+        if key in raw.used or key in _IGNORED_KEYS:
             continue
         prefix, _, suffix = key.partition("_")
         if suffix.startswith("GRIDSEARCH_"):
@@ -1215,7 +1222,7 @@ def _warn_unrecognized_keys(raw: UsedTrackingDict, typed_keys: set) -> None:
     """Log one warning listing input keys the build never read."""
     unknown = sorted(
         k for k in typed_keys
-        if k not in raw.used and k not in _INERT_KEYS
+        if k not in raw.used and k not in _IGNORED_KEYS
         and not any(k.startswith(p) for p in _OPEN_KEY_PREFIXES))
     if unknown:
         log.warn(logger, "CONFIG",
@@ -1234,7 +1241,7 @@ def known_keys() -> set:
     probe = UsedTrackingDict()
     build(probe)
     return (set(probe.used) | set(_KEY_ALIASES) | set(_REJECTED_KEYS)
-            | set(_INERT_KEYS))
+            | set(_IGNORED_KEYS))
 
 
 def _is_override_key(token: str, known: set) -> bool:
@@ -1348,6 +1355,8 @@ def build_file_config(settings, input_format, overrides=()):
     typed_keys = set(raw)
     _check_rejected_keys(raw)
     cfg = build(raw, settings=merge_fit_settings(named))
+    for key in sorted(typed_keys & _IGNORED_KEYS):
+        log.line(logger, f"{key} is ignored")
     _warn_unrecognized_keys(raw, typed_keys)
     _warn_unimplemented_values(raw)
     return cfg

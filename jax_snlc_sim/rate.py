@@ -400,6 +400,28 @@ def calculate_expected_sn_count(dndz_params: List[Dict],
     return sn_expected
 
 
+def season_counts(config, hz_map) -> Tuple[float, float]:
+    """The expected events per season in GENRANGE(z, MJD, dOmega) of the rate
+    model and of its peculiar Ia rate, the latter zero without one (SNsum and
+    PEC1Asum, snlc_sim.c:9193-9194). NGEN_SCALE does not apply.
+    """
+    def _expected(entries, rate_mods):
+        c = config.cosmology
+        return calculate_expected_sn_count(
+            config.dndz_params(entries), config.rates.solid_angle,
+            config.rates.redshift_range, config.rates.peakmjd_range,
+            config.rates.peakmjd_exclude,
+            c.omega_matter, c.omega_lambda, c.h0, c.w0, c.wa,
+            hz_map, rate_mods)
+
+    # PEC1Asum: SNcount_model over RATEPAR_PEC1A (snlc_sim.c:9006)
+    sn_sum = _expected(None, config.rates.dndz_rate_mods)
+    pec1a_sum = (_expected(config.rates.dndz_entries_pec1a,
+                           neutral_rate_mods())
+                 if config.rates.dndz_entries_pec1a else 0.0)
+    return sn_sum, pec1a_sum
+
+
 def resolve_counts(config, hz_map) -> Tuple[int, int, float, float]:
     """Resolve how many events to generate and the PEC1A share of them.
 
@@ -436,20 +458,7 @@ def resolve_counts(config, hz_map) -> Tuple[int, int, float, float]:
     # (int)(NGEN_LC*NGEN_SCALE), snlc_sim.c:7146
     ngen_lc = int(ngen_lc * scale)
 
-    def _expected(entries, rate_mods):
-        c = config.cosmology
-        return calculate_expected_sn_count(
-            config.dndz_params(entries), config.rates.solid_angle,
-            config.rates.redshift_range, config.rates.peakmjd_range,
-            config.rates.peakmjd_exclude,
-            c.omega_matter, c.omega_lambda, c.h0, c.w0, c.wa,
-            hz_map, rate_mods)
-
-    # PEC1Asum: SNcount_model over RATEPAR_PEC1A (snlc_sim.c:9006)
-    sn_sum = _expected(None, config.rates.dndz_rate_mods)
-    pec1a_sum = (_expected(config.rates.dndz_entries_pec1a,
-                           neutral_rate_mods())
-                 if config.rates.dndz_entries_pec1a else 0.0)
+    sn_sum, pec1a_sum = season_counts(config, hz_map)
     total = sn_sum + pec1a_sum
     frac_pec1a = pec1a_sum / total if total else 0.0
 

@@ -6,13 +6,16 @@ that have stages here, through a fitted cosmology.
 """
 
 import os
+import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 from astropy.io import fits
 
-from jax_pipeline.pippin import run_pippin
+from jax_pipeline import Cosmology, Sim, run
+from jax_pipeline.pippin import read, run_pippin
 from jax_snlc_core.snana_files import open_text
 
 _FIXTURES = Path("tests/fixtures/snana").resolve()
@@ -91,8 +94,6 @@ def test_repeat_jobs_simulate_different_events(tmp_path, format_mask):
 
 
 def test_ranseed_change_runs_separate_reproducible_simulations(tmp_path):
-    from jax_pipeline import Sim, run
-    from jax_pipeline.pippin import read
     config = tmp_path / "sim.yml"
     config.write_text(yaml.safe_dump({"SIM": {"S": {
         "IA": {"BASE": str(_DATA / "input.input"), "NGENTOT_LC": 20},
@@ -108,51 +109,46 @@ def test_ranseed_change_runs_separate_reproducible_simulations(tmp_path):
     assert all(entry["loaded"] for entry in manifest["stages"].values())
 
 
-@pytest.mark.parametrize("reuse_group", [False, True])
-def test_realisations_and_partitions_run_through_cosmology(tmp_path, reuse_group):
-    """Reuse fitted tables to exercise four separate cosmology analyses."""
-    import shutil
-    from jax_pipeline import Cosmology, run
-    from jax_pipeline.pippin import read
-    external = []
-    for i in (1, 2):
-        task = tmp_path / ("D_S" if reuse_group else f"D_S-{i:04d}")
-        version = task / "output" / (f"VERSION-{i:04d}" if reuse_group else "VERSION")
-        version.mkdir(parents=True)
-        with open_text(_FIXTURES / "bbc_des_beams" / "DATA.FITRES") as source, (version / "FITOPT000.FITRES").open("w") as target:
-            shutil.copyfileobj(source, target)
-        (task / "output" / "SUBMIT.INFO").write_text(yaml.safe_dump({
-            "FITOPT_LIST": [["FITOPT000", None, None]]}))
-        if str(task) not in external:
-            external.append(str(task))
+@pytest.mark.parametrize("saved_simulation", [False, True])
+def test_realisations_and_partitions_run_through_cosmology(tmp_path, saved_simulation):
+    """Fitted tables saved in Pippin's layout, reused to run four separate
+    cosmology analyses. Pippin names each saved fit version after its
+    simulation folder: PIP_<CONFIG>_<SIM> for a simulation the config
+    makes, or the saved folder's own name for an EXTERNAL one."""
+    if saved_simulation:
+        sim_task = tmp_path / "saved_sim"
+        sim_folders = [sim_task / f"PIP_OLD_S-{i:04d}" for i in (1, 2)]
+        for sim_folder in sim_folders:
+            sim_folder.mkdir(parents=True)
+        recorded = {"sim_folders": [str(folder) for folder in sim_folders], "blind": False}
+        (sim_task / "config.yml").write_text(yaml.safe_dump({"OUTPUT": recorded}))
+        folders = [sim_folder.name for sim_folder in sim_folders]
+        simulation = {"EXTERNAL": str(sim_task)}
+    else:
+        folders = [f"PIP_ANALYSIS_S-{i:04d}" for i in (1, 2)]
+        simulation = {"IA": {"BASE": str(_DATA / "input.input")},
+                      "GLOBAL": {"RANSEED_CHANGE": "2 123"}}
+    fit_task = tmp_path / "D_S"
+    (fit_task / "output").mkdir(parents=True)
+    (fit_task / "output" / "SUBMIT.INFO").write_text(yaml.safe_dump({
+        "FITOPT_LIST": [["FITOPT000", None, None]]}))
+    for folder in folders:
+        version = fit_task / "output" / folder
+        version.mkdir()
+        with open_text(_FIXTURES / "bbc_des_beams" / "DATA.FITRES") as source:
+            with (version / "FITOPT000.FITRES").open("w") as target:
+                shutil.copyfileobj(source, target)
     bbc_file = tmp_path / "bbc.input"
     bbc_file.write_text("nzbin=4\nzmin=0.1\nzmax=1.0\nu1=1\nu2=1\n")
     config = tmp_path / "analysis.yml"
     config.write_text(yaml.safe_dump({
-        "SIM": {"S": {"IA": {"BASE": str(_DATA / "input.input")},
-                      "GLOBAL": {"RANSEED_CHANGE": "2 123"}}},
-        "LCFIT": {"D": {"BASE": str(_DATA / "fit.nml"), "EXTERNAL_DIRS": external}},
+        "SIM": {"S": simulation},
+        "LCFIT": {"D": {"BASE": str(_DATA / "fit.nml"), "EXTERNAL_DIRS": [str(fit_task)]}},
         "BIASCOR": {"B": {"BASE": str(bbc_file), "DATA": ["D_S"],
                             "OPTS": {"NSPLITRAN": 2}}},
         "CREATE_COV": {"C": {}},
         "COSMOFIT": {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm -ompri 0.31 -dompri 0.01"]}}}},
     }))
-    if reuse_group:
-        # Imported photometry records establish the realisation names; the
-        # cosmology graph reads only the already-fitted tables.
-        sim_task = tmp_path / "saved_sim"
-        sim_task.mkdir()
-        folders = []
-        for i in (1, 2):
-            folder = sim_task / f"VERSION-{i:04d}"
-            folder.mkdir()
-            (folder / "VERSION.LIST").write_text("")
-            folders.append(str(folder))
-        (sim_task / "config.yml").write_text(yaml.safe_dump({"OUTPUT": {"sim_folders": folders}}))
-        saved = yaml.safe_load(config.read_text())
-        saved["SIM"] = {"S": {"EXTERNAL": str(sim_task)}}
-        saved["LCFIT"]["D"].pop("BASE")
-        config.write_text(yaml.safe_dump(saved))
     stages = [s for s in read(config) if isinstance(s, Cosmology)]
     assert len(stages) == 4
     # The imported legacy tables lack reference cosmology metadata. Supply
@@ -164,7 +160,6 @@ def test_realisations_and_partitions_run_through_cosmology(tmp_path, reuse_group
     results = run(*stages, outdir=tmp_path / "run")
     for stage in stages:
         assert "omega_m" in results[stage.name]["ALL"]["point_estimate"]
-    import pandas as pd
     summary_path = tmp_path / "run" / "COSMOLOGY_SUMMARY.csv"
     summary = pd.read_csv(summary_path)
     assert len(summary) == 4

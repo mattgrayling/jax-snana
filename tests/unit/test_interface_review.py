@@ -561,6 +561,8 @@ def test_bbc_batch_header_is_separate_from_scientific_inputs(tmp_path):
     path = tmp_path/'bbc.input'
     path.write_text('CONFIG:\n  BATCH_INFO: sbatch example 1\n#END_YAML\nnzbin=10\n')
     assert asdict(parse_bbc_input(path)) == asdict(parse_bbc_input(None, ['nzbin=10']))
+    path.write_text('nzbin=10\nCONFIG:\n  BATCH_INFO: sbatch example 1\nEND_CONFIG\n')
+    assert asdict(parse_bbc_input(path)) == asdict(parse_bbc_input(None, ['nzbin=10']))
     path.write_text('nzbin: [\n')
     with pytest.raises(SNANAError, match='Cannot read'):
         parse_bbc_input(path)

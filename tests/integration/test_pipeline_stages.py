@@ -359,6 +359,21 @@ def test_a_set_up_and_stop_input_generates_nothing(fixture_dir, tmp_path):
     assert not list(outdir.glob("*.LIST"))
 
 
+def test_ngen_unit_rounds_the_season_count_before_multiplying(fixture_dir, tmp_path):
+    """With ngen_unit, each input's count is the one SNANA's batch layer
+    gives its jobs: the expected events per season, here 33.54 over this
+    solid angle, rounded to 34 before NGEN_UNIT 0.5 multiplies it, so 17
+    events, where the simulator's own NGEN_SEASON 0.5 would truncate 16.77
+    to 16. The input file's NGENTOT_LC is replaced."""
+    sim = Sim("sim", fixture_dir / "input.input",
+              overrides={"SOLID_ANGLE": 0.0001, "RANSEED": 7}, ngen_unit=0.5)
+
+    outdir = run(sim, outdir=tmp_path)["sim"]
+
+    readme = yaml.safe_load((outdir / "sim.README").read_text())["DOCUMENTATION"]
+    assert readme["OUTPUT_SUMMARY"]["NGENLC_TOT"] == 17
+
+
 @pytest.mark.parametrize('snana_output', [False, True])
 def test_retained_data_reselection_matches_a_fresh_load(
         fixture_dir, tmp_path, snana_output):

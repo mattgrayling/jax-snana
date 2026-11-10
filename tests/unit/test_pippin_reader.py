@@ -6,14 +6,22 @@ The rest write small configs of their own over this repository's fixtures to
 pin the mask rules, the FITOPTS forms, the seed rule and the refusals.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
+import pandas as pd
 import pytest
 import yaml
+from astropy.io import fits
 
-from jax_pipeline import BBC, Classify, Cosmology, Covariance, Data, Fit, Sim, Train
-from jax_pipeline.pippin import read
+from jax_pipeline import (BBC, Classify, Cosmology, Covariance, Data, Fit, Sim, Train,
+                          register_classifier)
+from jax_pipeline.classify import CLASSIFIER_REGISTRY, Perfect
+from jax_pipeline.pippin import _survey, check, main, read
+from jax_salt2mu.tablevar import EVENT_TYPE_DATA
 from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import FitresTable
 
 _PIPPIN = Path(__file__).parent.parent / "fixtures" / "pippin"
 _DATA_FILES = _PIPPIN / "data_files"
@@ -53,7 +61,8 @@ def test_a_real_pippin_config_builds_the_whole_chain(tmp_path):
     # Pippin's FORMAT_MASK 48 has random CIDs, so every repeat job keeps the seed
     assert {o["RANSEED"] for o in sim.overrides} == {12345}
     assert sim.overrides[0]["FORMAT_MASK"] == 48
-    assert sim.overrides[0]["NGEN_UNIT"] == "1" and sim.overrides[0]["NGENTOT_LC"] == "0"
+    assert sim.ngen_unit == 1.0
+    assert "NGEN_UNIT" not in sim.overrides[0]
     assert sim.overrides[0]["SOLID_ANGLE"] == "10"
     assert isinstance(stages["LCFIT_D"], Fit)
     assert stages["LCFIT_D"].datasets == (stages["DATADES3YR"], sim)
@@ -72,7 +81,7 @@ def test_a_real_pippin_config_builds_the_whole_chain(tmp_path):
     cosmology = stages["WFIT_W_om_pri"]
     assert isinstance(cosmology, Cosmology) and cosmology.covariance is covariance
     assert cosmology.covopts == ("ALL", "NOSYS")
-    assert cosmology.overrides == {"ompri": 0.31, "dompri": 0.01}
+    assert cosmology.overrides == {"ompri": 0.31, "dompri": 0.01, "blind_mode": "auto"}
     assert bbc.configuration().nzbin > 0
     assert covariance.configuration()[0].write_mask_cov & 8
 
@@ -90,8 +99,10 @@ def test_pippin_bbc_string_list_options_reach_configuration(tmp_path):
 
 
 def _write(tmp_path, config: dict) -> Path:
+    """The config written with its keys in the order given, since Pippin
+    reads tasks in order."""
     path = tmp_path / "config.yml"
-    path.write_text(yaml.safe_dump(config))
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
     return path
 
 
@@ -100,9 +111,12 @@ def _sim(name="A", **keys):
 
 
 def test_masks_are_substrings_and_lists_are_any(tmp_path):
+    """Pippin's LCFIT mask (task.py:411-431): a substring of the task's name,
+    or any of a list's; * or no mask selects every task."""
     config = {"SIM": {"DESSIM": _sim(), "LOWZSIM": _sim(), "OTHER": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML), "MASK": "DES"},
                         "L": {"BASE": str(_NML), "MASK": ["LOWZ", "OTHER"]},
+                        "STAR": {"BASE": str(_NML), "MASK": "*"},
                         "ALL": {"BASE": str(_NML)}}}
 
     stages = _by_name(read(_write(tmp_path, config)))
@@ -112,18 +126,19 @@ def test_masks_are_substrings_and_lists_are_any(tmp_path):
 
     assert fitted("D") == ["DESSIM"]
     assert fitted("L") == ["LOWZSIM", "OTHER"]
-    assert fitted("ALL") == ["DESSIM", "LOWZSIM", "OTHER"]
+    assert fitted("STAR") == fitted("ALL") == ["DESSIM", "LOWZSIM", "OTHER"]
 
 
 def test_fitopts_come_from_the_file_and_inline(tmp_path):
     """A FITOPTS file applies its GLOBAL block and the block of the data's
     own survey, each entry a scale then a command the fitter splits into
-    keys; an inline /label/ entry has scale 1."""
+    keys; another survey's block, here giving only a scale, is not read. An
+    inline /label/ entry has scale 1."""
     fitopts = tmp_path / "fitopts.yml"
     fitopts.write_text(yaml.safe_dump({
         "GLOBAL": {"zp_g": "0.3 MAGOBS_SHIFT_ZP 'g .01'",
                    "mwebv": "1.0 MWEBV_SCALE 0.95 MWEBV_SHIFT 0.00"},
-        "NOSUCHSURVEY": {"never": "1.0 FILTLIST_FIT 'gri'"}}, sort_keys=False))
+        "NOSUCHSURVEY": {"never": "1.0"}}, sort_keys=False))
     config = {"SIM": {"S": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML),
                               "FITOPTS": [str(fitopts), "/zshift/ REDSHIFT_FINAL_SHIFT 0.0001"],
@@ -139,42 +154,93 @@ def test_fitopts_come_from_the_file_and_inline(tmp_path):
     assert fit.overrides == {"USE_MINOS": "F"}
 
 
+@pytest.mark.parametrize("in_file,opts,synced", [
+    (None, {"FLAG_USE_SAME_EVENTS": 2}, {"OPT_SNCID_LIST": "2"}),
+    (None, {"FLAG_USE_SAME_EVENTS": 2, "OPT_SNCID_LIST": 0}, {}),
+    (None, {"OPT_SNCID_LIST": 1}, {"OPT_SNCID_LIST": "1"}),
+    (1, {}, {"OPT_SNCID_LIST": "1"}),
+    (1, {"FLAG_USE_SAME_EVENTS": 2}, {"OPT_SNCID_LIST": "1"}),
+    (0, {"FLAG_USE_SAME_EVENTS": 2}, {"OPT_SNCID_LIST": "2"})])
+def test_lcfit_options_set_the_same_events(tmp_path, in_file, opts, synced):
+    """submit_batch reads FLAG_USE_SAME_EVENTS or OPT_SNCID_LIST from
+    Pippin's LCFIT OPTS, OPT_SNCID_LIST when both are given, and uses it
+    when positive (submit_prog_lcfit.py:733-745); a FITOPTS file's positive
+    FLAG_USE_SAME_EVENTS is written over both (snana_fit.py:190)."""
+    task = {"BASE": str(_NML), "OPTS": opts}
+    if in_file is not None:
+        fitopts = tmp_path / "fitopts.yml"
+        fitopts.write_text(yaml.safe_dump({"FLAG_USE_SAME_EVENTS": in_file,
+                                           "GLOBAL": {"zp_g": "1.0 MAGOBS_SHIFT_ZP 'g .01'"}}))
+        task["FITOPTS"] = str(fitopts)
+    config = {"SIM": {"S": _sim()}, "LCFIT": {"D": task}}
+    assert _by_name(read(_write(tmp_path, config)))["LCFIT_D"].overrides == synced
+
+
+def test_base_config_block_gives_fitopts_and_same_events(tmp_path):
+    """submit_batch reads FITOPT and the same-events keys from the BASE
+    file's CONFIG block, which Pippin updates with the task's FITOPTS and
+    OPTS (snana_fit.py:197-198, 296-298)."""
+    base = tmp_path / "base.nml"
+    base.write_text("CONFIG:\n  BATCH_INFO: sbatch x 1\n  OPT_SNCID_LIST: 1\n"
+                    "  FITOPT:\n  - /zshift/ REDSHIFT_FINAL_SHIFT 0.0001\n#END_YAML\n"
+                    + _NML.read_text())
+    config = {"SIM": {"S": _sim()}, "LCFIT": {"D": {"BASE": str(base)}}}
+
+    fit = _by_name(read(_write(tmp_path, config)))["LCFIT_D"]
+
+    assert fit.fitopts == {"zshift": {"REDSHIFT_FINAL_SHIFT": "0.0001"}}
+    assert fit.overrides == {"OPT_SNCID_LIST": "1"}
+    config["LCFIT"]["D"].update(FITOPTS=["/mwebv/ MWEBV_SCALE 0.95"], OPTS={"OPT_SNCID_LIST": 0})
+    fit = _by_name(read(_write(tmp_path, config)))["LCFIT_D"]
+    assert fit.fitopts == {"mwebv": {"MWEBV_SCALE": "0.95"}}
+    assert fit.overrides == {}
+
+
 def test_sources_with_different_fitopts_have_different_fitters(tmp_path):
     """A FITOPTS file whose survey blocks give two sources different FITOPTs
     builds a fitter for each, numbered after the task; sources with the same
-    FITOPTs share one."""
+    FITOPTs share one. The blocks keep the file's order, as Pippin's do. A
+    simulation's survey is its SIMLIB's, or SIMLIB_SURVEY's when given, as
+    Pippin reads it from the simulation (snana_sim.py:540-545)."""
     simlib = tmp_path / "other.SIMLIB"
     simlib.write_text("SURVEY: OTHER\nBEGIN LIBGEN\nLIBID: 1\n")
     fitopts = tmp_path / "fitopts.yml"
     fitopts.write_text(yaml.safe_dump({
-        "GLOBAL": {"zp_g": "1.0 MAGOBS_SHIFT_ZP 'g .01'"},
-        "OTHER": {"mwebv": "1.0 MWEBV_SCALE 0.95"}}))
-    config = {"SIM": {"S": _sim(), "S2": _sim(), "T": _sim(SIMLIB_FILE=str(simlib))},
+        "OTHER": {"mwebv": "1.0 MWEBV_SCALE 0.95"},
+        "GLOBAL": {"zp_g": "1.0 MAGOBS_SHIFT_ZP 'g .01'"}}, sort_keys=False))
+    config = {"SIM": {"S": _sim(), "S2": _sim(SIMLIB_SURVEY="OTHER"),
+                      "T": _sim(SIMLIB_FILE=str(simlib))},
               "LCFIT": {"D": {"BASE": str(_NML), "FITOPTS": str(fitopts)}}}
 
     stages = _by_name(read(_write(tmp_path, config)))
 
     assert {n for n in stages if n.startswith("LCFIT_")} == {"LCFIT_D_0", "LCFIT_D_1"}
-    assert stages["LCFIT_D_0"].datasets == (stages["S"], stages["S2"])
-    assert stages["LCFIT_D_1"].datasets == (stages["T"],)
+    assert stages["LCFIT_D_0"].datasets == (stages["S"],)
+    assert stages["LCFIT_D_1"].datasets == (stages["S2"], stages["T"])
     assert list(stages["LCFIT_D_0"].fitopts) == ["zp_g"]
-    assert list(stages["LCFIT_D_1"].fitopts) == ["zp_g", "mwebv"]
+    assert list(stages["LCFIT_D_1"].fitopts) == ["mwebv", "zp_g"]
 
 
-def test_external_fits_are_read_with_their_own_labels(tmp_path):
+@pytest.mark.parametrize("settings,folder", [
+    ({}, "PIP_CONFIG_S"),
+    ({"GLOBAL": {"QUEUE": {"prefix": "LAB"}, "OUTPUT": {"output_dir": "/elsewhere"}}}, "LAB_CONFIG_S")])
+def test_external_fits_are_read_with_their_own_labels(tmp_path, settings, folder):
     """An LCFIT task's EXTERNAL_DIRS entry named for a source holds that
-    source's fits from an earlier run, as Pippin lays them out: they are read
-    rather than fitted, labelled by the run's own SUBMIT.INFO, and only the
-    other sources are fitted."""
+    source's fits from an earlier run, as Pippin lays them out: the version
+    is named after Pippin's simulation folder, <PREFIX>_<CONFIG>_<SIM>, its
+    prefix GLOBAL's QUEUE prefix, PIP by default (manager.py:64). Other
+    GLOBAL settings are Pippin's own. The fits are read rather than fitted,
+    labelled by the run's own SUBMIT.INFO, and only the other sources are
+    fitted."""
     external = tmp_path / "D_S"
-    version = external / "output" / "VERSION"
+    version = external / "output" / folder
     version.mkdir(parents=True)
     for i in range(2):
         (version / f"FITOPT{i:03d}.FITRES.gz").write_bytes(b"")
     (external / "output" / "SUBMIT.INFO").write_text(yaml.safe_dump({
         "FITOPT_LIST": [["FITOPT000", None, None],
                         ["FITOPT001", "zp_g", "MAGOBS_SHIFT_ZP g .01"]]}))
-    config = {"SIM": {"S": _sim(), "T": _sim()},
+    config = {**settings, "SIM": {"S": _sim(), "T": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML), "EXTERNAL_DIRS": [str(external)],
                               "FITOPTS": ["/zp_g/ MAGOBS_SHIFT_ZP g .01"]}}}
 
@@ -185,34 +251,74 @@ def test_external_fits_are_read_with_their_own_labels(tmp_path):
     assert stages["LCFIT_D"].datasets == (stages["T"],)
 
 
-def test_create_cov_scales_rescale_the_systematics(tmp_path):
+def _scales_config(tmp_path):
+    """Data fitted with a FITOPTS file whose two blocks scale lam_g, and a
+    BIASCOR task with a MUOPT of SCALE 0.8, for a CREATE_COV task."""
     fitopts = tmp_path / "fitopts.yml"
     fitopts.write_text(yaml.safe_dump({"GLOBAL": {"zp_g": "0.3 MAGOBS_SHIFT_ZP 'g .01'",
-                                                  "lam_g": "0.6 FILTER_LAMSHIFT 'g 10'"}},
+                                                  "lam_g": "0.6 FILTER_LAMSHIFT 'g 10'"},
+                                       "OTHER": {"lam_g": "0.7 FILTER_LAMSHIFT 'g 10'"}},
                                       sort_keys=False))
-    config = {"SIM": {"S": _sim()},
-              "LCFIT": {"D": {"BASE": str(_NML), "FITOPTS": str(fitopts)}},
-              "BIASCOR": {"B": {"BASE": str(tmp_path / "bbc.input"), "DATA": ["D_S"],
-                                "MUOPTS": {"C11": {"OPTS": {"chi2max": 16}, "SCALE": 0.8}}}},
-              "CREATE_COV": {"C": {"OPTS": {"FITOPT_SCALES": {"zp": 2.0},
-                                            "MUOPT_SCALES": {"C11": 0.5}}}}}
     (tmp_path / "bbc.input").write_text("nzbin=10\n")
+    return {"SIM": {"S": _sim()},
+            "LCFIT": {"D": {"BASE": str(_NML), "FITOPTS": str(fitopts)}},
+            "BIASCOR": {"B": {"BASE": str(tmp_path / "bbc.input"), "DATA": ["D_S"],
+                              "MUOPTS": {"C11": {"OPTS": {"chi2max": 16}, "SCALE": 0.8}}}},
+            "CREATE_COV": {"C": {"OPTS": {}}}}
+
+
+def test_create_cov_scales_rescale_the_systematics(tmp_path):
+    """As in Pippin (create_cov.py:234-283), the scales are those of the
+    data's FITOPTS file, every block, a later one winning; then
+    FITOPT_SCALES and MUOPT_SCALES by exact label, on top of a MUOPT's
+    SCALE. A label the fit lacks is left out."""
+    config = _scales_config(tmp_path)
+    config["CREATE_COV"]["C"]["OPTS"] = {"FITOPT_SCALES": {"zp_g": 2.0, "zp": 3.0},
+                                         "MUOPT_SCALES": {"C11": 0.5}}
 
     stages = _by_name(read(_write(tmp_path, config)))
 
-    assert stages["C"].scales == {"zp_g": 2.0, "lam_g": 0.6, "C11": 0.5}
+    assert stages["C"].scales == {"zp_g": 2.0, "lam_g": 0.7, "C11": 0.5}
     assert stages["B"].muopts == {"C11": {"chi2max": "16"}}
 
 
+def test_a_sys_scale_file_replaces_the_data_fitopts_file(tmp_path):
+    """SYS_SCALE names the file of scales instead, whose entries may give
+    only a scale (create_cov.py:234-283)."""
+    sys_scale = tmp_path / "sys_scale.yml"
+    sys_scale.write_text(yaml.safe_dump({"GLOBAL": {"zp_g": 0.9}}))
+    config = _scales_config(tmp_path)
+    config["CREATE_COV"]["C"]["OPTS"] = {"SYS_SCALE": str(sys_scale)}
+
+    assert _by_name(read(_write(tmp_path, config)))["C"].scales == {"zp_g": 0.9, "C11": 0.8}
+
+
+def test_data_fitted_with_two_fitopts_files_has_no_scales(tmp_path):
+    """Data fitted with different FITOPTS files gives no one file of scales,
+    so is refused without SYS_SCALE."""
+    other = tmp_path / "other.yml"
+    other.write_text(yaml.safe_dump({"GLOBAL": {"zp_g": "0.4 MAGOBS_SHIFT_ZP 'g .01'"}}))
+    config = _scales_config(tmp_path)
+    config["LCFIT"]["E"] = {"BASE": str(_NML), "FITOPTS": str(other)}
+    config["BIASCOR"]["B"]["DATA"] = ["D_S", "E_S"]
+
+    with pytest.raises(SNANAError, match="more than one FITOPTS file"):
+        read(_write(tmp_path, config))
+
+
 def test_biascor_options_become_salt2mu_keys(tmp_path):
+    """As in Pippin (biascor.py:462-488, 550-560), a CUTWIN_ key in any case
+    is a CUTWIN, CUTWIN_PROB_IA the cut on SALT2mu's varname_pIa, SALT2mu
+    keeps the last of a list of cuts, and blindflag is written as 2 or 0."""
     config = {"SIM": {"S": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML)}},
-              "CLASSIFICATION": {"P": {"CLASSIFIER": "PerfectClassifier", "MODE": "predict",
+              "CLASSIFICATION": {"P": {"CLASSIFIER": "PerfectClassifier", "MODE": "Predict",
                                        "OPTS": {"PROB_IA": 0.9, "PROB_CC": 0.1}}},
               "BIASCOR": {"B": {"BASE": str(tmp_path / "bbc.input"), "DATA": ["D_S"],
                                 "CLASSIFIER": "P",
-                                "OPTS": {"chi2max": 16, "CUTWIN_PROB_IA": "0.5 1.0",
-                                         "CUTWIN_zHD": "0.1 1.0", "BATCH_INFO": "x"},
+                                "OPTS": {"chi2max": 16, "cutwin_prob_ia": "0.5 1.0",
+                                         "CUTWIN_zHD": ["0.05 1.0", "0.1 1.0"],
+                                         "blindflag": 2, "BATCH_INFO": "x"},
                                 "MUOPTS": {"NOCLASS": {"OPTS": {"u1": 0}}}}}}
     (tmp_path / "bbc.input").write_text("nzbin=10\n")
 
@@ -221,10 +327,75 @@ def test_biascor_options_become_salt2mu_keys(tmp_path):
 
     assert bbc.data == (stages["P_D_S"],)
     assert stages["P_D_S"].classifier.prob_ia == 0.9
-    assert bbc.overrides == {"chi2max": "16", "CUTWIN PROB_P": "0.5 1.0",
+    assert bbc.overrides == {"chi2max": "16", "CUTWIN varname_pIa": "0.5 1.0",
                              "CUTWIN zHD": "0.1 1.0", "varname_pIa": "PROB_P",
-                             "blindflag": 0}
+                             "blindflag": 2}
     assert bbc.muopts == {"NOCLASS": {"u1": "0"}}
+
+
+@pytest.mark.parametrize("settings,blindflag", [
+    ({}, 0), ({"OPTS": {"blindflag": 1}}, 2), ({"BLIND": False, "OPTS": {"blindflag": 2}}, 0)])
+def test_biascor_blinding_follows_pippin(tmp_path, settings, blindflag):
+    """Pippin blinds BBC by the task's BLIND, else by blindflag in its OPTS,
+    else by its data's BLIND (biascor.py:198-204)."""
+    config = _cov_config(tmp_path, {})
+    config["BIASCOR"]["B"].update(settings)
+    assert _by_name(read(_write(tmp_path, config)))["B"].overrides["blindflag"] == blindflag
+
+
+def test_classifier_masks_select_simulations(tmp_path):
+    """Pippin matches a classifier's MASK against simulation names
+    (classifier.py:369-374), not the names of their fits, refuses a task
+    that matches none, and lets an empty mask match all."""
+    config = {"SIM": {"S": _sim()}, "LCFIT": {"D": {"BASE": str(_NML)}},
+              "CLASSIFICATION": {"P": {"CLASSIFIER": "PerfectClassifier", "MODE": "predict",
+                                       "MASK": "D_"}}}
+
+    with pytest.raises(SNANAError, match="masks match no SIM"):
+        read(_write(tmp_path, config))
+    config["CLASSIFICATION"]["P"]["MASK"] = ""
+    assert "P_D_S" in _by_name(read(_write(tmp_path, config)))
+
+
+_PERFECT = {"CLASSIFIER": "PerfectClassifier", "MODE": "predict"}
+_TWO_COLUMNS = {"P": _PERFECT, "Q": _PERFECT}
+_ONE_COLUMN_TWICE = {"P": _PERFECT, "Q": {**_PERFECT, "OPTS": {"PROB_COLUMN_NAME": "PROB_P"}}}
+
+
+@pytest.mark.parametrize("classification,settings", [
+    ({"P": _PERFECT}, {"CLASSIFIER": "PROB_P"}),
+    ({"P": _PERFECT}, {"CLASSIFIER": ["P", "PROB_OTHER"]}),
+    (_TWO_COLUMNS, {"CLASSIFIER": "Q", "PROB_COLUMN_NAME": "PROB_P"}),
+    (_TWO_COLUMNS, {"PROB_COLUMN_NAME": "PROB_P"})])
+def test_biascor_classifier_names_a_task_or_its_column(tmp_path, classification, settings):
+    """As in Pippin (biascor.py:640-665), a BIASCOR CLASSIFIER resolves to one
+    probability column: that of the classification tasks it names, ignoring
+    entries that name none, or else the one column it names. PROB_COLUMN_NAME
+    is read whatever the CLASSIFIER (biascor.py:118-121). The fits are read
+    as classified by the tasks writing the column (merge.py:384-405)."""
+    config = _cov_config(tmp_path, {})
+    config["CLASSIFICATION"] = classification
+    config["BIASCOR"]["B"].update(settings)
+
+    stages = _by_name(read(_write(tmp_path, config)))
+
+    assert stages["B"].data == (stages["P_D_S"],)
+    assert stages["B"].overrides["varname_pIa"] == "PROB_P"
+
+
+@pytest.mark.parametrize("classification,named,match", [
+    ({"P": _PERFECT}, ["PROB_P", "PROB_OTHER"], "a probability column must be named alone"),
+    (_TWO_COLUMNS, ["Q", "P"], "write different probability columns"),
+    (_TWO_COLUMNS, "PROB_OTHER", "names no classification task or probability column"),
+    (_ONE_COLUMN_TWICE, ["Q", "P"], "P and Q both write PROB_P for D_S")])
+def test_biascor_classifier_refusals(tmp_path, classification, named, match):
+    """A CLASSIFIER resolving to no column or to several, and two tasks
+    writing its column for one fit, are refused."""
+    config = _cov_config(tmp_path, {})
+    config["CLASSIFICATION"] = classification
+    config["BIASCOR"]["B"]["CLASSIFIER"] = named
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, config))
 
 
 def test_seed_follows_pippin_template_and_snana_command_line(tmp_path):
@@ -251,11 +422,51 @@ def test_seed_follows_pippin_template_and_snana_command_line(tmp_path):
     assert sim.overrides[0]["SOLID_ANGLE"] == "2"
 
 
+@pytest.mark.parametrize("seeding,seeds", [
+    ({"RANSEED_REPEAT": "2 500", "RANSEED_CHANGE": "3 600"},
+     {"S-0001": [613], "S-0002": [10614], "S-0003": [20617]}),
+    ({"RANSEED_CHANGE": "3 600", "RANSEED_REPEAT": "2 500"}, {"S": [500, 500]})])
+def test_later_seed_setting_wins(tmp_path, seeding, seeds):
+    """Of RANSEED_REPEAT and RANSEED_CHANGE, Pippin passes SNANA only the
+    later (snana_sim.py:348-351)."""
+    stages = read(_write(tmp_path, {"SIM": {"S": {**_sim(), "GLOBAL": seeding}}}))
+
+    seeds_by_stage = {}
+    for stage in stages:
+        job_seeds = []
+        for override in stage.overrides:
+            job_seeds.append(override["RANSEED"])
+        seeds_by_stage[stage.name] = job_seeds
+    assert seeds_by_stage == seeds
+
+
+@pytest.mark.parametrize("global_keys,seeds", [
+    ({"RANSEED_CHANGE": "2 100"}, {"S-0001": [76], "S-0002": [117]}),
+    ({"RANSEED_REPEAT": "2 100"}, {"S": [76, 117]}),
+    ({"RANSEED_CHANGE": "2 100", "RANSYSTPAR_RANSEED_SYST": 9}, {"S-0001": ["9"], "S-0002": ["9"]})])
+def test_systematics_seed_changes_with_each_job(tmp_path, global_keys, seeds):
+    """SNANA's batch layer replaces a component's RANSYSTPAR_RANSEED_SYST with
+    seed * 7 + 41 * job, the job counted from 1; a GLOBAL one is passed
+    unchanged and wins (submit_prog_sim.py:1698-1702, 1744-1769)."""
+    config = {"SIM": {"S": {**_sim(RANSYSTPAR_RANSEED_SYST=5), "GLOBAL": global_keys}}}
+    stages = read(_write(tmp_path, config))
+
+    seeds_by_stage = {}
+    for stage in stages:
+        job_seeds = []
+        for override in stage.overrides:
+            job_seeds.append(override["RANSYSTPAR_RANSEED_SYST"])
+        seeds_by_stage[stage.name] = job_seeds
+    assert seeds_by_stage == seeds
+
+
 def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
     """SuperNNova reads light curves, so Pippin matches its tasks against the
-    simulations and joins a prediction onto every fit of the matched one; a
-    predicting task names the training task, takes its column, and reads
-    Pippin's options with Pippin's defaults."""
+    simulations and joins a prediction onto every fit of the matched one.
+    The training writes PROB_<task>_<simulation>; the prediction takes that
+    column and the training's name as a suffix. Unset options take Pippin's
+    defaults, and a training task whose name extends the named one's is not
+    taken for it."""
     config = {"SIM": {"TRAINSIM": _sim(), "DATASIM": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML)}, "E": {"BASE": str(_NML)}},
               "CLASSIFICATION": {
@@ -263,6 +474,8 @@ def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
                                "MASK_SIM": "TRAIN", "GPU": True,
                                "OPTS": {"VARIANT": "Variational", "REDSHIFT": False,
                                         "SNTYPES": {"1": "Ia", "20": "II"}}},
+                  "SNNTRAIN_B": {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "train",
+                                 "MASK_SIM": "TRAIN"},
                   "SNNTEST": {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "predict",
                               "MASK": "DATA", "OPTS": {"MODEL": "SNNTRAIN"}}}}
 
@@ -272,19 +485,239 @@ def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
     assert isinstance(trained, Train) and trained.photometry is stages["TRAINSIM"]
     assert trained.classifier.variant == "variational"
     assert trained.classifier.redshift == "none"
-    assert trained.classifier.sntypes == {1: "Ia", 20: "II"}
+    assert trained.classifier.sntypes == {1: "Ia", 20: "II", 10: "Ia", 110: "Ia"}
     assert trained.classifier.filters == ("DES-g", "DES-i", "DES-r", "DES-z")
-    assert {n for n in stages if n.startswith("SNNTEST_")} == {"SNNTEST_D_DATASIM",
-                                                               "SNNTEST_E_DATASIM"}
-    classified = stages["SNNTEST_D_DATASIM"]
+    assert trained.classifier.column == "PROB_SNNTRAIN_TRAINSIM"
+    assert {n for n in stages if n.startswith("SNNTEST_")} == {
+        "SNNTEST_D_DATASIM_SNNTRAIN_TRAINSIM", "SNNTEST_E_DATASIM_SNNTRAIN_TRAINSIM"}
+    classified = stages["SNNTEST_D_DATASIM_SNNTRAIN_TRAINSIM"]
     assert classified.fit == _fit(stages, "LCFIT_D", "DATASIM")
     assert classified.photometry is stages["DATASIM"]
     assert classified.model is trained
-    assert classified.classifier.column == "PROB_SNNTRAIN"
+    assert classified.classifier.column == "PROB_SNNTRAIN_TRAINSIM"
 
     config["CLASSIFICATION"]["SNNTEST"]["OPTS"]["DATA_YML"] = "x.yml"
     with pytest.raises(SNANAError, match="DATA_YML"):
         read(_write(tmp_path, config))
+
+
+_SNN_TRAIN = {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "train", "MASK": "TRAIN"}
+_SNN_PREDICT = {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "predict", "MASK": "DATA",
+                "OPTS": {"MODEL": "SNNTRAIN"}}
+
+
+@pytest.mark.parametrize("classification,match", [
+    # a predicting task needs its training task before it (classifier.py:459-467)
+    ({"SNNTEST": _SNN_PREDICT, "SNNTRAIN": _SNN_TRAIN}, "names no training task before it"),
+    ({"SNNTEST": {**_SNN_PREDICT, "OPTS": {"MODEL": "models/snn.pt"}}}, "must be an absolute path"),
+    ({"SNNTEST": {**_SNN_PREDICT, "OPTS": {"MODEL": "/missing/snn.pt"}}}, "does not exist"),
+    # supernnova.py:261-263
+    ({"SNNTEST": {**_SNN_PREDICT, "OPTS": {}}}, "predicting needs a model"),
+    # classifier.py:469-471
+    ({"SNNTRAIN": _SNN_TRAIN,
+      "P": {"CLASSIFIER": "PerfectClassifier", "MODE": "predict", "OPTS": {"MODEL": "SNNTRAIN"}}},
+     "trains a different classifier"),
+    # supernnova.py:98-104
+    ({"SNNTRAIN": {**_SNN_TRAIN, "OPTS": {"LIST_FILTERS": "DES-g"}}}, "LIST_FILTERS must be a list"),
+    # classifier.py:252-257
+    ({"P": {"CLASSIFIER": "PerfectClassifier", "MODE": "train"}}, "cannot be trained"),
+])
+def test_classification_refusals(tmp_path, classification, match):
+    """Pippin's aborts for MODEL and LIST_FILTERS, and a MODEL file that is
+    not an absolute path."""
+    config = {"SIM": {"TRAIN": _sim(), "DATA": _sim()}, "LCFIT": {"D": {"BASE": str(_NML)}},
+              "CLASSIFICATION": classification}
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, config))
+
+
+@dataclass(frozen=True)
+class _ColourCut:
+    """A classifier from outside the package, as docs/api.md defines one."""
+
+    limit: float
+    column: str
+
+    PIPPIN_OPTS: ClassVar[tuple[str, ...]] = ("LIMIT",)
+
+    @classmethod
+    def from_pippin(cls, name, opts, types, locate):
+        return cls(limit=opts["LIMIT"], column=f"PROB_{name}")
+
+    def predict(self, fit, photometry, model):
+        return pd.Series((fit.df["c"].abs() < self.limit).astype(float).to_numpy(),
+                         index=fit.df["CID"].astype(str), name=self.column)
+
+
+def test_a_registered_classifier_can_be_named(tmp_path):
+    """A classifier registered under a name is built from the OPTS of a task
+    naming it, and an unregistered one has no stage."""
+    config = {"SIM": {"DATA": _sim()}, "LCFIT": {"D": {"BASE": str(_NML)}},
+              "CLASSIFICATION": {"CUT": {"CLASSIFIER": "ColourCutClassifier", "MODE": "predict",
+                                         "OPTS": {"LIMIT": 0.3}}}}
+    assert "CUT_D_DATA" not in _by_name(read(_write(tmp_path, config)))
+
+    register_classifier("ColourCutClassifier", _ColourCut)
+    try:
+        stages = _by_name(read(_write(tmp_path, config)))
+    finally:
+        del CLASSIFIER_REGISTRY["ColourCutClassifier"]
+
+    assert stages["CUT_D_DATA"].classifier == _ColourCut(limit=0.3, column="PROB_CUT")
+
+
+def test_training_needs_one_realisation(tmp_path):
+    """A training task cannot train on a simulation with several
+    realisations, as Pippin asserts (classifier.py:393-401)."""
+    config = {"SIM": {"TRAIN": {**_sim(), "GLOBAL": {"RANSEED_CHANGE": "2 10"}}},
+              "CLASSIFICATION": {"SNNTRAIN": _SNN_TRAIN}}
+    with pytest.raises(SNANAError, match="has 2 realisations"):
+        read(_write(tmp_path, config))
+
+
+def test_simulated_types_label_each_components_gentype(tmp_path):
+    """Pippin labels a component's GENTYPE, and the same type plus 100, Ia
+    when its GENMODEL is a type Ia model (snana_sim.py:110-190), reading
+    GENTYPE from the component's keys and GENMODEL from an included file
+    only when the BASE file has none, and SNANA simulates the Ia components
+    first. Here MLCS matches in any case, where Pippin would label it II.
+    SuperNNova then uses these types, adding 29 as core collapse when there
+    is none, and 1, 10 and 110 as Ia."""
+    included = tmp_path / "included.input"
+    included.write_text("GENMODEL: $SNDATA_ROOT/models/NON1ASED\n")
+    core_collapse = tmp_path / "cc.input"
+    core_collapse.write_text(f"INPUT_FILE_INCLUDE: {included}\nGENTYPE: 20\n")
+    keyed = tmp_path / "keyed.input"
+    keyed.write_text("GENMODEL: NON1ASED\n")
+    mlcs = tmp_path / "mlcs.input"
+    mlcs.write_text("GENTYPE: 5\nGENMODEL: MLCS2k2\n")
+    config = {"SIM": {"TRAIN": {**_sim(), "CC": {"BASE": str(core_collapse)},
+                                "KEYED": {"BASE": str(keyed), "GENTYPE": 30},
+                                "MLCS": {"BASE": str(mlcs)}}},
+              "CLASSIFICATION": {"SNNTRAIN": _SNN_TRAIN}}
+
+    stages = _by_name(read(_write(tmp_path, config)))
+    trained = stages["SNNTRAIN_TRAIN"]
+
+    # SNANA simulates the Ia components first (submit_prog_sim.py:1139-1140)
+    assert stages["TRAIN"].input_files == (_SIM_INPUT, mlcs, core_collapse, keyed)
+    # the fixture simulates GENTYPE 1 with SALT3
+    assert trained.classifier.sntypes == {1: "Ia", 5: "Ia", 20: "II", 30: "II", 101: "Ia",
+                                          105: "Ia", 120: "II", 130: "II", 10: "Ia", 110: "Ia"}
+    config["SIM"]["TRAIN"] = _sim()
+    trained = _by_name(read(_write(tmp_path, config)))["SNNTRAIN_TRAIN"]
+    assert trained.classifier.sntypes == {1: "Ia", 101: "Ia", 29: "II", 10: "Ia", 110: "Ia"}
+
+
+def test_given_sntypes_are_used_as_given(tmp_path):
+    """Pippin adds no core-collapse type to a task's own SNTYPES, given
+    inline or as a file, only 1, 10 and 110 as Ia (supernnova.py:105-116,
+    276-327)."""
+    config = {"SIM": {"TRAIN": _sim()},
+              "CLASSIFICATION": {"SNNTRAIN": {**_SNN_TRAIN, "OPTS": {"SNTYPES": {"1": "Ia"}}}}}
+    trained = _by_name(read(_write(tmp_path, config)))["SNNTRAIN_TRAIN"]
+    assert trained.classifier.sntypes == {1: "Ia", 10: "Ia", 110: "Ia"}
+    listed = tmp_path / "sntypes.txt"
+    listed.write_text("# type name\n1 Ia\n20 II\n")
+    config["CLASSIFICATION"]["SNNTRAIN"]["OPTS"]["SNTYPES"] = str(listed)
+    trained = _by_name(read(_write(tmp_path, config)))["SNNTRAIN_TRAIN"]
+    assert trained.classifier.sntypes == {1: "Ia", 20: "II", 10: "Ia", 110: "Ia"}
+
+
+@pytest.mark.parametrize("recorded,opts,sntypes", [
+    (None, {"SNTYPES": {"1": "Ia"}}, {1: "Ia", 10: "Ia", 110: "Ia"}),
+    ({1: "Ia", 20: "II"}, {}, {1: "Ia", 20: "II", 10: "Ia", 110: "Ia"})])
+def test_completed_simulation_types_come_from_its_config(tmp_path, recorded, opts, sntypes):
+    """A completed Pippin simulation's types are those its config.yml
+    records under OUTPUT.types, or else SuperNNova's SNTYPES."""
+    sim = _external_ensemble(tmp_path, count=1)[0]
+    if recorded is not None:
+        saved = yaml.safe_load((sim / "config.yml").read_text())
+        saved["OUTPUT"]["types"] = recorded
+        (sim / "config.yml").write_text(yaml.safe_dump(saved))
+    config = {"SIM": {"TRAIN": {"EXTERNAL": str(sim)}},
+              "CLASSIFICATION": {"SNNTRAIN": {**_SNN_TRAIN, "OPTS": opts}}}
+
+    trained = _by_name(read(_write(tmp_path, config)))["SNNTRAIN_TRAIN"]
+
+    assert trained.classifier.sntypes == sntypes
+
+
+def test_a_completed_simulation_without_types_needs_sntypes(tmp_path):
+    """SuperNNova needs SNTYPES when the completed simulation's config.yml
+    records no OUTPUT.types."""
+    sim = _external_ensemble(tmp_path, count=1)[0]
+    config = {"SIM": {"TRAIN": {"EXTERNAL": str(sim)}}, "CLASSIFICATION": {"SNNTRAIN": _SNN_TRAIN}}
+    with pytest.raises(SNANAError, match="records no OUTPUT.types"):
+        read(_write(tmp_path, config))
+
+
+def _two_trainings(tmp_path, train_opts, test_opts, classifier):
+    """A training task matching two simulations, a predicting task naming
+    it, and a BIASCOR task reading ``classifier``."""
+    (tmp_path / "bbc.input").write_text("nzbin=10\n")
+    return {"SIM": {"TRAINA": _sim(), "TRAINB": _sim(), "DATA": _sim()},
+            "LCFIT": {"D": {"BASE": str(_NML), "MASK": "DATA"}},
+            "CLASSIFICATION": {"SNNTRAIN": {**_SNN_TRAIN, "OPTS": train_opts},
+                               "SNNTEST": {**_SNN_PREDICT, "OPTS": {"MODEL": "SNNTRAIN", **test_opts}}},
+            "BIASCOR": {"B": {"BASE": str(tmp_path / "bbc.input"), "DATA": ["D_DATA"],
+                              "CLASSIFIER": classifier}}}
+
+
+def test_one_prediction_for_each_training(tmp_path):
+    """A training task whose mask matches two simulations trains on each.
+    A predicting task naming it predicts with each, carrying the training's
+    name and column; BIASCOR reads the last, as Pippin's prob_cols keeps the
+    last (classifier.py:459-498, biascor.py:615-619)."""
+    config = _two_trainings(tmp_path, {}, {}, "SNNTEST")
+
+    stages = _by_name(read(_write(tmp_path, config)))
+
+    for training in ("SNNTRAIN_TRAINA", "SNNTRAIN_TRAINB"):
+        prediction = stages[f"SNNTEST_D_DATA_{training}"]
+        assert prediction.model is stages[training]
+        assert prediction.classifier.column == f"PROB_{training}"
+    assert stages["B"].data == (stages["SNNTEST_D_DATA_SNNTRAIN_TRAINB"],)
+    assert stages["B"].overrides["varname_pIa"] == "PROB_SNNTRAIN_TRAINB"
+
+
+@pytest.mark.parametrize("test_opts,prediction_column", [
+    ({}, "PROB_TRAINED"), ({"PROB_COLUMN_NAME": "PROB_SNN"}, "PROB_SNN")])
+def test_prob_column_name_names_the_columns(tmp_path, test_opts, prediction_column):
+    """A training's PROB_COLUMN_NAME names its column, which its predictions
+    carry unless they give their own (classifier.py:156-181)."""
+    config = _two_trainings(tmp_path, {"PROB_COLUMN_NAME": "PROB_TRAINED"}, test_opts, "SNNTEST")
+
+    stages = _by_name(read(_write(tmp_path, config)))
+
+    assert stages["SNNTRAIN_TRAINA"].classifier.column == "PROB_TRAINED"
+    assert stages["SNNTEST_D_DATA_SNNTRAIN_TRAINA"].classifier.column == prediction_column
+
+
+def test_a_training_task_gives_biascor_no_column(tmp_path):
+    """Only predicting tasks give BIASCOR a column (aggregator.py:449-456)."""
+    config = _two_trainings(tmp_path, {}, {}, "SNNTRAIN")
+    with pytest.raises(SNANAError, match="names no classification task"):
+        read(_write(tmp_path, config))
+
+
+@pytest.mark.parametrize("types,ia_types", [
+    ({"IA": [1, 101], "NONIA": [20]}, (1, 101)), (None, (1,))])
+def test_perfect_ia_types_come_from_dataprep_types(tmp_path, types, ia_types):
+    """Pippin's PerfectClassifier counts an event as Ia when its type is one
+    of the source's Ia types (perfect.py:96-107), which for data come from
+    DATAPREP TYPES, by default IA [1] when TYPES is not given
+    (dataprep.py:79-121)."""
+    data = tmp_path / "VERSION"
+    data.mkdir()
+    config = {"DATAPREP": {"DATA": {"OPTS": {"RAW_DIR": str(data), "TYPES": types}}},
+              "LCFIT": {"D": {"BASE": str(_NML)}},
+              "CLASSIFICATION": {"P": {"CLASSIFIER": "PerfectClassifier", "MODE": "predict"}}}
+
+    classifier = _by_name(read(_write(tmp_path, config)))["P_D_DATA"].classifier
+
+    assert classifier.ia_types == ia_types
+    assert classifier.column == "PROB_P"
 
 
 @pytest.mark.parametrize(('options', 'expected'), [
@@ -314,31 +747,36 @@ def test_supernnova_redshift_option_reaches_preprocessing(tmp_path, options, exp
 
 def test_external_predictions_are_joined_where_pippin_would_reuse_them(tmp_path):
     """A predicting task's EXTERNAL_DIRS holds the same task's outputs from an
-    earlier Pippin run. Where a directory carries the name Pippin gives the
-    task (task, simulation, then the model's directory), its predictions are
-    joined onto the fits of that simulation; a simulation with no such
-    directory is classified here. A training task with EXTERNAL_DIRS, and any
-    task key not read here, are refused."""
-    reused = tmp_path / "SNNTEST_DATASIM_SNNTRAIN_DESTRAIN"
-    reused.mkdir()
-    (reused / "predictions.csv").write_text("SNID,PROB_SNNTEST\n1,0.9\n")
+    earlier Pippin run. Where a folder carries the name Pippin gives the
+    prediction (task, the realisation number when there are several,
+    simulation, then the model's folder; classifier.py:187-202), its
+    predictions are joined onto the fits of that version; a version with no
+    such folder is classified here, writing PROB_<model's folder>. A training
+    task with EXTERNAL_DIRS, and any task key not read here, are refused."""
+    reused = [tmp_path / "SNNTEST_DATASIM_SNNTRAIN_DESTRAIN",
+              tmp_path / "SNNTEST_2_OTHERSIM_SNNTRAIN_DESTRAIN"]
+    for folder in reused:
+        folder.mkdir()
+        (folder / "predictions.csv").write_text("SNID,PROB_SNNTRAIN_DESTRAIN\n1,0.9\n")
     model = tmp_path / "SNNTRAIN_DESTRAIN" / "model.pt"
     model.parent.mkdir()
     model.write_bytes(b"model")
-    config = {"SIM": {"DATASIM": _sim(), "OTHERSIM": _sim()},
+    config = {"SIM": {"DATASIM": _sim(), "OTHERSIM": {**_sim(), "GLOBAL": {"RANSEED_CHANGE": "2 10"}}},
               "LCFIT": {"D": {"BASE": str(_NML)}},
               "CLASSIFICATION": {
                   "SNNTEST": {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "predict",
                               "OPTS": {"MODEL": str(model)},
-                              "EXTERNAL_DIRS": [str(reused)]}}}
+                              "EXTERNAL_DIRS": [str(folder) for folder in reused]}}}
 
     stages = _by_name(read(_write(tmp_path, config)))
 
-    assert stages["SNNTEST_D_DATASIM"].fit == _fit(stages, "LCFIT_D", "DATASIM")
-    assert stages["SNNTEST_D_DATASIM"].predictions == reused / "predictions.csv"
-    assert stages["SNNTEST_D_DATASIM"].classifier is None
-    assert stages["SNNTEST_D_OTHERSIM"].predictions is None
-    assert stages["SNNTEST_D_OTHERSIM"].model == model
+    data = stages["SNNTEST_D_DATASIM_SNNTRAIN_DESTRAIN"]
+    assert data.fit == _fit(stages, "LCFIT_D", "DATASIM")
+    assert data.predictions == reused[0] / "predictions.csv" and data.classifier is None
+    assert stages["SNNTEST_D_OTHERSIM-0002_SNNTRAIN_DESTRAIN"].predictions == reused[1] / "predictions.csv"
+    classified = stages["SNNTEST_D_OTHERSIM-0001_SNNTRAIN_DESTRAIN"]
+    assert classified.predictions is None and classified.model == model
+    assert classified.classifier.column == "PROB_SNNTRAIN_DESTRAIN"
 
     config["CLASSIFICATION"]["SNNTEST"]["MODE"] = "train"
     with pytest.raises(SNANAError, match="EXTERNAL_DIRS on a training task"):
@@ -349,11 +787,48 @@ def test_external_predictions_are_joined_where_pippin_would_reuse_them(tmp_path)
         read(_write(tmp_path, config))
 
 
+@pytest.mark.parametrize("task,match", [
+    ({}, "BASE is required"),
+    ({"BASE": str(_NML), "FITOPTS": ["/mwebv/ MWEBV_SCALE 0.95", "/mwebv/ MWEBV_SCALE 1.05"]},
+     "gives the label mwebv twice"),
+    ({"BASE": str(_NML), "SNLCINP": {"USE_MINOS": None}}, "USE_MINOS is null"),
+    ({"BASE": str(_NML), "MASK": ["S", "TYPO"]}, "mask 'TYPO' matches no SIM or DATAPREP task"),
+    ({"BASE": str(_NML), "MASK": []}, "selects no SIM or DATAPREP task")])
+def test_lcfit_refusals(tmp_path, task, match):
+    """An LCFIT task needs a BASE namelist (snana_fit.py:36-38). A FITOPT
+    label given twice is refused, and so is a null namelist value, which
+    Pippin uses to remove a key from the BASE file. Each entry of a MASK
+    list must match a task (task.py:411-431), and an empty list matches
+    none."""
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, {"SIM": {"S": _sim()}, "LCFIT": {"D": task}}))
+
+
+@pytest.mark.parametrize("text,copies,match", [
+    ("GLOBAL: {}\n", 2, "FITOPTS names two files"),
+    ("GLOBAL: {CAL: 1.0}\n", 1, "gives a scale but no fit settings")])
+def test_fitopts_file_refusals(tmp_path, text, copies, match):
+    """An LCFIT task may name one FITOPTS file (snana_fit.py:129-135), and
+    each entry of the blocks Pippin reads gives fit settings after its scale
+    (snana_fit.py:166-178)."""
+    fitopts = tmp_path / "fitopts.yml"
+    fitopts.write_text(text)
+    task = {"BASE": str(_NML), "FITOPTS": [str(fitopts)] * copies}
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, {"SIM": {"S": _sim()}, "LCFIT": {"D": task}}))
+
+
+def test_data_directories_must_be_a_list_of_existing_folders(tmp_path):
+    """GLOBAL DATA_DIRS is a list, and each directory in it must exist."""
+    with pytest.raises(SNANAError, match="DATA_DIRS must be a list"):
+        read(_write(tmp_path, {"GLOBAL": {"DATA_DIRS": str(tmp_path)}}))
+    with pytest.raises(SNANAError, match="does not exist"):
+        read(_write(tmp_path, {"GLOBAL": {"DATA_DIRS": [str(tmp_path / "missing")]}}))
+
+
 def test_refusals_name_what_is_unsupported(tmp_path):
     base = {"SIM": {"S": _sim()}, "LCFIT": {"D": {"BASE": str(_NML)}}}
 
-    with pytest.raises(SNANAError, match="RANSEED_CHANGE"):
-        read(_write(tmp_path, {"SIM": {"S": {**_sim(), "GLOBAL": {"RANSEED_CHANGE": "2 1", "RANSEED_REPEAT": "1 2"}}}}))
     with pytest.raises(SNANAError, match="SconeClassifier"):
         read(_write(tmp_path, {
             **base,
@@ -361,20 +836,58 @@ def test_refusals_name_what_is_unsupported(tmp_path):
             "BIASCOR": {"B": {"BASE": str(_NML), "DATA": ["D_S"], "CLASSIFIER": "SC"}}}))
     with pytest.raises(SNANAError, match="names no LCFIT"):
         read(_write(tmp_path, {**base, "BIASCOR": {"B": {"BASE": str(_NML), "DATA": ["D_X"]}}}))
+    with pytest.raises(SNANAError, match="DATA is required"):
+        read(_write(tmp_path, {**base, "BIASCOR": {"B": {"BASE": str(_NML)}}}))
+    with pytest.raises(SNANAError, match="cannot mix NGEN_UNIT and NGENTOT_LC"):
+        read(_write(tmp_path, {"SIM": {"S": {**_sim(NGENTOT_LC=10), "GLOBAL": {"NGEN_UNIT": 1}}}}))
     with pytest.raises(SNANAError, match="matches no"):
         read(_write(tmp_path, {"SIM": {"S": _sim()},
                                "LCFIT": {"D": {"BASE": str(_NML), "MASK": "NOPE"}}}))
 
 
-def test_skipped_sections_do_not_abort_unless_depended_on(tmp_path):
+@pytest.mark.parametrize("aggregation", [None, {"RECALIBRATION": "S"}])
+def test_skipped_sections_do_not_abort_unless_depended_on(tmp_path, aggregation):
+    """Sections and cosmology fitters with no stage here are skipped, as
+    Pippin skips a fitter it does not know (cosmofit.py:33-39), and an
+    AGGREGATION RECALIBRATION is ignored (aggregator.py:52-61)."""
     config = {"SIM": {"S": _sim()}, "LCFIT": {"D": {"BASE": str(_NML)}},
               "CLASSIFICATION": {"SC": {"CLASSIFIER": "SconeClassifier", "MODE": "predict"}},
-              "AGGREGATION": {"AGG": None}, "MERGE": {"MERGE": None},
-              "ANALYSE": {"A": {"MASK_COSMOMC": "x"}}, "COSMOMC": {"SN": {"OPTS": {}}}}
+              "AGGREGATION": {"AGG": aggregation}, "MERGE": {"MERGE": None},
+              "ANALYSE": {"A": {"MASK_COSMOMC": "x"}}, "COSMOMC": {"SN": {"OPTS": {}}},
+              "COSMOFIT": {"NOSUCHFITTER": {}}, "BIASCORR": {"B": {"DATA": ["D_S"]}}}
 
-    stages = _by_name(read(_write(tmp_path, config)))
+    assert set(_by_name(read(_write(tmp_path, config)))) == {"S", "LCFIT_D"}
+
+
+@pytest.mark.parametrize("aggregation,match", [
+    ({"RECALIBRATION": "S", "LEGACY": True}, "LEGACY aggregator's RECALIBRATION is not supported"),
+    ({"MERGE_CLASSIFIERS": {"PROB_X": "SC"}}, "MERGE_CLASSIFIERS is no longer accepted")])
+def test_aggregation_refusals(tmp_path, aggregation, match):
+    """A LEGACY task's RECALIBRATION is refused, and MERGE_CLASSIFIERS, as
+    Pippin refuses it (aggregator.py:125-129)."""
+    config = {"SIM": {"S": _sim()}, "AGGREGATION": {"AGG": aggregation}}
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, config))
+
+
+def test_anchors_from_an_included_file_and_pippin_only_settings(tmp_path):
+    """Pippin's include line splices in a file of YAML anchors before the
+    config is read; anchor sections, Pippin's CFG_PATH, a SIM task's
+    GENVERSION and the APPEND_TABLE_VARLIST fit option are skipped."""
+    anchors = tmp_path / "anchors.yml"
+    anchors.write_text(f"ALIAS:\n  SIM_BASE: &sim_base\n    BASE: {_SIM_INPUT}\n")
+    config = tmp_path / "config.yml"
+    config.write_text(f"# % include: {anchors} %\n"
+                      "GLOBAL:\n  CFG_PATH: cluster.yml\n"
+                      f"ANCHORS_FIT:\n  FIT: &fit\n    BASE: {_NML}\n"
+                      "SIM:\n  S:\n    GENVERSION: MY_SIM\n    IA:\n      <<: *sim_base\n"
+                      "LCFIT:\n  D:\n    <<: *fit\n    OPTS:\n      APPEND_TABLE_VARLIST: SNRMAX_g\n")
+
+    stages = _by_name(read(config))
 
     assert set(stages) == {"S", "LCFIT_D"}
+    assert stages["S"].input_files == (_SIM_INPUT,)
+    assert stages["LCFIT_D"].input_file == _NML
 
 
 def _cov_config(tmp_path, opts):
@@ -393,31 +906,34 @@ def _cov_config(tmp_path, opts):
 ])
 def test_covariance_binning(tmp_path, opts, mode, bins):
     stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, opts))))["C"]
-    assert stage.mode == mode and stage.rebin_bins == bins
-    assert stage.nbin_x1 == opts.get("REBINNED_X1", 0)
-    assert stage.nbin_c == opts.get("REBINNED_C", 0)
+    config, _, _ = stage.configuration()
+    assert config.mode == mode and stage.rebin_bins == bins
+    assert stage.nbin_x1 == opts.get("REBINNED_X1")
+    assert stage.nbin_c == opts.get("REBINNED_C")
 
 
 def test_external_covariance_and_calibrators(tmp_path):
-    extra = tmp_path / "external.npz"
-    extra.write_bytes(b"placeholder")
-    opts = {"BINNED": False, "EXTRA_COVS": ["calibration 0.5 external.npz"],
-            "CALIBRATORS": ["SN_A"], "SYSTEMATIC_HD": True}
-    stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, opts)),
-                          data_dirs=[tmp_path]))["C"]
-    assert stage.extra_covs == (("calibration", 0.5, extra),)
+    """SNANA reads an EXTRA_COVS entry's first three words as its label,
+    scale and file (create_covariance.py:2712-2715), and an empty EXTRA_OPTS
+    adds nothing (create_cov.py:228-230)."""
+    opts = {"BINNED": False, "EXTRA_COVS": [f"calibration 0.5 {tmp_path / 'external.npz'} note"],
+            "CALIBRATORS": ["SN_A"], "SYSTEMATIC_HD": True, "EXTRA_OPTS": None}
+    stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, opts))))["C"]
+    assert stage.extra_covs == (("calibration", 0.5, tmp_path / "external.npz"),)
     assert stage.calibrators == ["SN_A"] and stage.systematic_hd
 
 
 @pytest.mark.parametrize("opts,match", [
-    ({"REBINNED_X1": 2}, "both be positive"),
-    ({"REBINNED_X1": True, "REBINNED_C": 2}, "both be positive"),
-    ({"REBINNED_X1": -1, "REBINNED_C": 2}, "both be positive"),
+    ({"REBINNED_X1": 2}, "both nbin_x1 and nbin_c"),
+    ({"REBINNED_X1": True, "REBINNED_C": 2}, "positive integer"),
+    ({"REBINNED_X1": -1, "REBINNED_C": 2}, "positive integer"),
     ({"REBINNED_X1": 2, "REBINNED_C": 2, "REBIN_BINS": {}}, "not both"),
     ({"CALIBRATORS": ["A"]}, "require mode='unbinned'"),
     ({"BINNED": False, "EXTRA_COVS": ["bad"]}, "label scale file"),
     ({"BINNED": False, "EXTRA_COVS": ["a nope x"]}, "scale"),
     ({"BINNED": False, "EXTRA_COVS": ["a nan x"]}, "scale"),
+    # SNANA reads the file from a job folder of its own, so a relative path cannot work
+    ({"BINNED": False, "EXTRA_COVS": ["a 1 external.npz"]}, "absolute path"),
     ({"SYSTEMATC_HD": True}, "SYSTEMATC_HD"),
     ({"EXTRA_OPTS": "--something"}, "EXTRA_OPTS"),
 ])
@@ -426,25 +942,33 @@ def test_covariance_options_are_validated(tmp_path, opts, match):
         read(_write(tmp_path, _cov_config(tmp_path, opts)))
 
 
-@pytest.mark.parametrize("mask", ["*", ["B", "unmatched"]])
-def test_covariance_masks(tmp_path, mask):
+@pytest.mark.parametrize("mask,match", [
+    ("*", "matches no BIASCOR task"), (["B"], "MASK must be a string")])
+def test_covariance_masks_are_plain_substrings(tmp_path, mask, match):
+    """Pippin's CREATE_COV mask is a plain substring of the BIASCOR task's
+    name (create_cov.py:340-345), so * is literal and a list is refused."""
     config = _cov_config(tmp_path, {})
     config["CREATE_COV"]["C"]["MASK_BIASCOR"] = mask
-    assert _by_name(read(_write(tmp_path, config)))["C"].distances.name == "B"
+    with pytest.raises(SNANAError, match=match):
+        read(_write(tmp_path, config))
 
 
 def test_covariance_unknown_task_keys_are_rejected(tmp_path):
     config = _cov_config(tmp_path, {})
     config["CREATE_COV"]["C"]["SYSTEMATIC_HD"] = True
-    with pytest.raises(SNANAError, match="unsupported task key.*SYSTEMATIC_HD"):
+    with pytest.raises(SNANAError, match="unsupported setting.*SYSTEMATIC_HD"):
         read(_write(tmp_path, config))
 
 
 
-@pytest.mark.parametrize("extra,mode", [({}, "unbinned"), ({"REBIN_BINS": {}}, "rebin")])
-def test_pippin_velocity_subtraction_uses_unbinned(tmp_path, extra, mode):
+@pytest.mark.parametrize("extra,subtract_vpec,mode", [({}, True, "unbinned"),
+                                                      ({"BINNED": False}, True, "unbinned"),
+                                                      ({"REBIN_BINS": {}}, None, "rebin")])
+def test_pippin_velocity_subtraction_gives_way_to_rebinning(tmp_path, extra, subtract_vpec, mode):
+    """Pippin passes rebinning, else SUBTRACT_VPEC, else BINNED
+    (create_cov.py:207-221), and SNANA's velocity subtraction is unbinned."""
     stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, {"SUBTRACT_VPEC": True, **extra}))))["C"]
-    assert stage.mode == mode and stage.subtract_vpec
+    assert stage.subtract_vpec is subtract_vpec
     assert stage.configuration()[0].mode == mode
 
 
@@ -457,8 +981,9 @@ def test_pippin_selects_and_replaces_correction_fitopts(tmp_path):
     bbc.update(SIMFILE_BIASCOR=["D_S"], SIMFILE_BIASCOR_FITOPTS=[1],
                SIMFILE_CCPRIOR=["D_S"], SIMFILE_CCPRIOR_FITOPTS=[0],
                OPTS={"REPLACE_SIMFILE_BIASCOR": {"CAL": str(replacement)}})
-    bbc["MUOPTS"] = {"alternate": {"SIMFILE_BIASCOR": ["D_S"],
-                                     "SIMFILE_BIASCOR_FITOPTS": [1]}}
+    # Pippin reads a MUOPT's FITOPTS only with its simulations (biascor.py:512-541)
+    bbc["MUOPTS"] = {"alternate": {"SIMFILE_BIASCOR": ["D_S"], "SIMFILE_BIASCOR_FITOPTS": [1]},
+                     "same": {"SIMFILE_BIASCOR_FITOPTS": [1]}}
     stage = _by_name(read(_write(tmp_path, config)))["B"]
     assert stage.muopt_biascor_fitopts == {"alternate": ["CAL"]}
     assert stage.biascor_fitopts == ["CAL"] and stage.ccprior_fitopts == [None]
@@ -469,6 +994,11 @@ def test_pippin_selects_and_replaces_correction_fitopts(tmp_path):
         read(_write(tmp_path, config))
     bbc["SIMFILE_BIASCOR_FITOPTS"] = [0, 1]
     with pytest.raises(SNANAError, match="one entry per"):
+        read(_write(tmp_path, config))
+    # SNANA reads the file from a job folder of its own, so a relative path cannot work
+    bbc["SIMFILE_BIASCOR_FITOPTS"] = [1]
+    bbc["OPTS"]["REPLACE_SIMFILE_BIASCOR"]["CAL"] = "alternate.FITRES"
+    with pytest.raises(SNANAError, match="absolute path"):
         read(_write(tmp_path, config))
 
 
@@ -526,29 +1056,36 @@ def test_mismatched_realisation_counts_are_rejected(tmp_path):
 
 
 
-def test_repeated_muopt_corrections_resolve_per_realisation(tmp_path):
+def test_correction_simulations_use_their_first_realisation(tmp_path):
+    """As in Pippin (biascor.py:414-435), a correction simulation with
+    several realisations is read at its first, and only DATA makes one BBC
+    fit per realisation."""
     config = _cov_config(tmp_path, {})
-    config["SIM"]["T"] = {**_sim(), "GLOBAL": {"RANSEED_CHANGE": "2 123"}}
-    config["BIASCOR"]["B"].update(SIMFILE_BIASCOR=["D_S"], MUOPTS={
+    config["SIM"]["S"]["GLOBAL"] = {"RANSEED_CHANGE": "2 100"}
+    config["SIM"]["T"] = {**_sim(), "GLOBAL": {"RANSEED_CHANGE": "3 123"}}
+    config["BIASCOR"]["B"].update(SIMFILE_BIASCOR=["D_T"], MUOPTS={
         "alternate": {"SIMFILE_BIASCOR": ["D_T"]}})
     stages = _by_name(read(_write(tmp_path, config)))
     for i in (1, 2):
         stage = stages[f"B-{i:04d}"]
-        assert stage.data == (_fit(stages, "LCFIT_D", "S"),)
-        assert stage.biascor == (_fit(stages, "LCFIT_D", "S"),)
-        assert stage.muopts["alternate"]["simfile_biascor"] == [
-            _fit(stages, "LCFIT_D", f"T-{i:04d}")]
+        assert stage.data == (_fit(stages, "LCFIT_D", f"S-{i:04d}"),)
+        assert stage.biascor == (_fit(stages, "LCFIT_D", "T-0001"),)
+        assert stage.muopts["alternate"]["simfile_biascor"] == [_fit(stages, "LCFIT_D", "T-0001")]
 
 
-def test_partial_realisation_masks_require_explicit_fit_names(tmp_path):
+def test_one_realisation_cannot_be_selected(tmp_path):
+    """SIM task S with RANSEED_CHANGE makes realisations S-0001 and S-0002.
+    As in Pippin, neither BIASCOR DATA nor an LCFIT mask can pick out S-0002
+    alone: DATA must name an LCFIT task (D_S), and a mask must match a SIM
+    task's name (S)."""
     config = _cov_config(tmp_path, {})
     config["SIM"]["S"]["GLOBAL"] = {"RANSEED_CHANGE": "2 123"}
-    config["LCFIT"]["D"]["MASK"] = "S-0002"
-    with pytest.raises(SNANAError, match="names no LCFIT"):
-        read(_write(tmp_path, config))
     config["BIASCOR"]["B"]["DATA"] = ["D_S-0002"]
-    stages = _by_name(read(_write(tmp_path, config)))
-    assert stages["B"].data == (_fit(stages, "LCFIT_D", "S-0002"),)
+    with pytest.raises(SNANAError, match="names no LCFIT task"):
+        read(_write(tmp_path, config))
+    config["LCFIT"]["D"]["MASK"] = "S-0002"
+    with pytest.raises(SNANAError, match="matches no SIM or DATAPREP task"):
+        read(_write(tmp_path, config))
 
 
 @pytest.mark.parametrize("section,setting", [
@@ -565,7 +1102,7 @@ def test_unknown_task_settings_are_rejected(tmp_path, section, setting):
         read(_write(tmp_path, config))
 
 
-@pytest.mark.parametrize("section,setting", [("LCFIT", "OPT_SNCID_LIST"),
+@pytest.mark.parametrize("section,setting", [("LCFIT", "CUTWIN_SNRMAX"),
                                               ("SIM", "BLNID")])
 def test_analysis_options_are_not_treated_as_batch_settings(tmp_path, section, setting):
     config = _cov_config(tmp_path, {})
@@ -574,14 +1111,69 @@ def test_analysis_options_are_not_treated_as_batch_settings(tmp_path, section, s
         read(_write(tmp_path, config))
 
 
-def test_unknown_wfit_options_and_sections_are_rejected(tmp_path):
+def test_unknown_wfit_options_are_rejected(tmp_path):
     config = _cov_config(tmp_path, {})
-    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/a/ -lcdm"], "COVOPTS": ["ALL"]}}}}
-    with pytest.raises(SNANAError, match="COVOPTS"):
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/a/ -lcdm"], "FITAVG": True}}}}
+    with pytest.raises(SNANAError, match="FITAVG"):
         read(_write(tmp_path, config))
-    config.pop("COSMOFIT")
-    config["BIASCORR"] = {}
-    with pytest.raises(SNANAError, match="BIASCORR"):
+
+
+@pytest.mark.parametrize("key", ["COVOPT", "COVOPTS"])
+def test_wfit_covopts_select_the_covariances_fitted(tmp_path, key):
+    """SNANA fits only the covariance labels COVOPT or COVOPTS lists, and no
+    covariance none of whose labels is listed (submit_prog_cosmofit.py:272-275,
+    581-599)."""
+    config = _cov_config(tmp_path, {"COVOPTS": ["[NOSYS] [=DEFAULT,=DEFAULT]"]})
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"], key: "NOSYS"}}}}
+    assert _by_name(read(_write(tmp_path, config)))["WFIT_W_lcdm"].covopts == ("NOSYS",)
+    config["COSMOFIT"]["WFIT"]["W"]["OPTS"][key] = "OTHER"
+    assert "WFIT_W_lcdm" not in _by_name(read(_write(tmp_path, config)))
+
+
+@pytest.mark.parametrize("cosmofit", [{"wfit": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"]}}}},
+                                      {"WFIT": {}}])
+def test_a_wfit_section_must_give_wfit_tasks(tmp_path, cosmofit):
+    """Pippin finds the fitter of a wfit section in any case, but its WFIT
+    reads tasks only from WFIT, and it refuses a fitter that makes none
+    (cosmofit.py:33-49, wfit.py:128-129)."""
+    config = _cov_config(tmp_path, {})
+    config["COSMOFIT"] = cosmofit
+    with pytest.raises(SNANAError, match="gives no WFIT tasks"):
+        read(_write(tmp_path, config))
+
+
+@pytest.mark.parametrize("opts,blind_mode", [({}, "auto"), ({"BLIND_SIM": True}, "blind"),
+                                             ({"BLIND_DATA": False}, "none")])
+def test_wfit_blinding_follows_snana(tmp_path, opts, blind_mode):
+    """SNANA blinds data, and not simulations, unless BLIND_DATA and
+    BLIND_SIM say otherwise (submit_prog_cosmofit.py:698-750)."""
+    config = _cov_config(tmp_path, {})
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"], **opts}}}}
+    assert _by_name(read(_write(tmp_path, config)))["WFIT_W_lcdm"].overrides["blind_mode"] == blind_mode
+
+
+def test_wfit_options_are_labelled_or_numbered(tmp_path):
+    """As SNANA reads WFITOPTS (submit_util.py:399-435), a /label/ names a
+    fit, and an entry without one is numbered."""
+    config = _cov_config(tmp_path, {})
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/ lcdm / -lcdm", "-lcdm"]}}}}
+
+    stages = _by_name(read(_write(tmp_path, config)))
+
+    assert "WFIT_W_lcdm" in stages and "WFIT_W_WFITOPT001" in stages
+
+
+@pytest.mark.parametrize("entry,match", [
+    ("/two words/ -lcdm", "needs a one-word /label/"),
+    ("/lcdm", "needs a one-word /label/"),
+    ("-lcdm -outfile_resid a/b", "needs a one-word /label/"),
+    ("-lcdm -blind", "-blind cannot be a WFITOPT")])
+def test_wfit_option_refusals(tmp_path, entry, match):
+    """A label must be one word, and any / makes an entry labelled
+    (submit_util.py:399-435); -blind is refused (submit_prog_cosmofit.py:719-732)."""
+    config = _cov_config(tmp_path, {})
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": [entry]}}}}
+    with pytest.raises(SNANAError, match=match):
         read(_write(tmp_path, config))
 
 
@@ -592,20 +1184,32 @@ def test_unknown_muopt_settings_are_rejected(tmp_path):
         read(_write(tmp_path, config))
 
 
+@pytest.mark.parametrize("settings", [{"OPTS": {"chi2max": [16, 20]}},
+                                      {"MUOPTS": {"ALT": {"OPTS": {"CUTWIN_zHD": ["0 1", "0 2"]}}}}])
+def test_biascor_lists_are_refused_where_they_cannot_work(tmp_path, settings):
+    """Pippin writes a list in task OPTS as the key repeated, which SALT2mu
+    refuses for any key but a CUTWIN, and a list in MUOPT OPTS as the list's
+    text (biascor.py:462-478, 550-560)."""
+    config = _cov_config(tmp_path, {})
+    config["BIASCOR"]["B"].update(settings)
+    with pytest.raises(SNANAError, match="must be one value, not a list"):
+        read(_write(tmp_path, config))
+
+
 def _external_ensemble(tmp_path, count=2):
+    """An earlier Pippin run's SIM task S, with RANSEED_CHANGE realisations,
+    and its LCFIT task D_S, laid out as Pippin writes them: the SIM task
+    records its folders in config.yml, and each fitted version is named after
+    its simulation folder."""
     sim = tmp_path / "simulation"
-    sim.mkdir()
-    folders = []
-    for i in range(1, count + 1):
-        directory = sim / f"VERSION-{i:04d}"
-        directory.mkdir()
-        (directory / "VERSION.LIST").write_text("")
-        folders.append(str(directory))
-    # The recorded ordering must not swap numbered realisations.
-    (sim / "config.yml").write_text(yaml.safe_dump({"OUTPUT": {"sim_folders": folders[::-1]}}))
+    folders = [sim / f"PIP_OLD_S-{i:04d}" for i in range(1, count + 1)]
+    for folder in folders:
+        folder.mkdir(parents=True)
+    (sim / "config.yml").write_text(yaml.safe_dump({"OUTPUT": {"sim_folders": [str(f) for f in folders],
+                                                               "blind": True}}))
     fit = tmp_path / "D_S"
-    for i in range(1, count + 1):
-        version = fit / "output" / f"VERSION-{i:04d}"
+    for folder in folders:
+        version = fit / "output" / folder.name
         version.mkdir(parents=True)
         for j in (0, 1):
             (version / f"FITOPT{j:03d}.FITRES").write_text("")
@@ -615,41 +1219,44 @@ def _external_ensemble(tmp_path, count=2):
 
 
 def test_external_ensemble_reuses_all_versions_and_their_labels(tmp_path):
+    """A completed simulation brings its versions and, as in Pippin
+    (task.py:119-121, snana_sim.py:110, 202), the BLIND its config.yml records."""
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
-    config["LCFIT"] = {"D": {"EXTERNAL_DIRS": [str(fit)]}}
+    config["LCFIT"] = {"D": {"BASE": str(_NML), "EXTERNAL_DIRS": [str(fit)]}}
     stages = _by_name(read(_write(tmp_path, config)))
     assert not any(isinstance(stage, Sim) for stage in stages.values())
     for i in (1, 2):
         source = stages[f"S-{i:04d}"]
         fitted = stages[f"D_S-{i:04d}"]
-        assert source.directory == sim / f"VERSION-{i:04d}"
-        assert fitted.fitres == fit / "output" / f"VERSION-{i:04d}"
+        assert source.directory == sim / f"PIP_OLD_S-{i:04d}"
+        assert fitted.fitres == fit / "output" / f"PIP_OLD_S-{i:04d}"
         assert fitted.input_file is None and fitted.systematics() == (("CAL",), ())
         assert stages[f"B-{i:04d}"].data == (fitted,)
+        assert stages[f"B-{i:04d}"].overrides["blindflag"] == 2
     assert len([s for s in stages.values() if isinstance(s, Covariance)]) == 2
 
 
-def test_missing_and_duplicate_external_realisations_are_rejected(tmp_path):
+def test_external_fits_for_another_task_are_ignored(tmp_path):
+    """As in Pippin (task.py:46-74), an EXTERNAL_DIRS entry whose folder is
+    not named for this task's source is ignored, and the source is fitted."""
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
-    config["LCFIT"] = {"D": {"EXTERNAL_DIRS": [str(fit), str(fit)]}}
-    with pytest.raises(SNANAError, match="duplicate external fits"):
-        read(_write(tmp_path, config))
-    config["LCFIT"]["D"]["EXTERNAL_DIRS"] = [str(fit)]
-    import shutil
-    shutil.rmtree(fit / "output" / "VERSION-0002")
-    with pytest.raises(SNANAError, match="every selected realisation"):
-        read(_write(tmp_path, config))
+    config["LCFIT"] = {"E": {"BASE": str(_NML), "EXTERNAL_DIRS": [str(fit)]}}
+    config["BIASCOR"]["B"]["DATA"] = ["E_S"]
+    stages = _by_name(read(_write(tmp_path, config)))
+    assert stages["LCFIT_E"].datasets == (stages["S-0001"], stages["S-0002"])
 
 
-@pytest.mark.parametrize("flags", ["--write_mask_cov 1", "--write_mask_cov 16",
-    "--mxsize_test_posdef -1", "--write_format_cov csv", "--outdir elsewhere",
-    "--write_mask 2", "--label_cov_rows ; touch unwanted", "'"])
-def test_covariance_extra_options_reject_invalid_flags(tmp_path, flags):
-    with pytest.raises(SNANAError, match="CREATE_COV"):
+@pytest.mark.parametrize("flags,match", [
+    ("--write_mask_cov 1", "WRITE_MASK_COV"), ("--write_mask_cov 16", "WRITE_MASK_COV"),
+    ("--mxsize_test_posdef -1", "mxsize_test_posdef"), ("--write_format_cov csv", "EXTRA_OPTS"),
+    ("--outdir elsewhere", "EXTRA_OPTS"), ("--write_mask 2", "EXTRA_OPTS"),
+    ("--label_cov_rows ; touch unwanted", "EXTRA_OPTS"), ("'", "EXTRA_OPTS")])
+def test_covariance_extra_options_reject_invalid_flags(tmp_path, flags, match):
+    with pytest.raises(SNANAError, match=match):
         read(_write(tmp_path, _cov_config(tmp_path, {"EXTRA_OPTS": flags})))
 
 
@@ -663,14 +1270,16 @@ def test_covariance_extra_options(tmp_path):
 
 
 @pytest.mark.parametrize("column,expected", [("PROB_TEST", "CPROB_TEST"),
-                                           ("CPROB_TEST", "CPROB_TEST")])
+                                           ("CPROB_TEST", "CCPROB_TEST")])
 def test_recalibrated_probability_selection(tmp_path, column, expected):
+    """Pippin reads PROB_ as CPROB_ wherever it appears in the column's name
+    (biascor.py:124-129), and CUTWIN_PROB_IA cuts on that column."""
     config = _cov_config(tmp_path, {})
     config["BIASCOR"]["B"].update(PROB_COLUMN_NAME=column, USE_RECALIBRATED=True,
                                   OPTS={"CUTWIN_PROB_IA": "0.5 1"})
     stage = _by_name(read(_write(tmp_path, config)))["B"]
     assert stage.overrides["varname_pIa"] == expected
-    assert f"CUTWIN {expected}" in stage.overrides
+    assert stage.overrides["CUTWIN varname_pIa"] == "0.5 1"
     assert stage.require_probability_column
 
 
@@ -682,7 +1291,6 @@ def test_recalibrated_requires_column_name(tmp_path):
 
 
 def test_check_validates_science_options_and_writes_nothing(tmp_path, capsys):
-    from jax_pipeline.pippin import main
     config = _cov_config(tmp_path, {})
     path = _write(tmp_path, config)
     out = tmp_path / "never_created"
@@ -691,12 +1299,13 @@ def test_check_validates_science_options_and_writes_nothing(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "FITOPT000_MUOPT000" in output and "mode: binned" in output
     config["BIASCOR"]["B"]["OPTS"] = {"not_a_bbc_option": 4}
-    from jax_pipeline.pippin import check
     with pytest.raises(SNANAError, match="not_a_bbc_option"):
         check(_write(tmp_path, config))
 
 
 def test_recalibrated_muopt_classifier_columns(tmp_path):
+    """USE_RECALIBRATED changes the task's column, not that of a MUOPT's own
+    classifier (biascor.py:541-546)."""
     config = _cov_config(tmp_path, {})
     config["CLASSIFICATION"] = {name: {"CLASSIFIER": "PerfectClassifier", "MODE": "predict"}
                                 for name in ("P", "Q")}
@@ -704,14 +1313,35 @@ def test_recalibrated_muopt_classifier_columns(tmp_path):
         MUOPTS={"other": {"CLASSIFIER": "Q", "OPTS": {"CUTWIN_PROB_IA": "0.5 1"}}})
     bbc = _by_name(read(_write(tmp_path, config)))["B"]
     assert bbc.overrides["varname_pIa"] == "CPROB_P"
-    assert bbc.muopts["other"]["varname_pIa"] == "CPROB_Q"
-    assert bbc.muopts["other"]["CUTWIN CPROB_Q"] == "0.5 1"
+    assert bbc.muopts["other"]["varname_pIa"] == "PROB_Q"
+    assert bbc.muopts["other"]["CUTWIN varname_pIa"] == "0.5 1"
+
+
+def test_muopt_classifier_reads_the_task_simulations_with_its_column(tmp_path):
+    """Pippin's MERGE gives a fit every classifier's column, so a MUOPT with
+    only its own classifier reads the task's data and simulations, merged
+    with that classifier's column, and chooses it with varname_pIa; one with
+    its own simulations too reads them classified by its classifier."""
+    config = _cov_config(tmp_path, {})
+    config["CLASSIFICATION"] = {name: {"CLASSIFIER": "PerfectClassifier", "MODE": "predict"}
+                                for name in ("P", "Q")}
+    config["BIASCOR"]["B"].update(CLASSIFIER="P", SIMFILE_BIASCOR=["D_S"],
+                                  MUOPTS={"other": {"CLASSIFIER": "Q"},
+                                          "own_sims": {"CLASSIFIER": "Q", "SIMFILE_BIASCOR": ["D_S"]}})
+    stages = _by_name(read(_write(tmp_path, config)))
+    bbc = stages["B"]
+    merge = stages["MERGE_D_S_P_Q"]
+    assert merge.classifications == (stages["P_D_S"], stages["Q_D_S"])
+    assert set(bbc.inputs()) == {"data:MERGE_D_S_P_Q", "biascor:MERGE_D_S_P_Q", "biascor:Q_D_S"}
+    assert bbc.overrides["varname_pIa"] == "PROB_P"
+    assert bbc.muopts["other"] == {"varname_pIa": "PROB_Q"}
+    assert bbc.muopts["own_sims"] == {"varname_pIa": "PROB_Q", "simfile_biascor": [stages["Q_D_S"]]}
+    config["CLASSIFICATION"]["Q"]["OPTS"] = {"PROB_COLUMN_NAME": "PROB_P"}
+    with pytest.raises(SNANAError, match="P and Q both write PROB_P for D_S"):
+        read(_write(tmp_path, config))
 
 
 def test_recalibrated_imported_predictions_and_missing_column(tmp_path):
-    import pandas as pd
-    from jax_snlc_core.snana_files import FitresTable
-    from jax_salt2mu.tablevar import EVENT_TYPE_DATA
     fit = Fit("fit", fitres=tmp_path / "external.FITRES")
     predictions = tmp_path / "predictions.csv"
     predictions.write_text("CID,PROB_TEST,CPROB_TEST\n10,0.7,0.8\n")
@@ -730,11 +1360,10 @@ def test_recalibrated_imported_predictions_and_missing_column(tmp_path):
 
 
 def test_check_reports_imported_realisations_and_partitions(tmp_path):
-    from jax_pipeline.pippin import check
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
-    config["LCFIT"] = {"D": {"EXTERNAL_DIRS": [str(fit)]}}
+    config["LCFIT"] = {"D": {"BASE": str(_NML), "EXTERNAL_DIRS": [str(fit)]}}
     config["BIASCOR"]["B"]["OPTS"] = {"NSPLITRAN": 2}
     plan = check(_write(tmp_path, config))["stages"]
     bbcs = [s for s in plan if s["stage"] == "BBC"]
@@ -748,12 +1377,11 @@ def test_check_reports_imported_realisations_and_partitions(tmp_path):
 
 
 def test_check_requires_every_imported_fitopt_file(tmp_path):
-    from jax_pipeline.pippin import check
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config["SIM"] = {"S": {"EXTERNAL": str(sim)}}
-    config["LCFIT"] = {"D": {"EXTERNAL_DIRS": [str(fit)]}}
-    (fit / "output" / "VERSION-0002" / "FITOPT001.FITRES").unlink()
+    config["LCFIT"] = {"D": {"BASE": str(_NML), "EXTERNAL_DIRS": [str(fit)]}}
+    (fit / "output" / "PIP_OLD_S-0002" / "FITOPT001.FITRES").unlink()
     with pytest.raises(SNANAError, match="FITOPT001.FITRES"):
         check(_write(tmp_path, config))
 
@@ -773,7 +1401,7 @@ def test_external_sync_metadata_and_disagreement(tmp_path):
     sim, fit = _external_ensemble(tmp_path)
     config = _cov_config(tmp_path, {})
     config['SIM'] = {'S': {'EXTERNAL': str(sim)}}
-    config['LCFIT'] = {'D': {'EXTERNAL_DIRS': [str(fit)]}}
+    config['LCFIT'] = {'D': {'BASE': str(_NML), 'EXTERNAL_DIRS': [str(fit)]}}
     submit = fit / 'output' / 'SUBMIT.INFO'
     metadata = yaml.safe_load(submit.read_text())
     metadata['FLAG_USE_SAME_EVENTS'] = 1
@@ -782,8 +1410,7 @@ def test_external_sync_metadata_and_disagreement(tmp_path):
     assert stages['B-0001'].event_sync() and stages['B-0002'].event_sync()
     assert submit in stages['D_S-0001'].cache_files()
     plain = Fit('plain', fitres=tmp_path / 'standalone.FITRES')
-    from jax_pipeline.classify import Perfect
-    classified = Classify('classified', Perfect(), fit=stages['D_S-0001'])
+    classified = Classify('classified', Perfect(ia_types=(1,)), fit=stages['D_S-0001'])
     assert classified.event_sync()
     mixed = BBC('mixed', data=[classified, plain])
     with pytest.raises(SNANAError, match='must agree'):
@@ -816,7 +1443,6 @@ def test_sync_cannot_be_changed_by_an_individual_muopt(tmp_path):
 
 def test_survey_selection_uses_included_simulation_settings(tmp_path):
     """FITOPT survey selection resolves includes through the simulation parser."""
-    from jax_pipeline.pippin import _survey
 
     source = tmp_path / "included.input"
     source.write_text(f"INPUT_FILE_INCLUDE: {_SIM_INPUT}\n")
@@ -828,8 +1454,6 @@ def test_survey_selection_uses_included_simulation_settings(tmp_path):
 @pytest.mark.parametrize('kind', ['text', 'fits', 'hats'])
 def test_data_survey_discovery_reads_only_metadata(tmp_path, kind):
     """Survey selection supports every loader format without reading photometry."""
-    from astropy.io import fits
-    from jax_pipeline.pippin import _survey
 
     if kind == 'text':
         (tmp_path / 'VERSION.LIST').write_text('event.DAT\n')

@@ -52,6 +52,7 @@ from jax_snlc_sim import run as sim_run
 from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_sim.inputs import parse_input as parse_sim_input
 from jax_snlc_sim.output.write import write_combined_readme
+from jax_snlc_sim.rate import season_counts
 from jax_wfit.config import (build as build_cosmology_config,
                                     read_keys as read_cosmology_keys)
 from jax_wfit.hubble import hubble_diagram_from_covariance, load_simulation_truths
@@ -195,7 +196,12 @@ class Sim(Stage):
     ``{KEY: value}`` with the keys spelt as the input file spells them:
     either one mapping applied to every input, or a list of one mapping per
     input in the same order. ``batch_size`` is the number of events simulated
-    at once. The number of events and the seed are set by input-file keys.
+    at once. The number of events and the seed are set by input-file keys,
+    unless ``ngen_unit`` is given: each input then simulates ``ngen_unit``
+    times its expected events per season, each rate's count rounded first,
+    as SNANA's batch layer counts them (submit_prog_sim.py:638-641, 1661;
+    snlc_sim.c:8888-8890). NGEN_SCALE still applies, and an ``NGENTOT_LC``
+    override is refused.
     Returns the directory.
 
     Several inputs make one version: one ``<name>.LIST`` naming each part's
@@ -212,6 +218,7 @@ class Sim(Stage):
     input_files: Any
     overrides: Any = field(default_factory=dict)
     batch_size: int | None = None
+    ngen_unit: float | None = None
 
     def __post_init__(self):
         one = isinstance(self.input_files, (str, os.PathLike))
@@ -224,6 +231,11 @@ class Sim(Stage):
                 f"stage '{self.name}' has {len(self.input_files)} input files "
                 f"but {len(per_input)} override mappings", function_name=self.name)
         self.overrides = tuple(dict(o) for o in per_input)
+        if self.ngen_unit is not None:
+            for user in self.overrides:
+                if {"NGENTOT_LC", "ngentot_lc"} & user.keys():
+                    raise SNANAError(f"stage '{self.name}': cannot mix NGEN_UNIT and NGENTOT_LC; remove one",
+                                     function_name=self.name)
 
     def inputs(self) -> Mapping[str, Stage]:
         return {}
@@ -252,6 +264,11 @@ class Sim(Stage):
             if combined and not ({"CIDOFF", "cidoff"} & user.keys()):
                 # the batch layer starts CIDOFF at CIDRAN_MIN (submit_prog_sim.py:980)
                 simulation.output.cidoff = simulation.output.cidran_min + generated
+            if self.ngen_unit is not None:
+                normal, peculiar = season_counts(simulation, simulation.hz_map())
+                season_total = int(normal + 0.5) + int(peculiar + 0.5)
+                simulation.run.ngentot_lc = int(self.ngen_unit * season_total + 0.5)
+                simulation.run.ngen_lc = 0
             if self.batch_size is not None:
                 simulation.numerical = dataclasses.replace(
                     simulation.numerical, batch_size=self.batch_size)

@@ -671,8 +671,11 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
             logger.debug("BBC window %s [%g, %g]: %d rejected", var, lo, hi, bad.sum())
             fail(bad, bit_of.get(var, CUTBIT_CUTWIN))
     # A generic CUTWIN cuts on any column of the table; an absent column aborts
-    # (malloc_TABLEVAR_CUTVAL, SALT2mu.c:8359; set_DOFLAG_SELECT_VAR, :21380)
+    # (malloc_TABLEVAR_CUTVAL, SALT2mu.c:8359; set_DOFLAG_SELECT_VAR, :21380).
+    # The name varname_pIa stands for the probability column (:8352-8355).
     for var, lo, hi in config.cutwin:
+        if var == "varname_pIa":
+            var = config.varname_pia
         if var in quantities:
             values = quantities[var]
         elif table.has(var):

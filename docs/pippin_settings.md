@@ -17,7 +17,8 @@ A `SIM` task generates simulated light curves for a survey, using the model,
 population and observing conditions specified in its input files. It can
 combine several simulations, for example type Ia and core-collapse samples.
 Each of these components names its simulation input through `BASE`; their
-light curves are combined into one data version.
+light curves are combined into one data version, the type Ia components
+first.
 
 | Setting | Location | Purpose |
 |---|---|---|
@@ -27,15 +28,16 @@ light curves are combined into one data version.
 | `RANSEED_REPEAT` | `GLOBAL` | Number of repeated jobs and seed, such as `3 12345`. All jobs contribute to one data version. Default: `1 12345`. |
 | `RANSEED_CHANGE` | `GLOBAL` | Number of independent realisations and seed. Each realisation produces a separate data version. |
 | `FORMAT_MASK` | `GLOBAL` | Output format. Default: 48, for FITS output with random event identifiers. |
-| `NGEN_UNIT` | `GLOBAL` | Rate-based event count, using the simulator's `NGEN_SEASON` setting. Overrides fixed counts from `NGENTOT_LC` or `NGEN_LC`. |
+| `NGEN_UNIT` | `GLOBAL` | Rate-based event count: each component simulates `NGEN_UNIT` times its expected events per season. Replaces the fixed counts `NGENTOT_LC` and `NGEN_LC` of the simulation input files; giving `NGENTOT_LC` in the configuration as well is an error. |
 | `BLIND` | Task `OPTS` | Marks the simulated data for blinded BBC fits. Default: false. |
-| `EXTERNAL` | Task | Existing data version or completed Pippin simulation task to use instead of generating events. |
+| `EXTERNAL` | Task | Completed Pippin simulation task to use instead of generating events. See {ref}`pippin-existing-fits`. |
 
 Each repeated job requests the event count given in its component's input.
 `RANSEED_REPEAT` therefore increases the combined sample size, whereas
-`RANSEED_CHANGE` produces separate samples of that size. Use one of these
-settings, not both. {ref}`pippin-realisations` describes how later tasks use
-the separate realisations; {ref}`pippin-seeds` gives the seed rules.
+`RANSEED_CHANGE` produces separate samples of that size. If both are given,
+the later one in `GLOBAL` applies.
+{ref}`pippin-realisations` describes how later tasks use the separate
+realisations; {ref}`pippin-seeds` gives the seed rules.
 
 ## `DATAPREP`
 
@@ -47,7 +49,8 @@ data version to analyse.
 |---|---|---|
 | `RAW_DIR` | `OPTS` | Required: directory containing the data version. |
 | `BLIND` | `OPTS` | Marks the data for blinded BBC fits. Default: true. |
-| `TYPES`, `SIM` | `OPTS` | Accepted as metadata; neither filters the input tables. |
+| `TYPES` | `OPTS` | `IA` and `NONIA` lists of event types, which classifiers read. Default: `IA: [1]`, `NONIA: [2, 20, 21, 22, 29, 30, 31, 32, 33, 39, 40, 41, 42, 43, 80, 81]`. |
+| `SIM` | `OPTS` | Accepted as metadata. |
 
 This task uses `RAW_DIR`, rather than the `EXTERNAL` setting accepted by
 `SIM`.
@@ -58,12 +61,14 @@ An `LCFIT` task fits observed or simulated light curves with the chosen
 model, writing the fitted parameters and uncertainties to FITRES tables.
 
 `MASK` selects input tasks by name. For example, `MASK: DES` fits the
-datasets from `SIM` or `DATAPREP` tasks whose names contain `DES`. If
-omitted, all datasets are fitted.
+datasets from `SIM` or `DATAPREP` tasks whose names contain `DES`, including
+every realisation of a simulation. A list selects tasks matching any entry,
+and each entry must match at least one task. If omitted, or `*`, all
+datasets are fitted.
 
 | Setting | Location | Purpose |
 |---|---|---|
-| `BASE` | Task | Light curve fitting input file. |
+| `BASE` | Task | Required: light curve fitting input file. |
 | `MASK` | Task | Selects `SIM` or `DATAPREP` task names. |
 | `SNLCINP`, `FITINP` | Task | Changes to the corresponding blocks of the fitting input. |
 | `FITOPTS` | Task | Light curve fitting variations, supplied inline or through a FITOPTS file. |
@@ -94,13 +99,22 @@ DES:
 ```
 
 `GLOBAL` entries apply to every survey; the other blocks apply to the survey
-named by the simulation or data. Here DES fits use both variations.
-Inline entries have a scale of one. A task can list a FITOPTS file and
-inline entries together.
+of the data, or of the simulation: its `SIMLIB_SURVEY`, or else its SIMLIB
+file's `SURVEY`. Here DES fits use both variations.
+A task can list one FITOPTS file and inline entries together.
 
-A top-level `FLAG_USE_SAME_EVENTS: 1` in the FITOPTS file enables a common
-event sample across variations, equivalent to `OPT_SNCID_LIST = 1` in the
-fitting input. {doc}`systematics` describes FITOPTs and sample selection.
+A positive top-level `FLAG_USE_SAME_EVENTS` in the FITOPTS file selects a
+common event sample across variations, as setting `OPT_SNCID_LIST` to that
+value in the fitting input does. The task's `OPTS` can set either key
+instead; if both are given, `OPT_SNCID_LIST` applies. A positive flag in
+the FITOPTS file takes precedence over both. Each FITOPT label may be given
+once. {doc}`systematics` describes FITOPTs and sample selection.
+
+A `BASE` file may begin with a `CONFIG` block ending at `#END_YAML`. Its
+`FITOPT` list is used when the task gives no
+`FITOPTS`, and its `FLAG_USE_SAME_EVENTS` or `OPT_SNCID_LIST` when the
+task's `OPTS` give neither. A null value under `SNLCINP` or `FITINP`, which
+Pippin uses to remove a key from the `BASE` file, is refused.
 
 ## `CLASSIFICATION`
 
@@ -112,19 +126,39 @@ added to every FITOPT's fitted-results table for use in BBC.
 
 | Setting | Location | Purpose |
 |---|---|---|
-| `CLASSIFIER` | Task | `SuperNNovaClassifier`, or `PerfectClassifier` for simulation-truth tests. |
-| `MODE` | Task | Required: `train` or `predict`. |
-| `MASK`, `MASK_SIM` | Task | Select simulation or data tasks for SuperNNova. If both are given, both must match. |
-| `MODEL` | `OPTS` | Required for prediction: a trained model file or the name of a training task. |
+| `CLASSIFIER` | Task | `SuperNNovaClassifier`, or `PerfectClassifier`, which gives each event the probability its known type implies. |
+| `MODE` | Task | Required: `train` or `predict`. `PerfectClassifier` only predicts. |
+| `MASK`, `MASK_SIM` | Task | Select simulation or data tasks whose names contain this text; the predictions join every fit of a selected task. If both are given, both must match. |
+| `MODEL` | `OPTS` | Required for prediction by a classifier that is trained: the name of a training task of the same classifier listed earlier, or the absolute path of a model file. Not accepted on a training task. |
 | `PROB_COLUMN_NAME` | `OPTS` | Name of the output type Ia probability column. |
 | `EXTERNAL_DIRS` | Task | Directories containing saved `predictions.csv` files to import instead of classifying again; prediction tasks only. |
 
-For an imported prediction directory, retain Pippin's task/version naming so
-that the predictions can be matched to the corresponding fitted dataset.
+The type Ia probability column is `PROB_<task>` for `PerfectClassifier`. A
+SuperNNova training task writes `PROB_<task>_<simulation>`, which its
+predictions inherit; a prediction from a model file writes `PROB_<folder>`,
+after the folder holding it.
+`PROB_COLUMN_NAME` replaces any of these. A prediction from a training
+task that trained on several simulations is made once for each; BBC reads
+the last.
 
-`EXTERNAL_MAP`, `COMBINE_MASK` and other classifiers are not supported by
-the Pippin reader. Additional classification tools can use the Python
-interface described in {doc}`classification`.
+Event types come from `DATAPREP` `TYPES`, from the `GENTYPE` and
+`GENMODEL` of each simulation component (Ia for SALT, BayeSN and other type
+Ia models, with photometric types 100 higher), or from a completed
+simulation's `config.yml`. `PerfectClassifier` gives each event the
+type Ia probability when its fitted `TYPE` is one of these Ia types.
+SuperNNova labels events with the types in `SNTYPES`, or else with these
+event types, adding type 1 as Ia when none is Ia and type 29 as core
+collapse when none is core collapse. Types 1, 10 and 110 are always Ia.
+
+An imported prediction directory must keep the name Pippin gives the task:
+`<task>_<simulation><suffix>`, with the realisation number after `<task>`
+when the simulation has several, and the suffix `_<training task>_<simulation>`
+for a model trained in the configuration, or `_<folder>` for a model file.
+
+`EXTERNAL_MAP` and `COMBINE_MASK` are not supported by the Pippin reader. A
+task with another classifier is skipped, and a task that depends on it is
+refused. Additional classification tools can use the Python interface
+described in {doc}`classification`.
 
 ### SuperNNova options
 
@@ -147,8 +181,8 @@ method and its inputs.
 | `DATA` | Task | Fitted dataset names, such as `[D_DATA]`. |
 | `SIMFILE_BIASCOR` | Task | Fitted BIASCOR simulation names. |
 | `SIMFILE_CCPRIOR` | Task | Fitted contamination simulation names. |
-| `CLASSIFIER` | Task | Classification task whose probabilities are used, or the name of an existing probability column. |
-| `PROB_COLUMN_NAME` | Task | Explicit probability-column name; takes precedence over `CLASSIFIER` when selecting the column. |
+| `CLASSIFIER` | Task | Classification task whose probabilities are used, or the probability column it writes. |
+| `PROB_COLUMN_NAME` | Task | Probability column to use, taking precedence over `CLASSIFIER`. |
 | `OPTS` | Task | BBC settings and the pipeline controls described below. |
 | `MUOPTS` | Task | Named standardisation variations. Each accepts its changed BBC settings under `OPTS`. |
 
@@ -157,8 +191,10 @@ the task supplies the corresponding fitted datasets. If `BASE` is omitted,
 the default is Pippin's `surveys/des/bbc/bbc_5yr.input`, searched for under
 the configured data directories.
 
-In `OPTS`, selection windows are written as `CUTWIN_<column>: low high`.
-`CUTWIN_PROB_IA` selects on the chosen type Ia probability column.
+In `OPTS`, selection windows are written as `CUTWIN_<column>: low high`,
+in either case. `CUTWIN_PROB_IA` selects on BBC's `varname_pIa`, the chosen
+type Ia probability column. Of a list of windows for one column, BBC
+applies the last. Any other task `OPTS` setting, and every MUOPT `OPTS` setting, takes one value.
 The remaining scientific settings are listed in {doc}`bias_correction_keys`.
 
 ### MUOPTs and BIASCOR fits
@@ -170,7 +206,8 @@ describes these variations.
 
 `SIMFILE_BIASCOR_FITOPTS` and `SIMFILE_CCPRIOR_FITOPTS`, at task or MUOPT
 level, select the FITOPT of each BIASCOR or contamination input. Give one
-number per input, in the same order; zero selects its nominal fit.
+number per input, in the same order; zero selects its nominal fit. A
+MUOPT's numbers apply only to the simulations it names itself.
 
 Within task `OPTS`, `REPLACE_SIMFILE_BIASCOR` and `REPLACE_SIMFILE_CCPRIOR`
 map data FITOPT labels to external FITRES files. For example:
@@ -178,12 +215,12 @@ map data FITOPT labels to external FITRES files. For example:
 ```yaml
 OPTS:
   REPLACE_SIMFILE_BIASCOR:
-    MWEBV: corrections/mwebv.FITRES
+    MWEBV: /data/corrections/mwebv.FITRES
 ```
 
-This uses the supplied BIASCOR file for the `MWEBV` FITOPT. A MUOPT supplying
-its own BIASCOR or contamination simulation takes precedence over the
-corresponding replacement.
+This uses the supplied BIASCOR file for the `MWEBV` FITOPT. The path must be
+absolute. A MUOPT supplying its own BIASCOR or contamination simulation takes
+precedence over the corresponding replacement.
 
 ### Event selection
 
@@ -210,18 +247,21 @@ under {ref}`pippin-realisations`.
 
 ### Blinding
 
-By default, BBC is blinded if any input data task is marked as blinded.
-Task-level `BLIND` overrides this choice; `blindflag` in `OPTS` takes
-precedence over both.
+Task-level `BLIND` decides whether BBC is blinded. Without it, a
+`blindflag` in `OPTS` other than 0 blinds BBC; without either, BBC is
+blinded if any input data task is. BBC then runs with `blindflag` 2 when
+blinded and 0 otherwise.
 
 ### Classification probabilities
 
 Task-level `USE_RECALIBRATED: true` selects existing recalibrated
-probabilities. A selected column `PROB_NAME` becomes `CPROB_NAME`, including
-when a MUOPT changes classifiers. Alternatively, give the recalibrated
-column directly through `PROB_COLUMN_NAME`. The column must be present in
-the data FITRES tables or imported predictions; this option does not
-recalibrate probabilities. `CUTWIN_PROB_IA` uses the selected column too.
+probabilities: `PROB_` in the task's column becomes `CPROB_`, so
+`PROB_NAME` becomes `CPROB_NAME`. A MUOPT's own classifier keeps its
+column, and a MUOPT without simulations of its own reads the task's with
+that column. Alternatively, give the recalibrated column directly through
+`PROB_COLUMN_NAME`. The column must be present in the data FITRES tables
+or imported predictions; this option does not recalibrate probabilities.
+`CUTWIN_PROB_IA` uses the selected column too.
 
 ## `CREATE_COV`
 
@@ -232,7 +272,7 @@ selected by its mask. Its settings go under `OPTS`.
 
 | Setting | Purpose |
 |---|---|
-| `MASK` or `MASK_BIASCOR` | Selects BBC task names. This setting goes at task level, outside `OPTS`. |
+| `MASK` or `MASK_BIASCOR` | Selects BBC tasks whose names contain this text. This setting goes at task level, outside `OPTS`. |
 | `COVOPTS` | Additional covariance selections, such as `[NOSYS] [=DEFAULT,=DEFAULT]`. The full covariance is always labelled `ALL`. |
 | `BINNED` | Use BBC's binned distances when true, the default; false selects individual supernova distances unless rebinning is requested. |
 | `SYSTEMATIC_HD` | Write a Hubble diagram for each FITOPT/MUOPT combination. Default: false. |
@@ -241,15 +281,17 @@ selected by its mask. Its settings go under `OPTS`.
 
 ### Uncertainty scales
 
-The covariance uses the scale in each FITOPT or MUOPT definition. A matching
-label in a `SYS_SCALE` file overrides that value. `FITOPT_SCALES` and
-`MUOPT_SCALES` override those values in turn; all three settings go in `OPTS`.
-`FITOPT_SCALES` matches labels by substring, while `MUOPT_SCALES` requires
-an exact label.
+The covariance takes its scales from a FITOPTS file: the one `SYS_SCALE`
+names, or else the one used to fit the data of the first matched BBC task
+that used one. That task's data must not have been fitted with different
+FITOPTS files. `FITOPT_SCALES` and `MUOPT_SCALES` override these scales in
+turn, each by exact label; all three settings go in `OPTS`. A MUOPT's own
+`SCALE` comes first, so any of the three overrides it. A label the BBC fit
+does not have is ignored, and a systematic with no scale has a scale of one.
 
-`SYS_SCALE` names a file in the FITOPTS format shown above, with survey or
-`GLOBAL` blocks and a scale followed by fitting settings. Only the scales
-are used here, and entries from all blocks are read. The standalone
+A FITOPTS file holds survey or `GLOBAL` blocks, each entry a scale followed
+by fitting settings, as shown above. Only the scales are used here, and
+entries from all blocks are read, a later block's winning. The standalone
 covariance command's `SYS_SCALE_FILE` instead uses a flat mapping of labels
 to scales, as shown in {doc}`systematics`.
 
@@ -275,12 +317,14 @@ CREATE_COV:
     OPTS:
       BINNED: false
       EXTRA_COVS:
-        - calibration 1.0 calibration_covariance.npz
+        - calibration 1.0 $DATA/calibration_covariance.npz
 ```
 
-Each entry is `label scale file`. The scale multiplies the uncertainty and
-is squared for the covariance. {ref}`external-covariance-files` describes
-the file formats.
+Each entry is `label scale file`, the first three words. The scale
+multiplies the uncertainty and is squared for the covariance. The file path
+may contain environment variables and must be absolute once they are
+expanded.
+{ref}`external-covariance-files` describes the file formats.
 
 `CALIBRATORS` lists supernova identifiers in Cepheid host galaxies. In an
 unbinned analysis, their contributions to redshift systematics labelled
@@ -288,9 +332,11 @@ unbinned analysis, their contributions to redshift systematics labelled
 
 `SUBTRACT_VPEC: true` removes the peculiar-velocity contribution from the
 statistical distance uncertainties, for use with an external velocity
-covariance. It selects unbinned distances unless rebinning is requested.
+covariance. It selects unbinned distances, whatever `BINNED` says.
+Rebinning turns it off.
 {ref}`covariance-peculiar-velocities` gives the definition, including BBC
-error rescaling and subtraction before rebinning.
+error rescaling, and how the standalone covariance command combines
+subtraction with rebinning.
 
 ### Covariance output options
 
@@ -300,7 +346,7 @@ error rescaling and subtraction before rebinning.
 |---|---|
 | `--write_format_cov npz` or `text` | Dense matrices as NumPy archives or gzipped text; default: `npz`. Factorized output always uses NumPy archives. |
 | `--write_mask_cov N` | Select output forms using the values in {ref}`covariance-output-settings`. Default: 8, the factorized total covariance. Include inverse covariance (2) or factorized total covariance (8) for cosmology fitting. |
-| `--label_cov_rows` | Add identifiers, survey and redshift to text covariance rows. |
+| `--label_cov_rows` | Add identifiers, survey and redshift to covariance rows, which it writes as text. |
 | `--mxsize_test_posdef N` | Maximum matrix dimension for the positive-definiteness check; default: 6000. Zero skips the check. |
 
 For example, `EXTRA_OPTS: "--write_format_cov text --write_mask_cov 7"`
@@ -315,9 +361,11 @@ the named fits and their settings under `COSMOFIT: WFIT`, as shown below.
 
 | Setting | Location | Purpose |
 |---|---|---|
-| `MASK` | Task | Selects `CREATE_COV` task names. |
-| `WFITOPTS` | `OPTS` | Required list of `/label/ flags` entries. Each specifies a cosmology fit. |
+| `MASK` | Task | Selects `CREATE_COV` tasks whose names contain this text. |
+| `WFITOPTS` | `OPTS` | Required list of `/label/ flags` entries, each a cosmology fit. The label is one word; an entry without one, and with no `/`, is named by its position, `WFITOPT000` onwards. |
 | `WFITOPT_GLOBAL` | `OPTS` | Flags applied to every entry, appended after its individual flags. |
+| `COVOPTS`, or `COVOPT` | `OPTS` | Labels of the covariances to fit, as one string such as `"ALL NOSYS"`. Default: every covariance. |
+| `BLIND_DATA`, `BLIND_SIM` | `OPTS` | Blind the fits to data and to simulations. Default: data true, simulations false. Blinding simulations alone is not supported. |
 
 For example:
 
@@ -332,16 +380,22 @@ COSMOFIT:
           - /lcdm/ -lcdm
 ```
 
-Each entry is fitted for every matched covariance task, using `ALL` and
-each selection requested through `COVOPTS`. {doc}`cosmology_keys` lists the
-available flags.
+Each entry is fitted for every covariance the matched tasks make, one per
+BBC fit, using `ALL` and each selection the `CREATE_COV` task's `COVOPTS`
+requests, or only those the WFIT `COVOPTS` lists; a covariance with none of
+them listed is not fitted. {doc}`cosmology_keys` lists the
+available flags. Blinding is set by `BLIND_DATA` and `BLIND_SIM`, not by
+`-blind` in the flags. The fits are read only from `COSMOFIT: WFIT`, and a
+`wfit` section that gives none is refused.
 
 (pippin-existing-fits)=
 ## Reusing completed simulations and fits
 
-`SIM: EXTERNAL` accepts a data-version directory or a completed Pippin
-simulation task. For a task directory, `config.yml` lists the versions under
-`OUTPUT: sim_folders`; relative paths are resolved from that directory.
+`SIM: EXTERNAL` names a completed Pippin simulation task: its folder, or the
+`config.yml` in it. The versions listed under `OUTPUT: sim_folders` are used
+in that order, named `<task>-0001`, `<task>-0002` and so on when there are
+several. The simulation is blinded as its `OUTPUT: blind` records,
+whatever the task's own `BLIND` says.
 
 `LCFIT: EXTERNAL_DIRS` imports completed fitting tasks:
 
@@ -351,18 +405,21 @@ SIM:
     EXTERNAL: /previous/run/simulation_task
 LCFIT:
   D:
+    BASE: fit.nml
     EXTERNAL_DIRS: [/previous/run/D_DATA]
 ```
 
-The fitting directory's name matches the fit task and dataset (`D_DATA`
-here). It contains `output/SUBMIT.INFO` and an `output/<version>` directory
-for each realisation, with the FITOPT tables inside. Versions are numbered
-consecutively from `-0001`; simulation and fit versions are matched by that
-number, independently of their order in the saved configuration.
+An entry is used for the dataset whose task name it carries
+(`D_DATA` here: fit task `D`, dataset `DATA`); a dataset with no matching
+entry is fitted. The directory contains `output/SUBMIT.INFO`
+and, for each version, the FITOPT tables under `output/<folder>`. The
+folder is named after the simulation folder: the data directory's own name
+for `DATAPREP` or `SIM: EXTERNAL`, or Pippin's `<PREFIX>_<CONFIG>_<SIM>`
+(with `-0001` etc. for realisations) for a simulation the configuration
+makes, where `<CONFIG>` is the configuration file's name in capitals and
+`<PREFIX>` is `GLOBAL: QUEUE: prefix`, `PIP` by default.
 
-The imported `SUBMIT.INFO` supplies the FITOPT labels. A task can mix
-imported fits and datasets that need fitting. `BASE` is required only for
-the latter, or when a supplied `FITOPTS` configuration needs interpreting.
+The imported `SUBMIT.INFO` supplies the FITOPT labels.
 
 (pippin-realisations)=
 ## Repeated simulations and sample splits
@@ -370,15 +427,16 @@ the latter, or when a supplied `FITOPTS` configuration needs interpreting.
 `RANSEED_CHANGE: 3 12345` under a simulation's `GLOBAL` generates three
 independent realisations. A task named `DATA` produces `DATA-0001`,
 `DATA-0002` and `DATA-0003`, with its components combined within each.
-Do not override `RANSEED` when using `RANSEED_CHANGE`.
+A `RANSEED` setting in the task overrides every realisation's seed, so the
+realisations become the same sample.
 
 References such as `DATA: [D_DATA]` select the corresponding fit of each
-realisation. Repeated inputs to the same BBC task must have the same number
-of realisations and are paired by index. An input without `RANSEED_CHANGE`,
-such as a shared BIASCOR simulation, is reused in each analysis. Every
-realisation receives separate BBC, covariance and cosmology outputs. If a
-fitting mask selects only some realisations, name their fits explicitly in
-`BIASCOR`.
+realisation. Repeated `DATA` inputs to the same BBC task must have the same
+number of realisations and are paired by index; a `DATA` input without
+`RANSEED_CHANGE` is reused in each analysis. A BIASCOR or contamination
+simulation is read at its first realisation, with a warning when it has
+several. Every realisation of the data receives separate BBC,
+covariance and cosmology outputs.
 
 `NSPLITRAN: 3`, under BBC task `OPTS`, divides the data into three disjoint
 subsets using `CID % 3 + 1` as the subset index. It requires non-negative
@@ -396,21 +454,41 @@ input's `RANSEED`. For `RANSEED_REPEAT` with random CIDs, jobs share that
 seed and use distinct event offsets to generate separate events and
 non-repeating identifiers.
 
-Without random CIDs, repeated job `j` uses the supplied seed plus
-`10000 j + j² + 13`, with `j` starting at zero. `RANSEED_CHANGE` uses this
-formula whether or not CIDs are random.
+Without random CIDs, each repeated job derives its own seed from the
+supplied one. `RANSEED_CHANGE` does this whether or not CIDs are random.
+
+## Included anchor files
+
+A comment line `# % include: anchors.yml %` is replaced by the
+named file before the configuration is read, so that tasks can use YAML
+anchors defined there. The path may contain environment variables; a
+relative path is taken from the directory in which `jax_pipeline` runs.
 
 ## Unused tasks and scheduling settings
 
-`AGGREGATION`, `MERGE`, `ANALYSE` and `COSMOMC` are skipped. Classification
+Sections with no stage here are skipped: `AGGREGATION`, `MERGE` and
+`ANALYSE`, any `COSMOFIT` entry other than `WFIT`, and sections Pippin
+itself does not read, such as one holding YAML anchors. Classification
 already joins probabilities to the fitted tables, so no separate `MERGE`
-task is needed.
+task is needed. An `AGGREGATION` task's `RECALIBRATION` is ignored, and
+refused with `LEGACY: True`; `MERGE_CLASSIFIERS` is refused.
 
-Batch-submission settings are ignored because jax-SNANA runs the analysis
-as a single process. These include `BATCH_INFO`, `BATCH_FILE`,
-`BATCH_REPLACE`, `BATCH_MEM`, `BATCH_WALLTIME` and `NUM_JOBS`, including
-simulation `GLOBAL` settings. Classification task settings `GPU` and
-`CLEAN`, and covariance `OPTS` settings `INI_DIR` and `COSMOMC`, are also
-ignored. `RESET_CIDOFF` is ignored; event offsets are assigned automatically.
-Ignored settings and skipped tasks are reported in the log.
-Unrecognised Pippin task sections and task settings are rejected.
+Settings for Pippin's batch layer are ignored because jax-SNANA runs the
+analysis as a single process: `BATCH_INFO`, `BATCH_FILE`, `BATCH_REPLACE`,
+`BATCH_MEM`, `BATCH_WALLTIME`, `NUM_JOBS`, `GPU`, `CLEAN` and `INI_DIR`.
+`RESET_CIDOFF` is ignored too, as event offsets are assigned automatically.
+
+Other settings ignored here:
+
+- Of `GLOBAL`, which overrides Pippin's installation settings, all but
+  `DATA_DIRS` and `QUEUE: prefix`.
+- `COSMOMC` settings, as no CosmoMC analysis is run.
+- A `SIM` task's `GENVERSION`, which Pippin replaces with its own name.
+- The `LCFIT` option `APPEND_TABLE_VARLIST`, whose extra fitted-table
+  columns are not written.
+- The `CLASSIFICATION` setting `MASK_FIT`, which has no effect in Pippin.
+- The `BIASCOR` settings `MAKE_ALL_HUBBLE` and `CONSISTENT_SAMPLE`, which
+  only control Pippin's own plots and iteration.
+
+Skipped sections and ignored settings are reported in the log; other
+unrecognised task settings are rejected.
