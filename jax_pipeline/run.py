@@ -17,7 +17,7 @@ import yaml
 from jax_salt2mu.preparation import preparation_step
 from jax_snlc_core.logging import SNANAError, version_string
 
-from .classify import Classify, Train
+from .classify import Classify, Merge, Train
 from .stages import (BBC, Cosmology, Covariance, Data, Fit, FitVersion, Sim, Stage,
                      prepare_bbc_stages, run_bbc_stages)
 
@@ -33,7 +33,7 @@ _INCLUDE_KEYS = ("INPUT_FILE_INCLUDE:", "INPUT_INCLUDE_FILE:")
 
 # Stages within a phase keep their traversal order. Dependencies always take
 # precedence.
-_PHASES = ((Data, Sim), (Fit,), (Train, Classify),
+_PHASES = ((Data, Sim), (Fit,), (Train, Classify, Merge),
            (BBC,), (Covariance,), (Cosmology,))
 
 

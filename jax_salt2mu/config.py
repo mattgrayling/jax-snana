@@ -889,7 +889,19 @@ def build_bbc_config(path, layers):
     layer retains its input syntax; values never determine which reader runs.
     """
     text = '' if path is None else Path(path).read_text()
-    text = re.split(r'(?m)^\s*#END_YAML\s*$', text, maxsplit=1)[-1]
+    # skip the batch CONFIG block as SALT2mu does (SALT2mu.c:19362-19377)
+    kept = []
+    in_block = False
+    for line in text.splitlines():
+        compared = line[:2] + line[2:].split("#", 1)[0]
+        if compared == "CONFIG:":
+            in_block = True
+        for marker in ("END_YAML", "END_CONFIG", "CONFIG_END"):
+            if marker in compared:
+                in_block = False
+        if not in_block:
+            kept.append(line)
+    text = "\n".join(kept)
     is_yaml = any(re.match(r'^[a-zA-Z_][\w]*\s*:', line) for line in text.splitlines())
     values = read_settings(path, text=text) if is_yaml else {}
     file_raw, file_cuts, file_off, file_repeated = _read_words(

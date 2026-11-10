@@ -1,12 +1,14 @@
-"""The two classification stages: training a classifier, and classifying a
-fit's events so its tables carry a Type Ia probability.
+"""The classification stages: training a classifier, classifying a fit's
+events so its tables carry a Type Ia probability, and merging several
+classifications of one fit.
 
 Pippin runs a classifier, aggregates its predictions and merges them onto
 every FITRES as separate tasks because each is a program handing files to
-the next. Here the fitted tables are objects, so classifying and merging is
-one stage: it predicts once, writes the predictions, and hands on the fit's
-tables with the probability column joined. A distance fit consumes it
-exactly as it consumes a fit.
+the next. Here the fitted tables are objects, so a classification predicts
+once, writes the predictions, and hands on the fit's tables with its
+probability column joined. A distance fit consumes it exactly as it
+consumes a fit. One that needs the columns of several classifications of a
+fit consumes their merge.
 
 Classifiers are dataclasses with a probability-column name and a
 ``predict(fit, photometry, model)`` method returning probabilities indexed
@@ -19,7 +21,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,7 @@ import pandas as pd
 from jax_snlc_core.logging import SNANAError
 
 from .stages import FitVersion, Stage, one_version
+from .supernnova import SuperNNova
 from .systematics import NOMINAL
 
 PREDICTIONS = "predictions.csv"
@@ -102,6 +105,9 @@ class Classify(Stage):
         if self.predictions is not None and (self.model, self.photometry) != (None, None):
             raise SNANAError(f"stage '{self.name}' reads its predictions, so takes "
                              f"no model or photometry", function_name=self.name)
+        if hasattr(self.classifier, "train") and self.model is None:
+            raise SNANAError(f"stage '{self.name}': {type(self.classifier).__name__} is trained, "
+                             f"so predicting needs a model", function_name=self.name)
 
     def inputs(self) -> Mapping[str, Stage]:
         named = {"fit": self.fit}
@@ -134,6 +140,54 @@ class Classify(Stage):
         return _joined_onto(inputs["fit"], self.predictions or Path(outdir) / PREDICTIONS)
 
 
+@dataclass(eq=False)
+class Merge(Stage):
+    """One fit's tables with the probability columns of several of its
+    classifications, as Pippin's MERGE gives the distance fit every
+    classifier's column to choose from with ``varname_pIa``. As each
+    classification adds columns of its own, two writing the same column
+    are refused."""
+
+    name: str
+    classifications: Sequence[Classify]
+
+    def __post_init__(self):
+        self.classifications = tuple(self.classifications)
+        fit = self.classifications[0].fit
+        for classify in self.classifications[1:]:
+            if classify.fit != fit:
+                raise SNANAError(f"stage '{self.name}': {classify.name} classifies {classify.fit.name}, "
+                                 f"not {fit.name}", function_name=self.name)
+
+    def inputs(self) -> Mapping[str, Stage]:
+        named = {"fit": self.classifications[0].fit}
+        for classify in self.classifications:
+            named[f"classification:{classify.name}"] = classify
+        return named
+
+    def event_sync(self) -> bool:
+        return self.classifications[0].event_sync()
+
+    def systematics(self) -> tuple[Sequence[str], Sequence[str]]:
+        return self.classifications[0].systematics()
+
+    def run(self, inputs: Mapping[str, Any], outdir: Path) -> Mapping[str, Any]:
+        return self.load(inputs, outdir)
+
+    def load(self, inputs: Mapping[str, Any], outdir: Path) -> Mapping[str, Any]:
+        merged = {}
+        for cell, fitted in inputs["fit"].items():
+            table = fitted
+            for classify in self.classifications:
+                classified = inputs[f"classification:{classify.name}"][cell]
+                columns = [name for name in classified.varnames if name not in fitted.varnames]
+                cids = classified.df["CID"].astype(str)
+                predictions = classified.df[columns].set_axis(cids)
+                table = _joined(table, predictions)
+            merged[cell] = table
+        return merged
+
+
 def _joined_onto(tables: Mapping[str, Any], path: Path) -> Mapping[str, Any]:
     """Every cell's table with the predictions in ``path`` joined on, the
     file's first column the event's ID."""
@@ -143,46 +197,71 @@ def _joined_onto(tables: Mapping[str, Any], path: Path) -> Mapping[str, Any]:
 
 
 def _joined(table, predictions: pd.DataFrame):
-    """The table with the prediction columns added, every row filled."""
+    """The table with the prediction columns added, every row filled. A
+    column the table already has is refused."""
     cids = table.df["CID"].astype(str)
     columns = list(predictions.columns)
+    existing = [column for column in columns if column in table.varnames]
+    if existing:
+        raise SNANAError(f"the table already has {existing}; a classification adds "
+                         f"columns of its own", function_name="classify")
     return dataclasses.replace(
         table,
         df=table.df.assign(**{c: cids.map(predictions[c]).fillna(0.0).to_numpy()
                               for c in columns}),
-        varnames=table.varnames + [c for c in columns if c not in table.varnames],
-        varnames_by_file=[names + [c for c in columns if c not in names]
-                           for names in table.varnames_by_file])
+        varnames=table.varnames + columns,
+        varnames_by_file=[names + columns for names in table.varnames_by_file])
 
 
 @dataclass(frozen=True)
 class Perfect:
-    """Probabilities from the simulation truth: ``prob_ia`` for every true
-    type Ia, ``prob_cc`` for other simulated types.
+    """Probabilities from each event's known type: ``prob_ia`` where its
+    ``TYPE`` is one of ``ia_types``, ``prob_cc`` otherwise, as Pippin's
+    PerfectClassifier gives them.
 
-    Use this classifier to validate a pipeline with known simulated types.
-    Its training method saves the two probabilities in a model file for
-    the classification stage.
+    Use this classifier to validate a pipeline with simulated or
+    spectroscopically typed events. It needs no model, so it cannot be
+    trained.
     """
 
+    ia_types: tuple[int, ...]
     prob_ia: float = 1.0
     prob_cc: float = 0.0
     column: str = "PROB_PERFECT"
 
-    def train(self, fit, photometry, outdir) -> Path:
-        model = Path(outdir) / "perfect.model"
-        model.write_text(f"{self.prob_ia} {self.prob_cc}\n")
-        return model
+    #: the OPTS of Pippin's PerfectClassifier read by from_pippin
+    PIPPIN_OPTS: ClassVar[tuple[str, ...]] = ("PROB_IA", "PROB_CC")
+
+    @classmethod
+    def from_pippin(cls, name, opts, types, locate) -> "Perfect":
+        """The classifier a Pippin PerfectClassifier task's OPTS describe,
+        with Pippin's default probabilities, whose Ia types are those
+        ``types`` labels Ia and whose column is PROB_<task>, as in Pippin
+        (perfect.py:63-69 there)."""
+        if types is None:
+            raise SNANAError(f"CLASSIFICATION {name}: the config.yml of the completed simulation "
+                             f"records no OUTPUT.types", function_name="pippin")
+        ia_types = tuple(sntype for sntype, label in types.items() if label == "Ia")
+        prob_ia = opts.get("PROB_IA", 1.0)
+        prob_cc = opts.get("PROB_CC", 0.0)
+        return cls(ia_types=ia_types, prob_ia=prob_ia, prob_cc=prob_cc, column=f"PROB_{name}")
 
     def predict(self, fit, photometry, model) -> pd.Series:
-        if fit is None or "SIM_TEMPLATE_INDEX" not in fit.df:
-            raise SNANAError("Perfect reads SIM_TEMPLATE_INDEX from a fitted "
-                             "simulation; there is none here",
+        if "TYPE" not in fit.df:
+            raise SNANAError("Perfect reads TYPE from a fitted table; there is none here",
                              function_name="Perfect")
-        prob_ia, prob_cc = ((self.prob_ia, self.prob_cc) if model is None
-                            else (float(x) for x in Path(model).read_text().split()))
-        # SIM_TEMPLATE_INDEX is 0 for a Type Ia model (SNANA's convention,
-        # which BBC's own force_pIa=perfect reads the same way)
-        is_ia = fit.df["SIM_TEMPLATE_INDEX"].astype(int) == 0
-        return pd.Series(np.where(is_ia, prob_ia, prob_cc),
+        is_ia = fit.df["TYPE"].astype(int).isin(self.ia_types)
+        return pd.Series(np.where(is_ia, self.prob_ia, self.prob_cc),
                          index=fit.df["CID"].astype(str), name=self.column)
+
+
+#: each classifier a Pippin CLASSIFICATION task can name, by that name
+CLASSIFIER_REGISTRY = {"PerfectClassifier": Perfect, "SuperNNovaClassifier": SuperNNova}
+
+
+def register_classifier(name: str, classifier_cls) -> None:
+    """Let Pippin CLASSIFICATION tasks name ``classifier_cls`` as ``name``."""
+    if name in CLASSIFIER_REGISTRY:
+        raise SNANAError(f"classifier {name!r} is already registered",
+                         function_name="register_classifier")
+    CLASSIFIER_REGISTRY[name] = classifier_cls

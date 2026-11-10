@@ -100,9 +100,10 @@ The `ALL` covariance includes the configured systematics; the additional
 `NOSYS` choice includes statistical uncertainties only. `COSMOFIT` fits
 ΛCDM with each covariance.
 
-For other inputs, `--data-dir PATH` adds a directory to search before those
+For other inputs, `--data-dir PATH` adds a directory to search after those
 in `GLOBAL: DATA_DIRS`; repeat it to search several directories. Paths may
-contain environment variables. Add `--double-precision` to run the whole
+contain environment variables, and relative data directories are taken from
+the working directory. Add `--double-precision` to run the whole
 analysis in double precision.
 
 ## Checking and rerunning an analysis

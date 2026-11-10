@@ -45,9 +45,16 @@ def test_malformed_yaml_reports_input_error(tmp_path, text):
         read_fit_input(path)
 
 
-def test_namelist_is_recognised_after_comments(tmp_path):
+@pytest.mark.parametrize('header', [
+    '! fit settings\n\n',
+    # submit_batch's CONFIG block, which snlc_fit skips
+    'CONFIG:\n  APPEND_TABLE_VARLIST: SNRMAX_g\n  VERSION:\n#END_YAML\n\n',
+])
+def test_namelist_is_recognised_after_comments_or_a_config_block(tmp_path, header):
     path = tmp_path / 'fit.input'
-    path.write_text('! fit settings\n\n&FITINP ! controls\n BATCH_SIZE = 8\n&END\n')
+    # ROOTFILE_OUT, an output jax does not write, is ignored
+    path.write_text(header + "&SNLCINP\n ROOTFILE_OUT = 'fit.ROOT'\n&END\n"
+                    '&FITINP ! controls\n BATCH_SIZE = 8\n&END\n')
     config = parse_fit_input_file(path)
     assert config.fit.batch_size == 8
 

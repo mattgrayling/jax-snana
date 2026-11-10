@@ -7,6 +7,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,28 @@ _OFFSET_TYPE_PHOT = 100
 # the HEAD's host redshifts SuperNNova can classify with
 _HOST_REDSHIFTS = ("HOSTGAL_PHOTOZ", "HOSTGAL_PHOTOZ_ERR",
                    "HOSTGAL_SPECZ", "HOSTGAL_SPECZ_ERR")
+
+
+def _pippin_sntypes(sntypes, source_types) -> dict[int, str]:
+    """The types SuperNNova uses, as Pippin gives them (supernnova.py:276-327
+    there): the task's ``sntypes`` if any, or else the source's types, with 1
+    added as Ia if none is Ia and 29 as II if none is core collapse; and in
+    both cases 1, 10 and 110 as Ia."""
+    if sntypes:
+        types = dict(sntypes)
+    else:
+        types = dict(source_types)
+        if not any(label.upper() == "IA" for label in types.values()):
+            # Pippin puts the added type first and sorts the others
+            ordered = {1: "Ia"}
+            for sntype in sorted(types):
+                ordered[sntype] = types[sntype]
+            types = ordered
+        if not any(label.upper() in ("II", "IBC") for label in types.values()):
+            types[29] = "II"
+    for sntype in (1, 10, 110):
+        types[sntype] = "Ia"
+    return types
 
 
 @dataclass(frozen=True)
@@ -66,10 +89,63 @@ class SuperNNova:
     redshift_label: str = "REDSHIFT_FINAL"
     band_map: Mapping[str, str] = field(default_factory=dict)
 
+    #: the OPTS of Pippin's SuperNNovaClassifier read by from_pippin
+    PIPPIN_OPTS: ClassVar[tuple[str, ...]] = (
+        "LIST_FILTERS", "VARIANT", "REDSHIFT", "NORM", "CYCLIC", "SEED", "BATCH_SIZE",
+        "NUM_LAYERS", "HIDDEN_DIM", "SNTYPES")
+
+    @classmethod
+    def from_pippin(cls, name, opts, types, locate) -> "SuperNNova":
+        """The classifier a Pippin SuperNNovaClassifier task's OPTS describe,
+        with Pippin's defaults (supernnova.py:79-151 there), for a source
+        whose event types are ``types``. ``locate`` finds a file the OPTS
+        name."""
+        filters = opts.get("LIST_FILTERS")
+        if filters is None:
+            filters = ("DES-g", "DES-i", "DES-r", "DES-z")
+        elif not isinstance(filters, list):
+            raise SNANAError(f"CLASSIFICATION {name}: LIST_FILTERS must be a list, instead got {filters}",
+                             function_name="pippin")
+        # Pippin's REDSHIFT is True, False or the label itself
+        redshift = opts.get("REDSHIFT", "zspe")
+        if redshift is True:
+            redshift = "zspe"
+        elif redshift is False:
+            redshift = "none"
+        # SNTYPES maps types to names, inline or as a file (supernnova.py:105-116 there)
+        given = opts.get("SNTYPES")
+        sntypes = {}
+        if isinstance(given, str):
+            # Pippin reads the file with numpy's loadtxt: a pair per line, # comments
+            for line in locate(given).read_text().splitlines():
+                if line.strip() and not line.lstrip().startswith("#"):
+                    sntype, label = line.split()[:2]
+                    sntypes[int(sntype)] = label
+        elif given is not None:
+            for sntype, label in given.items():
+                sntypes[int(sntype)] = label
+        if not sntypes and types is None:
+            raise SNANAError(f"CLASSIFICATION {name}: the config.yml of the completed simulation "
+                             f"records no OUTPUT.types; give SNTYPES", function_name="pippin")
+        variant = opts.get("VARIANT", "vanilla")
+        norm = opts.get("NORM", "cosmo")
+        cyclic = opts.get("CYCLIC", True)
+        seed = opts.get("SEED", 0)
+        batch_size = opts.get("BATCH_SIZE", 128)
+        num_layers = opts.get("NUM_LAYERS", 2)
+        hidden_dim = opts.get("HIDDEN_DIM", 32)
+        return cls(filters=tuple(filters), variant=variant.lower(), redshift=redshift, norm=norm,
+                   cyclic=cyclic, seed=seed, batch_size=batch_size, num_layers=num_layers,
+                   hidden_dim=hidden_dim, sntypes=_pippin_sntypes(sntypes, types))
+
     def __post_init__(self):
         if self.variant not in ("vanilla", "variational", "bayesian"):
             raise SNANAError(f"SuperNNova variant must be vanilla, variational "
                              f"or bayesian, not {self.variant}",
+                             function_name="SuperNNova")
+        if self.norm not in ("global", "cosmo", "perfilter", "cosmo_quantile", "none"):
+            raise SNANAError(f"SuperNNova norm must be global, cosmo, perfilter, "
+                             f"cosmo_quantile or none, not {self.norm}",
                              function_name="SuperNNova")
 
     def train(self, fit, photometry, outdir) -> Path:

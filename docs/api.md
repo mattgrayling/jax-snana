@@ -304,6 +304,10 @@ and use them in the distance fit.
    :no-members:
    :exclude-members: __new__
 
+.. autoclass:: jax_pipeline.classify.Merge
+   :no-members:
+   :exclude-members: __new__
+
 .. autoclass:: jax_pipeline.supernnova.SuperNNova
    :no-members:
    :exclude-members: __new__
@@ -315,8 +319,6 @@ and use them in the distance fit.
 .. autoclass:: jax_pipeline.classify.Perfect
    :no-members:
    :exclude-members: __new__
-
-.. automethod:: jax_pipeline.classify.Perfect.train
 
 .. automethod:: jax_pipeline.classify.Perfect.predict
 ```
@@ -483,7 +485,8 @@ also defines
     def train(self, fit, photometry, outdir) -> Path:
 ```
 
-returning the path of the model it wrote under `outdir`.
+returning the path of the model it wrote under `outdir`. Such a classifier
+predicts only with a model.
 
 `predict` may instead return a `pandas` DataFrame whose columns include
 `column` and anything else the classifier reports, such as an error on the
@@ -491,3 +494,28 @@ probability. Every column is added to the tables.
 
 The classifier must be a dataclass, because its fields are used to tell
 whether its settings have changed since the predictions on disk were made.
+
+To be named in a Pippin `CLASSIFICATION` task, a classifier also defines:
+
+- `PIPPIN_OPTS`, the `OPTS` it reads besides `MODEL` and `PROB_COLUMN_NAME`,
+  which the Pippin reader handles.
+- `from_pippin(name, opts, types, locate)`, a class method returning the
+  classifier that the `OPTS` of task `name` describe. For a classifier that
+  predicts without a model, `column` is the name Pippin gives its
+  probability column. `types` maps the source's event types to `Ia` or
+  `II`, or is None when the source records none, and `locate` finds a file
+  the `OPTS` name, as Pippin finds it.
+
+and is registered under the name a task gives as its `CLASSIFIER`:
+
+```python
+from jax_pipeline import register_classifier
+
+register_classifier("ColourCutClassifier", ColourCut)
+```
+
+`jax_pipeline.classify.CLASSIFIER_REGISTRY` lists the classifiers
+registered, `PerfectClassifier` and `SuperNNovaClassifier` among them. The
+reader passes every classifier the data version's directory as
+`photometry`, and sets `column` itself when the task trains, names a model
+or gives `PROB_COLUMN_NAME`.

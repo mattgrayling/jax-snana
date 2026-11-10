@@ -43,8 +43,8 @@ def resolve_rebin_bins(bins, nbin_x1=0, nbin_c=0):
                          function_name="resolve_rebin_bins")
     if bins is None:
         if not (nbin_x1 and nbin_c):
-            raise SNANAError("rebin needs REBIN_BINS (use {} for redshift only)",
-                             function_name="resolve_rebin_bins")
+            raise SNANAError("rebin needs REBIN_BINS (use {} for redshift only), or both "
+                             "nbin_x1 and nbin_c", function_name="resolve_rebin_bins")
         bins = {"x1": nbin_x1, "c": nbin_c}
     if not isinstance(bins, Mapping):
         raise SNANAError("REBIN_BINS must map FITRES column names to bin counts",
@@ -342,8 +342,10 @@ def build_config(keys: Mapping | CreateCovConfig, overrides: Mapping | None = No
         snana = {key: value for key, value in source.items() if key not in named}
         sources.append(merge_settings(snana_settings(snana), named))
     values = merge_settings(*sources)
-    bins = values.get('rebin_bins')
-    if isinstance(bins, Mapping) and any(isinstance(count, bool) for count in bins.values()):
+    counts = [values.get('nbin_x1'), values.get('nbin_c')]
+    if isinstance(values.get('rebin_bins'), Mapping):
+        counts.extend(values['rebin_bins'].values())
+    if any(isinstance(count, bool) for count in counts):
         raise SNANAError('Rebin counts must be positive integers, not booleans')
     cfg = build_dataclass(CreateCovConfig, values)
     if cfg.mode != 'unbinned' and (cfg.calibrators or cfg.extra_covs):

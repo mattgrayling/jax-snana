@@ -29,7 +29,7 @@ CLASSIFICATION:
     MODE: predict
     MASK: DATA
     OPTS:
-      MODEL: trained_model/model.pt
+      MODEL: /path/to/trained_model/model.pt
       PROB_COLUMN_NAME: PROB_SNN
       LIST_FILTERS: [DES-g, DES-r, DES-i, DES-z]
 ```
@@ -100,7 +100,8 @@ CLASSIFICATION:
       LIST_FILTERS: [DES-g, DES-r, DES-i, DES-z]
 ```
 
-Set `MODEL: SNN_TRAIN` on the prediction task to use the trained model.
+Set `MODEL: SNN_TRAIN` on a prediction task listed after it to use the
+trained model.
 In Python, the following trains a classifier and applies it to `data`:
 
 ```python
@@ -145,7 +146,25 @@ classified = Classify("classified", fit=data_fit, predictions="predictions.csv")
 ```
 
 The probability columns, including any reported uncertainties, are joined
-to every FITOPT table by event ID. An event with no prediction gets a
-probability of zero.
+to every FITOPT table by event ID, and must be columns the table lacks. An
+event with no prediction gets a probability of zero.
+
+## Comparing classifiers
+
+To compare classifiers in one distance fit, merge their classifications of
+the same fit so its tables carry both columns, then choose one per MUOPT
+with `varname_pIa`:
+
+```python
+from jax_pipeline import BBC, Merge
+
+merged = Merge("merged", [classified_snn, classified_other])
+distances = BBC("distances", data=merged, input_file="bbc.input",
+                overrides={"varname_pIa": "PROB_SNN"},
+                muopts={"OTHER": {"varname_pIa": "PROB_OTHER"}})
+```
+
+Each classification must write its own column. A Pippin MUOPT with its own
+`CLASSIFIER` is read this way.
 
 To incorporate another classification tool, see {ref}`custom-classifier`.

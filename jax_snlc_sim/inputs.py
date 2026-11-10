@@ -363,6 +363,9 @@ def _key_aliases():
                for canon, *alts in cls.INPUT_KEY_ALIASES for alt in alts}}
 
 
+# keys logged as ignored; SNANA reads them but never uses them
+_IGNORED_KEYS = frozenset({'HOSTLIB_GENRANGE_NSIGZ'})
+
 # keys jax refuses
 _REJECTED_KEYS = {
     **refused('the simulation uses a 60-day window and SNR cuts of 5 and 3; select the peak-estimation method with OPT_SETPKMJD',
@@ -396,8 +399,6 @@ _REJECTED_KEYS = {
         'USE_SIMLIB_MAGOBS'),
     **refused('an observer-frame phase grid for grid simulations is not supported',
         'GENRANGE_TOBS'),
-    **refused('selecting hosts by their normalised photometric-redshift residual is not supported',
-        'HOSTLIB_GENRANGE_NSIGZ'),
     **refused('template-based stretch modifications are not supported',
         'STRETCH_TEMPLATE_FILE'),
     **refused('fixing the uniform random draws used for intrinsic scatter is not supported',
@@ -2686,6 +2687,7 @@ def _warn_unrecognized_keys(raw: UsedTrackingDict, typed_keys: set) -> None:
         k for k in typed_keys
         if k not in raw.used
         and k not in _REJECTED_KEYS
+        and k not in _IGNORED_KEYS
         and not any(k.startswith(p) for p in _OPEN_KEY_PREFIXES))
     if unknown:
         log.warn(logger, "CONFIG",
@@ -3050,7 +3052,7 @@ def known_keys(raw: UsedTrackingDict, tokens: Sequence[str]) -> set:
     for name, owner in owners.items():
         ordinary.update(getattr(owner, 'input_names', {}).get(name, ()))
     return (ordinary | set(probe.used) | set(_key_aliases())
-            | set(_REJECTED_KEYS) | set(_ARGV_ONLY_KEYS))
+            | set(_REJECTED_KEYS) | _IGNORED_KEYS | set(_ARGV_ONLY_KEYS))
 
 
 def _override_values(tokens: Sequence[str], start: int, key: str,
@@ -3217,6 +3219,8 @@ def parse_snana_input_file(input_file: Union[str, Path],
                 f"Command-line key {key} is not used by this GENMODEL.",
                 function_name="parse_snana_input_file")
 
+    for key in sorted(typed_keys & _IGNORED_KEYS):
+        log.line(logger, f"{key} is ignored")
     _warn_unrecognized_keys(raw, typed_keys)
     return cfg
 
