@@ -98,14 +98,14 @@ class Data:
     #: real data, a redshift, a peculiar velocity, a host's photo-z quantiles
     #: or its LOGMASS(z) grid, without rewriting the data.
     header_override_file: Optional[List[str]] = None
-    #: SNANA HEADER_OVERRIDE_DIR; the directory the HEADER_OVERRIDE_FILE files
-    #: are looked for in.
+    #: SNANA HEADER_OVERRIDE_DIR; a directory of override files, those its
+    #: ``<dir>.LIST`` names, in place of HEADER_OVERRIDE_FILE.
     header_override_dir: Optional[str] = None
     #: SNANA SIM_HEADER_OVERRIDE_FILE; the override files read instead of
     #: HEADER_OVERRIDE_FILE when the data version is a simulation.
     sim_header_override_file: Optional[List[str]] = None
-    #: SNANA SIM_HEADER_OVERRIDE_DIR; the directory the simulated-truth
-    #: override files are looked for in.
+    #: SNANA SIM_HEADER_OVERRIDE_DIR; a directory of override files, those its
+    #: ``<dir>.LIST`` names, in place of SIM_HEADER_OVERRIDE_FILE.
     sim_header_override_dir: Optional[str] = None
     #: SNANA PHOTFLAG_DETECT; the PHOTFLAG bit marking an epoch as a detection.
     #: CUTWIN_SNR_NODETECT acts on the epochs without that bit only when this
@@ -219,7 +219,7 @@ class Data:
     mwebv_shift: float = 0.0
     #: SNANA MWEBV_FORCE; give every event this E(B-V), ignoring the header and
     #: the map. None, the default, leaves it off; a namelist value turns it on
-    #: only above -0.001, as SNANA applies it (snana.F90:17209).
+    #: only above -0.001, as SNANA applies it (snana.F90:17298).
     mwebv_force: Optional[float] = None
 
     # Input redshifts

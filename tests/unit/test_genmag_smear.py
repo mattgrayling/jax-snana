@@ -47,7 +47,7 @@ def test_coh_rejects_invalid_forms(bad):
 
 
 def test_chotard11_is_the_long_spelling_of_c11():
-    """SNANA maps both to init_genSmear_Chotard11(0) (snlc_sim.c:10041)."""
+    """SNANA maps both to init_genSmear_Chotard11(0) (snlc_sim.c:10061)."""
     randoms = jnp.linspace(-1.0, 1.0, 6)
     long_spelling = build_smear_model('Chotard11').delta_mag(randoms, _WL)
     short_spelling = build_smear_model('C11').delta_mag(randoms, _WL)
@@ -180,12 +180,16 @@ def _write_salt_dir(tmp_path, info_lines, disp_rows):
     return str(d)
 
 
-def test_g10_missing_sigma_int_aborts(tmp_path):
+@pytest.mark.parametrize("info, message", [
+    ("COLOR_DISP_MAX: 1.0", "Could not find SIGMA_INT"),
+    ("SIGMA_INT(3000,8000): 0.1,0.12", "gives 2 sigmas"),
+])
+def test_g10_needs_one_sigma_int(tmp_path, info, message):
     """A SALT INFO file without SIGMA_INT/SIGMA_COH is fatal
-    (sntools_genSmear.c:1367-1374)."""
-    d = _write_salt_dir(tmp_path, ["COLOR_DISP_MAX: 1.0"],
-                        [(2000.0, 0.1), (9000.0, 0.1)])
-    with pytest.raises(SNANAError, match="SIGMA_INT"):
+    (sntools_genSmear.c:1367-1374), and one with several, for which SNANA
+    applies no coherent scatter (:1580-1589), is refused."""
+    d = _write_salt_dir(tmp_path, [info], [(2000.0, 0.1), (9000.0, 0.1)])
+    with pytest.raises(SNANAError, match=message):
         build_smear_model('G10', salt_model_dir=d)
 
 

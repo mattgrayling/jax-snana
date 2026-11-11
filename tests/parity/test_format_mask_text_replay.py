@@ -17,9 +17,8 @@ from jax_snlc_sim import run as sim_run
 from jax_snlc_sim.output import save_snana_outputs
 
 
-def _hfloat(hdr, key, idx=0):
-    toks = hdr.get(key, '').split()
-    return float(toks[idx]) if idx < len(toks) else float('nan')
+def _hfloat(hdr, key):
+    return float(hdr[key][0]) if key in hdr else float('nan')
 
 
 def test_format_mask_text_replay(snana_fixture, tmp_path):
@@ -52,8 +51,8 @@ def test_format_mask_text_replay(snana_fixture, tmp_path):
     for sid in common:
         sh, sv, so = parse_snana_dat(ref_dir / f"SN{sid:06d}.DAT")
         jh, jv, jo = parse_snana_dat(jax_dir / f"FMT_SN{sid:06d}.DAT")
-        assert int(sh['SNID']) == int(jh['SNID']) == sid
-        assert int(float(sh['SNTYPE'].split()[0])) == int(float(jh['SNTYPE'].split()[0]))
+        assert int(sh['SNID'][0]) == int(jh['SNID'][0]) == sid
+        assert int(sh['SNTYPE'][0]) == int(jh['SNTYPE'][0])
         for k in hdr_absdiff:
             hdr_absdiff[k].append(abs(_hfloat(sh, k) - _hfloat(jh, k)))
         peakmjd_absdiff.append(abs(_hfloat(sh, 'PEAKMJD') - _hfloat(jh, 'PEAKMJD')))

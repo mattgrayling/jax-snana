@@ -4,12 +4,14 @@ ZP_FLUXCAL:  31.40  # mag = ZP_FLUXCAL - 2.5*log10(FLUXCAL)
 SNTYPE:   1    # integer type; e.g. spec or phot classification
 RA:       10.000000  # deg (avg among obs)
 DEC:      -30.000000  # deg (avg among obs)
+FIELD:    TOY_A 
 FILTERS:  ugrizY
 PIXSIZE:  0.2000  # arcsec 
 FAKE:     2  # simulated with snlc_sim.exe 
 MWEBV:    0.0000 +- 0.0000  # MW E(B-V) 
 MWXT_MAG:  0.000 0.000 0.000 0.000 0.000 0.000  # MW mag-XT per band
 PEAKMJD:  60849.848     # estimate for LC fit codes
+SEASON_INDEX:     -9 
 MJD_TRIGGER:       60840.406  
 MJD_DETECT_FIRST:  60840.406  
 MJD_DETECT_LAST:   60896.734  

@@ -4,12 +4,14 @@ ZP_FLUXCAL:  31.40  # mag = ZP_FLUXCAL - 2.5*log10(FLUXCAL)
 SNTYPE:   1    # integer type; e.g. spec or phot classification
 RA:       180.000000  # deg (avg among obs)
 DEC:      -45.000000  # deg (avg among obs)
+FIELD:    TOY_B 
 FILTERS:  ugrizY
 PIXSIZE:  0.2000  # arcsec 
 FAKE:     2  # simulated with snlc_sim.exe 
 MWEBV:    0.0000 +- 0.0000  # MW E(B-V) 
 MWXT_MAG:  0.000 0.000 0.000 0.000 0.000 0.000  # MW mag-XT per band
 PEAKMJD:  60895.898     # estimate for LC fit codes
+SEASON_INDEX:     -9 
 MJD_TRIGGER:       60896.734  
 MJD_DETECT_FIRST:  60896.734  
 MJD_DETECT_LAST:   60953.062  
@@ -22,7 +24,7 @@ LENSDMU:             0.000 +- 0.000      # DMU from lensing
 
 HOSTGAL_NMATCH:      0  
 HOSTGAL_NMATCH2:     0  
-HOSTGAL_SB_FLUXCAL:   0.12 0.39 1.15 1.51 1.82 2.18  # ugrizY/asec^2
+HOSTGAL_SB_FLUXCAL:   0.04 0.11 0.33 0.44 0.53 0.63  # ugrizY/asec^2
 
 # SIM-truth values
 SIM_MODEL_NAME:      SALT3.K21  
@@ -76,7 +78,7 @@ SIM_RISETIME_SHIFT:  0.0   # days
 SIM_FALLTIME_SHIFT:  0.0   # days 
 
 # ugrizY filter-dependent quantities vs. 
-SIM_GALFRAC:   0.000  0.000  0.000  0.000  0.001  0.000  # F_gal/F_SNpeak for PSF=1''
+SIM_GALFRAC:   0.000  0.000  0.000  0.000  0.000  0.000  # F_gal/F_SNpeak for PSF=1''
 SIM_PEAKMAG:  23.6746 21.7583 21.4526 21.4239 21.7334 -9.0000  # 
 SIM_EXPOSURE:     1.0    1.0    1.0    1.0    1.0    1.0  # 
 
@@ -87,7 +89,7 @@ SIM_EXPOSURE:     1.0    1.0    1.0    1.0    1.0    1.0  #
 NOBS: 5 
 NVAR: 11 
 VARLIST: MJD BAND FIELD FLUXCAL FLUXCALERR PHOTFLAG GAIN ZPT PSF SKY_SIG SIM_MAGOBS 
-OBS: 60877.9590 LSST-u TOY_B -2.32361e+02  2.7572e+02    0  1.000 28.517  1.10 4.960e+00  27.6048 
+OBS: 60877.9590 LSST-u TOY_B -2.32359e+02  2.7572e+02    0  1.000 28.517  1.10 4.960e+00  27.6048 
 TRIGGER:  trigger logic satisfied at MJD_TRIGGER=60896.7344
 OBS: 60896.7350 LSST-g TOY_B  7.10156e+03  1.3697e+02 6144  1.000 30.492  1.05 5.660e+00  21.7434 
 OBS: 60915.5100 LSST-r TOY_B  5.90067e+03  1.3089e+02 4096  1.000 30.536  1.00 8.100e+00  21.9936 

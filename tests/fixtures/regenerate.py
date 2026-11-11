@@ -192,6 +192,10 @@ FIXTURES: list[Fixture] = [
     Fixture(name="salt3_fit_photoz_quantile",
             genversion="JAX_TEST_SALT3_FIT_PHOTOZ",
             fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
+    # PRIOR_ZERRSCALE unset, which a quantile fit takes as 1 (snlc_fit.F90:1822-1827)
+    Fixture(name="salt3_fit_photoz_quantile_noscale",
+            genversion="JAX_TEST_SALT3_FIT_PHOTOZ",
+            fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
     Fixture(name="salt3_fit_photoz_steffen",
             genversion="JAX_TEST_SALT3_FIT_PHOTOZ",
             fit_nml="fit.nml", sim_from="salt3_fit_photoz"),
@@ -343,6 +347,21 @@ def gzip_fixture(path: Path) -> Path:
     return compressed
 
 
+def strip_machine_details(path: Path, input_file: Path) -> None:
+    """Replace the account, directories and input path SNANA records in its
+    README and FITS headers with values that hold on any machine."""
+    if path.name == "SIM.README":
+        text = path.read_text()
+        for key, value in (("USERNAME", "$USER"), ("SNDATA_ROOT", "$SNDATA_ROOT"),
+                           ("SNANA_DIR", "$SNANA_DIR"), ("CWD", ".")):
+            text = re.sub(rf"^(\s+{key}:\s+).*$", rf"\g<1>{value}", text, flags=re.M)
+        text = text.replace(str(input_file), str(input_file.relative_to(HERE.parents[1])))
+        path.write_text(text)
+    else:
+        with fits.open(path, mode="update") as hdul:
+            hdul[0].header["SNANA_PATH"] = "$SNANA_DIR"
+
+
 def trim_replay_photometry(directory: Path, n_events: int) -> None:
     """Keep photometry for the first distinct DUMP CIDs, retaining the full DUMP."""
     with (directory / "DUMP").open() as stream:
@@ -402,7 +421,7 @@ def regenerate_fixture(fx: Fixture, snana_version: str, *, out_dir: Path | None 
     with tempfile.TemporaryDirectory(prefix=f"snana_{fx.name}_") as work_str:
         work = Path(work_str)
 
-        # SNANA records the expanded root in its output (snlc_sim.c:25237);
+        # SNANA records the expanded root in its output (snlc_sim.c:25289);
         # a staged tree in the run cwd keeps the generating checkout out of it.
         prepare_snana_assets(work / "fixtures")
         env["JAX_TEST_FIXTURE_ROOT"] = "fixtures"
@@ -490,6 +509,8 @@ def regenerate_fixture(fx: Fixture, snana_version: str, *, out_dir: Path | None 
 
         for i, name in enumerate(copied):
             path = out_dir / name
+            if name.endswith(".FITS") or name == "SIM.README":
+                strip_machine_details(path, fx.input_file)
             if name.endswith(".FITS") or (name == "DUMP" and path.stat().st_size >= 100_000):
                 copied[i] = gzip_fixture(path).name
 
@@ -503,7 +524,7 @@ def regenerate_fixture(fx: Fixture, snana_version: str, *, out_dir: Path | None 
             private_root.mkdir()
             shutil.move(str(sim_out), str(private_root / fx.genversion))
             # a bundled <version>.IGNORE sits beside the data, where the
-            # fitter's default EPOCH_IGNORE_FILE looks (snana.F90:12881)
+            # fitter's default EPOCH_IGNORE_FILE looks (snana.F90:12969)
             for ignore in fx.root.glob("*.IGNORE"):
                 shutil.copy(ignore, private_root / fx.genversion / ignore.name)
 

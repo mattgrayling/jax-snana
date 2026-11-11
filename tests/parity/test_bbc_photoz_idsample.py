@@ -1,10 +1,10 @@
 """Parity vs SALT2mu.exe for zspec_errmax_idsample and zphot_shift.
 
 zspec_errmax_idsample splits each sample into -zSPEC/-zPHOT (IS_SPECZ_TABLEVAR,
-SALT2mu.c:9384); zphot_shift adds a systematic redshift offset to the photo-z data
-subset (:9316). The classification consults zPRIORERR when the key is set and both
-zPRIOR columns are present (:8638, :8645), otherwise zHELERR -- whose absent-column
-default of -9.0 (:8550) classifies a whole table as spec-z.
+SALT2mu.c:9394); zphot_shift adds a systematic redshift offset to the photo-z data
+subset (:9326). The classification consults zPRIORERR when the key is set and both
+zPRIOR columns are present (:8648, :8655), otherwise zHELERR -- whose absent-column
+default of -9.0 (:8560) classifies a whole table as spec-z.
 
 References and the doctoring recipe are in the fixture README.
 """
@@ -137,7 +137,7 @@ _1D = ["radiation=0",
 def test_1d_biascor_with_split_sample_matches_salt2mu(bbc_biascor_variants):
     """opt_biascor=65 is 1DZAVG|SAMPLE, so the 1D bias is built per IDSAMPLE while
     the high-SNR reference subtracted from every bin is accumulated over the whole
-    biasCor sample (SALT2mu.c:12160, :12221). Taking that reference per sample
+    biasCor sample (SALT2mu.c:12170, :12231). Taking that reference per sample
     instead agrees only while there is one sample, so this needs two.
     """
     _, out, _, _, _ = run_bbc_fit(parse_bbc_input(None, overrides=_1D + [

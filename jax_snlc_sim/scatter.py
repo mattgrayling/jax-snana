@@ -19,7 +19,8 @@ import numpy as np
 from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.utils import eval_genpoly, float_dtype
-from jax_snlc_core.snana_files import sndata_root, read_two_column_file
+from jax_snlc_core.snana_files import (key_runs, leading_values, read_two_column_file,
+                                       sndata_root, split_names)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def scatter_factors(smear, randoms, wavelengths):
 
 
 def interp_sinfun(val, val_ref0, val_ref1, fun_ref0, fun_ref1):
-    """SNANA's interp_SINFUN (sntools.c:7922): sinusoid with zero slope at
+    """SNANA's interp_SINFUN (sntools.c:7617): sinusoid with zero slope at
     both edges. Traceable; assumes val_ref0 <= val <= val_ref1."""
     val_mean = 0.5 * (val_ref0 + val_ref1)
     val_dif = val_ref1 - val_ref0
@@ -70,20 +71,23 @@ def _read_info_scalars(info_path):
     The raw-dispersion cap defaults to 5.0, a local constant of
     init_genSmear_SALT2 (sntools_genSmear.c:1082) distinct from the 2.0
     node-level cap; the INFO key overrides it. A missing SIGMA_INT/SIGMA_COH
-    key is fatal (:1367-1374). The parenthesised SIGMA_INT(lamlist) form is
-    read as its first sigma: SNANA's multi-bin interpolation branch is
-    disabled upstream (:1590-1593), so only the first value is live.
+    key is fatal (:1367-1374). The SIGMA_INT(lamlist) form takes one sigma;
+    with several, SNANA's wavelength interpolation is disabled and it applies
+    no coherent scatter (:1580-1589), so several are refused. SNANA reads
+    the file as a stream of words (:1352-1362).
     """
     sigcoh = None
     colour_disp_max = 5.0
-    with open(info_path) as f:
-        for line in f:
-            stripped = line.split('#')[0].strip()
-            if stripped.startswith(('SIGMA_INT:', 'SIGMA_COH:',
-                                    'SIGMA_INT(', 'SIGMA_COH(')):
-                sigcoh = float(stripped.split(':', 1)[1].split()[0])
-            elif stripped.startswith('COLOR_DISP_MAX:'):
-                colour_disp_max = float(stripped.split(':', 1)[1].split()[0])
+    for key, values in key_runs(info_path):
+        if key.startswith(('SIGMA_INT', 'SIGMA_COH')):
+            sigmas = split_names(leading_values(info_path, key, values, 1)[0])
+            if len(sigmas) > 1:
+                raise SNANAError(f"{info_path}: {key}: gives {len(sigmas)} sigmas; a "
+                                 "wavelength-dependent coherent scatter is not supported",
+                                 function_name="_read_info_scalars")
+            sigcoh = float(sigmas[0])
+        elif key == 'COLOR_DISP_MAX':
+            colour_disp_max = float(leading_values(info_path, key, values, 1)[0])
     if sigcoh is None:
         raise SNANAError(
             f"Could not find SIGMA_INT or SIGMA_COH in {info_path}",
@@ -268,25 +272,22 @@ def build_correlated_band_smear(lamcen, cholesky, sigmacoh=None):
 
 
 def _read_oir_info(model_dir):
-    """Band centres, colour sigmas, correlation matrix and the coherent sigma
-    (read_OIR_INFO)."""
+    """Band centres, colour sigmas, correlation matrix and the coherent sigma,
+    read from the stream of words as SNANA reads them, each colour row of
+    its seven colours (read_OIR_INFO, sntools_genSmear.c:3035-3080)."""
+    path = Path(model_dir) / 'OIR.INFO'
     lamcen, sigma, cormat, scale, sigmacoh = [], None, [], 1.0, 0.0
-    with open(Path(model_dir) / 'OIR.INFO') as f:
-        for line in f:
-            words = line.split('#')[0].split()
-            if not words:
-                continue
-            key, values = words[0], words[1:]
-            if key == 'LAMCEN_BAND:':
-                lamcen.append(float(values[1]))
-            elif key == 'COLOR_SIGMA:':
-                sigma = [float(v) for v in values]
-            elif key == 'COLOR_SIGMA_SCALE:':
-                scale = float(values[0])
-            elif key in ('SIGMACOH_MB:', 'SIGMACOH:'):
-                sigmacoh = float(values[0])
-            elif key == 'COLOR_CORMAT:':
-                cormat.append([float(v) for v in values])
+    for key, values in key_runs(path):
+        if key == 'LAMCEN_BAND':
+            lamcen.append(float(leading_values(path, key, values, 2)[1]))
+        elif key == 'COLOR_SIGMA':
+            sigma = [float(v) for v in leading_values(path, key, values, 7)]
+        elif key == 'COLOR_SIGMA_SCALE':
+            scale = float(leading_values(path, key, values, 1)[0])
+        elif key in ('SIGMACOH_MB', 'SIGMACOH'):
+            sigmacoh = float(leading_values(path, key, values, 1)[0])
+        elif key == 'COLOR_CORMAT':
+            cormat.append([float(v) for v in leading_values(path, key, values, 7)])
     return (np.array(lamcen), np.array(sigma) * scale, np.array(cormat),
             sigmacoh)
 
@@ -322,7 +323,7 @@ def build_smear_model(modelname, salt_model_dir=None, sed_lam_max=None,
                 "(needs the colour-dispersion file)")
         return build_node_grid_smear(salt_model_dir, fig8=(name == 'G10Fig8'),
                                      sed_lam_max=sed_lam_max, zmin=zmin)
-    # SNANA treats Chotard11 as a synonym of C11 (snlc_sim.c:10041)
+    # SNANA treats Chotard11 as a synonym of C11 (snlc_sim.c:10061)
     if name in ('C11', 'C11_0', 'C11_1', 'C11_2', 'Chotard11'):
         far_uv = 0 if name in ('C11', 'C11_0', 'Chotard11') else int(name[-1])
         # no coherent term (sntools_genSmear.c:1799)
@@ -332,7 +333,7 @@ def build_smear_model(modelname, salt_model_dir=None, sed_lam_max=None,
         # COH sums one wavelength-independent offset per sigma linearly.
         sigmas = jnp.asarray(_parse_coh_sigmas(name))
         return SmearModel('coherent', len(sigmas), coefficients=sigmas)
-    # Matched by substring, so the name may carry a path (snlc_sim.c:10071)
+    # Matched by substring, so the name may carry a path (snlc_sim.c:10091)
     if 'OIR.' in name:
         path = Path(os.path.expandvars(name))
         if path.parent == Path('.'):
@@ -353,7 +354,7 @@ def prepare_phase_scatter(config):
     TMIN=-18.0 with TBIN=1.0 (phases -18..+41;
     init_genSmear_phaseCor, sntools_genSmear.c:3754-3801), with covariance
     C(i,j) = sigma^2 * exp(-|T_i - T_j| / tau) and tau floored at 1e-12
-    (snlc_sim.c:10099-10100). Per-SN draws are L @ z with z ~ N(0, I). The
+    (snlc_sim.c:10119-10120). Per-SN draws are L @ z with z ~ N(0, I). The
     grid constants live on Instrument (phasecor_phase_min/step/n_grid) so
     construction and lookup share one definition.
     """
@@ -408,7 +409,7 @@ def draw_coherent_scatter(model, keys):
 
 def draw_filter_scatter(model, n_filters, keys):
     """GENMAG_SMEAR_FILTER: one clipped gaussian per (SN, filter), added to
-    that filter's epochs (snlc_sim.c:29904)."""
+    that filter's epochs (snlc_sim.c:29968)."""
     if not model.genmag_smear_filter:
         return None
     clip_lo, clip_hi = model.sigmaclip_magsmear

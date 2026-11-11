@@ -137,10 +137,10 @@ def test_salt3_fitter_vs_snana(salt3_fit_results):
 
 def test_fitchi2_and_ndof_are_snanas(salt3_fit_results):
     """FITCHI2 is the chi2 MINUIT minimised, prior included (FITCHI2_STORE(1),
-    snana.F90:28083), while NDOF is the fitted epochs less the floated
+    snana.F90:28196), while NDOF is the fitted epochs less the floated
     parameters, the prior not counted (XNFITDOF(0), snlc_fit.F90:13132-13140,
-    written at :13253); the prior's degree of freedom enters only FITPROB
-    (NDOF_STORE(1), snana.F90:28108). Each round's t0 prior is centred on the
+    written at :13408); the prior's degree of freedom enters only FITPROB
+    (NDOF_STORE(1), snana.F90:28221). Each round's t0 prior is centred on the
     last one's fit, so it is rarely above its 0.01 threshold at the end."""
     fx, results, _ = salt3_fit_results
     snana = parse_fitres(fx.root / "FITRES.TEXT")
@@ -265,7 +265,7 @@ def test_selection_keys_change_the_row_set(snana_fixture, repo_root,
 def test_fit_matches_snana_without_a_covariance_matrix(snana_fixture):
     """Parity for OPT_COVAR_FLUX = OPT_COVAR_MWXTERR = 0, where SNANA takes
     USE_DIAG_ONLY and recomputes sigma at every call rather than freezing it
-    (snlc_fit.F90:10572). No other fixture covers that configuration."""
+    (snlc_fit.F90:10695). No other fixture covers that configuration."""
     fx = snana_fixture("salt3_fit_diagcov")
     results, _ = fit_fixture(fx.root, max_fit=None)
     _assert_pull_parity(results, fx.root / "FITRES.TEXT")
@@ -416,12 +416,12 @@ def test_salt3_fitter_magcor(snana_fixture, data_root):
 
 
 def test_magcor_file_version_and_size_checks(tmp_path, snana_fixture):
-    """VERSION_ADD names the versions already carrying the correction, so
-    adding to one or subtracting from any other is refused (ISTAT_MAGCOR_ADD,
-    snana.F90:16750-16760), and a correction beyond 0.2 mag aborts when it
-    is applied (snana.F90:16934)."""
+    """VERSION_ADD, anywhere before the first row, names the versions already
+    carrying the correction, so adding to one or subtracting from any other
+    is refused (ISTAT_MAGCOR_ADD, snana.F90:16858-16890), and a correction
+    beyond 0.2 mag aborts when it is applied (snana.F90:16934)."""
     path = tmp_path / "MAGCOR.DAT"
-    path.write_text("VERSION_ADD: DONE\nVARNAMES: ROW MAGCOR\n"
+    path.write_text("VARNAMES: ROW MAGCOR\nVERSION_ADD: DONE\n"
                     "ROW: 1-61324.615-i 0.30\n")
     with pytest.raises(SNANAError, match="already in"):
         read_magcor_file(str(path), "DONE")
@@ -674,7 +674,7 @@ def test_fiterr_windowed_gating():
 
 def test_fudge_magerr_model_zero_removes_the_model_covariance(snana_fixture):
     """Under OPT_COVAR_FLUX the frozen covariance takes the model's own error,
-    which FUDGE_MAGERR_MODEL = 0 removes (snlc_fit.F90:10691): each epoch is
+    which FUDGE_MAGERR_MODEL = 0 removes (snlc_fit.F90:10814): each epoch is
     weighted by its measurement error alone and the colour-dispersion block
     is empty."""
     dense = snana_fixture("salt3_fit_dense")
@@ -851,7 +851,7 @@ def test_fit_uses_the_heliocentric_redshift(snana_fixture, tmp_path):
     """SNANA fits with zHELIO and falls back to zCMB only where it is
     undefined (SNLC_REDSHIFT, snana.F90:4256 and :4292) -- the wavelength
     stretch and time dilation follow the observed redshift. zCMB itself comes
-    from REDSHIFT_FINAL, or REDSHIFT_CMB where that is undefined (:4277).
+    from REDSHIFT_FINAL, which an older file spells REDSHIFT_CMB.
     """
     fx = snana_fixture("salt3_fit_select")
     fmap = {b: i for i, b in enumerate(_DES_BANDS)}
@@ -884,7 +884,7 @@ def test_fit_uses_the_heliocentric_redshift(snana_fixture, tmp_path):
                 for n, v in edits.items() if n not in by_name]
         p = tmp_path / f"{'_'.join(edits)}_HEAD.FITS"
         fits.HDUList([fits.PrimaryHDU(header=phdr),
-                      fits.BinTableHDU.from_columns(out)]).writeto(p)
+                      fits.BinTableHDU.from_columns(out)]).writeto(p, overwrite=True)
         return p
 
     # zHELIO undefined -> zCMB transformed into the heliocentric frame, not
@@ -896,12 +896,14 @@ def test_fit_uses_the_heliocentric_redshift(snana_fixture, tmp_path):
     np.testing.assert_allclose(np.asarray(back), zfin, rtol=1e-6)
     assert np.abs(np.asarray(b.redshifts) - zfin).max() > 1e-4
 
-    # ... and REDSHIFT_CMB when REDSHIFT_FINAL is undefined too
-    b = load(rewritten(REDSHIFT_HELIO=-9.0, REDSHIFT_FINAL=-9.0,
-                       REDSHIFT_CMB=0.25))
+    # ... and REDSHIFT_CMB, read as REDSHIFT_FINAL where the file spells it
+    # so (sntools_data.c:391-393)
+    columns = [('REDSHIFT_CMB' if n == 'REDSHIFT_FINAL' else n, f, a)
+               for n, f, a in columns]
+    b = load(rewritten(REDSHIFT_HELIO=-9.0))
     back = zhelio_to_zcmb(np.asarray(b.redshifts),
-                              np.asarray(b.ras), np.asarray(b.decs))
-    np.testing.assert_allclose(np.asarray(back), 0.25, rtol=1e-6)
+                          np.asarray(b.ras), np.asarray(b.decs))
+    np.testing.assert_allclose(np.asarray(back), zfin, rtol=1e-6)
 
 
 def test_fitwin_trest_filter_is_per_band():
@@ -1293,7 +1295,7 @@ def test_salt3_fitter_text_loader(snana_fixture):
     fmap = {b: i for i, b in enumerate(_DES_BANDS)}
     kw = dict(fit_bands=_DES_BANDS, model_sim_columns=('SIM_SALT2x1',))
     text = load_and_batch_snana_text(
-        str(text_fx.root), filter_map=dict(fmap), **kw)
+        str(text_fx.root / "JAX_TEST_SALT3_FIT_TEXT"), filter_map=dict(fmap), **kw)
     fits_b = load_and_batch_snana_fits(
         str(fits_fx.root / "HEAD.FITS"), str(fits_fx.root / "PHOT.FITS"),
         filter_map=dict(fmap), **kw)
@@ -1395,7 +1397,7 @@ def test_salt3_fitter_text_redshift_fallback(snana_fixture, tmp_path):
     (tmp_path / "V.LIST").write_text(
         "\n".join(p.name for p in tmp_path.glob("*.DAT")))
     batch = load_and_batch_snana_text(
-        str(tmp_path), fit_bands=_DES_BANDS,
+        str(tmp_path / "V"), fit_bands=_DES_BANDS,
         filter_map={b: i for i, b in enumerate(_DES_BANDS)})
     assert np.isfinite(np.asarray(batch.redshifts)).all()
 
@@ -1870,7 +1872,7 @@ def test_mw_extinction_uses_each_event_s_av(snana_fixture):
 
 def test_mw_extinction_error_is_the_difference_snana_takes(snana_fixture):
     """The Milky Way extinction error is XT(E(B-V) + error) - XT(E(B-V))
-    (snana.F90:15624-15629). Somm25's curve changes shape with AV, so only
+    (snana.F90:15713-15718). Somm25's curve changes shape with AV, so only
     that difference telescopes: error(E, e) + error(0, E) = error(0, E + e).
     An event with no E(B-V) carries the extinction of its error."""
     fx = snana_fixture("salt3_fit_dense")
@@ -2163,7 +2165,7 @@ def test_fitting_workflow_writes_precomputed_vmax(snana_fixture, tmp_path, photo
     assert (written['z_Vmax_r'] > 0).all()
     assert (written['vol_Vmax_r'] > 0).all()
 
-    # SNANA VMAX_ANA uses SNLC_REDSHIFT, not fitted zPHOT (snlc_fit.F90:15127).
+    # SNANA VMAX_ANA uses SNLC_REDSHIFT, not fitted zPHOT (snlc_fit.F90:15288).
     from jax_snlc_core.filters import filter_band
     batch = fitter.as_fitted(config, batch)
     flux, _ = fitter.evaluate_model(batch, results.params)

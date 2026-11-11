@@ -331,7 +331,7 @@ def select_data(config, sources, data, maps):
     return tv
 
 def _force_dust_coefficients(biascor_tv, config, model) -> bool:
-    """set_DUST_FLAG_biasCor (SALT2mu.c:11930): a biasCor sample whose first
+    """set_DUST_FLAG_biasCor (SALT2mu.c:11940): a biasCor sample whose first
     20 rows hold a Ia with SIM_AV > 0 comes from a dust model, whose per-event
     SIM_alpha and SIM_beta are the intrinsic draws and not a fitted
     standardisation, so every event's are overwritten with the input's p1 and
@@ -361,7 +361,7 @@ def _force_dust_coefficients(biascor_tv, config, model) -> bool:
 
 def _report_biascor_duplicates(tv, model):
     """check_duplicates_biascor: biasCor duplicates match on redshift and map coordinates
-    rather than CID (SALT2mu.c:4412). Diagnostic only: no event is cut."""
+    rather than CID (SALT2mu.c:4415). Diagnostic only: no event is cut."""
     names = tuple(model.biascor_binning)
     key = np.stack([tv.zhd] + [np.asarray(tv.lcpar[n]) for n in names], axis=1)
     _, counts = np.unique(key, axis=0, return_counts=True)
@@ -406,7 +406,7 @@ def _biascor_1d_setup(biascor_tv, samples, config, model):
                               biascor_counts=sample_counts(bc_idsample, bc_cutmask, samples),
                               biascor_nevt_total=n_inrange, ndim=1,
                               # SIGINT_AVG on the 1D path is the input sigmB
-                              # (prepare_biasCor_zinterp, SALT2mu.c:12041)
+                              # (prepare_biasCor_zinterp, SALT2mu.c:12051)
                               sigint_biascor=config.sigint,
                               version_photometry=biascor_tv.version_photometry,
                               sim_cosmology=biascor_tv.sim_cosmology,

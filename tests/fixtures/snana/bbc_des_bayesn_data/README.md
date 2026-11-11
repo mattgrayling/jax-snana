@@ -7,8 +7,7 @@ These are BBC tests; the fitted input tables are not fitter reference answers.
 
 ## Generation
 
-Refreshed 2026-10-14 using SNANA `v12_02d-12-g74dfb2c5` and the JAX fitter
-at `e010076a` with this change's `MUERR_LCFIT` output-column correction.
+Refreshed 2026-11-11 using SNANA `v12_02f` and the JAX fitter at `82e7bac1`.
 The namelists specify three fit iterations, double precision, batch size 32,
 and physical-parameter-only FITRES output. Simulation uses
 `GENMODEL_MSKOPT: 64` (smooth-to-constant time extrapolation), matching the

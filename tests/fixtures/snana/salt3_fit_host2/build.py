@@ -53,6 +53,10 @@ def doctor(head):
     for band in BANDS:
         head[f"HOSTGAL2_MAG_{band}"][rows] = head[f"HOSTGAL_MAG_{band}"][rows] + 0.7
         head[f"HOSTGAL2_MAGERR_{band}"][rows] = 0.05
+    # no photo-z quantiles for the second host: SNANA reads the leading cells
+    # >= 0 as quantiles, and the parent leaves an unmatched slot's at 0
+    for name in ("HOSTGAL2z_QUANTILE_ZPHOT", "HOSTGAL2z_QUANTILE_PERCENT"):
+        head[name][rows] = -9.0
     head["VPEC"][:5] = 300.0
     head["VPEC_ERR"][:5] = 90.0
 

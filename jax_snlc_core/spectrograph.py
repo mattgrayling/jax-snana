@@ -28,7 +28,7 @@ import numpy as np
 from jax_snlc_core import logging as log
 from jax_snlc_core.interpolation import linear_between, linear_bin
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import open_text, resolve_fits_path, skip_docana
+from jax_snlc_core.snana_files import key_runs, leading_values, resolve_fits_path
 from jax_snlc_core.utils import HC_ERG_A
 
 logger = logging.getLogger(__name__)
@@ -105,30 +105,30 @@ def read_spectrograph(filepath: str, *, rebin: int = 1) -> SpectrographCalibrati
     snr_ratio_abort_vsmagref = 5.0
     snr_ratio_abort_vstexpose = 1.2
 
-    with open_text(expanded) as f:
-        for line in skip_docana(f):
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-
-            parts = stripped.split()
-            key = parts[0].rstrip(':')
-
-            if key == 'INSTRUMENT':
-                instrument = parts[1] if len(parts) > 1 else 'UNKNOWN'
-            elif key == 'MAGREF_LIST':
-                magref = np.array([float(parts[1]), float(parts[2])])
-            elif key == 'TEXPOSE_LIST':
-                texpose_list = np.array([float(x) for x in parts[1:]])
-            elif key == 'MAGSNR_TOLERANCE_ABORT':
-                magsnr_tolerance = float(parts[1])
-            elif key == 'SNR_POISSON_RATIO_ABORT_vsMAGREF':
-                snr_ratio_abort_vsmagref = float(parts[1])
-            elif key == 'SNR_POISSON_RATIO_ABORT_vsTEXPOSE':
-                snr_ratio_abort_vstexpose = float(parts[1])
-            elif key == 'SPECBIN':
-                vals = [float(x) for x in parts[1:]]
-                specbin_rows.append(vals)
+    # each key takes the words it needs and words after them are passed over,
+    # as SNANA reads the file as a stream of words (sntools_spectrograph.c:170)
+    for key, values in key_runs(expanded):
+        if key == 'INSTRUMENT':
+            instrument = leading_values(expanded, key, values, 1)[0]
+        elif key == 'MAGREF_LIST':
+            magref = np.array([float(v) for v in leading_values(expanded, key, values, 2)])
+        elif key == 'TEXPOSE_LIST':
+            texpose_list = np.array([float(v) for v in values])
+        elif key == 'MAGSNR_TOLERANCE_ABORT':
+            magsnr_tolerance = float(leading_values(expanded, key, values, 1)[0])
+        elif key == 'SNR_POISSON_RATIO_ABORT_vsMAGREF':
+            snr_ratio_abort_vsmagref = float(leading_values(expanded, key, values, 1)[0])
+        elif key == 'SNR_POISSON_RATIO_ABORT_vsTEXPOSE':
+            snr_ratio_abort_vstexpose = float(leading_values(expanded, key, values, 1)[0])
+        elif key == 'SPECBIN':
+            if texpose_list is None:
+                raise SNANAError(f"{expanded}: a SPECBIN row comes before TEXPOSE_LIST",
+                                 function_name="read_spectrograph")
+            # LAMMIN LAMMAX LAMRES, then SNR at each MAGREF per exposure time
+            specbin_rows.append([float(v) for v in leading_values(
+                expanded, key, values, 3 + 2 * len(texpose_list))])
+        else:
+            log.warn(logger, "SPECTROGRAPH", f"{expanded}: {key}: is not read")
 
     if magref is None:
         raise SNANAError(f"MAGREF_LIST not found in {filepath}",
@@ -149,6 +149,8 @@ def read_spectrograph(filepath: str, *, rebin: int = 1) -> SpectrographCalibrati
     if rebin > 1:
         # SNANA combines complete groups: bin edges span the group and SNRs
         # add in quadrature. Incomplete trailing groups are not retained.
+        # Combining bins leaves the instrument's resolution as it was, so a
+        # combined bin keeps its bins' mean LAMRES, which SNANA leaves at 0.
         n_groups = len(specbin) // rebin
         if n_groups < 2:
             raise SNANAError('Spectrograph rebin leaves fewer than two wavelength bins')
@@ -156,6 +158,7 @@ def read_spectrograph(filepath: str, *, rebin: int = 1) -> SpectrographCalibrati
         rebinned = np.zeros((n_groups, specbin.shape[1]))
         rebinned[:, 0] = groups[:, 0, 0]
         rebinned[:, 1] = groups[:, -1, 1]
+        rebinned[:, 2] = groups[:, :, 2].mean(axis=1)
         rebinned[:, 3:] = np.sqrt(np.sum(groups[:, :, 3:]**2, axis=1))
         specbin = rebinned
     n_lam = len(specbin)
@@ -167,13 +170,6 @@ def read_spectrograph(filepath: str, *, rebin: int = 1) -> SpectrographCalibrati
     lam_bin = lam_max - lam_min
 
     snr_data = specbin[:, 3:]
-    expected_snr_cols = 2 * n_texpose
-    if snr_data.shape[1] != expected_snr_cols:
-        raise SNANAError(
-            f"SPECBIN has {snr_data.shape[1]} SNR columns, "
-            f"expected {expected_snr_cols} (2 × {n_texpose} exposures)",
-            function_name="read_spectrograph")
-
     snr0 = snr_data[:, 0::2]
     snr1 = snr_data[:, 1::2]
 

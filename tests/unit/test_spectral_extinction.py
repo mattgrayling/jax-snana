@@ -95,7 +95,7 @@ def test_host_spectrum_extinction(law_name):
     calib = calibration(lam_min, lam_max)
     table = HostSpecTable(
         mode='SPECBASIS', wave=wave, wave_min=wave - 50., wave_max=wave + 50.,
-        flam=np.ones((1, len(wave))), index=np.array([0]),
+        flam=np.ones((1, len(wave))), names=['SPECBASIS00'],
         flam_scale=1., flam_scale_powz1=0.)
     law = load_dust_law(law_name)
     law.prepare_wavelength_grid(wave)

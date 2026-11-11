@@ -106,7 +106,7 @@ def test_fmax_clump_resolves_clumps_beyond_1000_days():
 def test_take_spectrum_epochs_follow_the_generated_peak(snana_fixture, tmp_path):
     """TAKE_SPECTRUM TREST epochs are laid out from SIM_PEAKMJD, not the
     OPT_SETPKMJD estimate the HEAD reports as PEAKMJD (GENSPEC_PICKMJD,
-    snlc_sim.c:10867 uses GENLC.PEAKMJD)."""
+    snlc_sim.c:10885 uses GENLC.PEAKMJD)."""
     fx = snana_fixture("spectro_optmask_replay")
     text = open(fx.input_file).read()
     assert "OPT_SETPKMJD: 0" in text and "TAKE_SPECTRUM:  TREST(5:5)" in text

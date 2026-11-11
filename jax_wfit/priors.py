@@ -185,18 +185,18 @@ def prepare_priors(
         dtype=float_dtype(),
     )
     if config.cmb_sim:
-        # -cmb_sim recentres the Omega_m prior on the simulation (wfit.c:1045)
+        # -cmb_sim recentres the Omega_m prior on the simulation (wfit.c:1091)
         omega_m_target = jnp.full(realisation_count, omega_m,
                                   dtype=float_dtype())
     if config.perturb_priors:
-        # SNANA re-seeds per call (get_prior_ranshift, wfit.c:2548), so the
+        # SNANA re-seeds per call (get_prior_ranshift, wfit.c:2814), so the
         # omm and Rcmb shifts use the same gaussian draw
         base_key = jax.random.PRNGKey(config.prior_perturbation_seed)
         draws = jax.vmap(
             lambda index: jax.random.normal(jax.random.fold_in(base_key, index))
         )(jnp.arange(realisation_count))
-        # only an informative Omega_m prior is perturbed (wfit.c:2408);
-        # Rcmb only when centred on the simulation (wfit.c:2489)
+        # only an informative Omega_m prior is perturbed (wfit.c:2674);
+        # Rcmb only when centred on the simulation (wfit.c:2755)
         if config.omega_m_prior_applies() and config.dompri < 1.0:
             omega_m_target = omega_m_target + config.dompri * draws
         if config.cmb_sim:

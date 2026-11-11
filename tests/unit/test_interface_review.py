@@ -8,7 +8,10 @@ import numpy as np
 import pytest
 import yaml
 
+from jax_snlc_core.filters import KcorReader
 from jax_snlc_core.logging import SNANAError
+from jax_snlc_fit.calibration import resolve_filtlist
+from jax_snlc_fit.config_parser import command_settings
 
 
 def test_bbc_output_override_preserves_special_nuisance_mode():
@@ -182,12 +185,8 @@ def test_covariance_combines_file_and_cli_bin_counts(tmp_path):
     assert cfg.mode == 'unbinned' and cfg.nbin_x1 == cfg.nbin_c == 0
 
 
-def test_cli_filter_shorthand_matches_yaml():
-    from jax_snlc_fit.config_parser import command_settings
-    from jax_snlc_fit.calibration import resolve_filtlist
-
-    calibration = SimpleNamespace(filter_names=['LSST-g', 'LSST-r'],
-        header={'NFILTERS': 2, 'FILT001': 'LSST-g', 'FILT002': 'LSST-r'})
+def test_cli_filter_shorthand_matches_yaml(lsst_kcor_path):
+    calibration = KcorReader(str(lsst_kcor_path))
     for tokens, expected in [(['gr'], ['LSST-g', 'LSST-r']),
                              (['LSST-g'], ['LSST-g']),
                              (['LSST-g', 'LSST-r'], ['LSST-g', 'LSST-r'])]:

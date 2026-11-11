@@ -81,7 +81,7 @@ def test_non_uniform_bins_abort(tmp_path):
         "WGT:  8.0 1.0\n"
         "WGT:  9.0 2.0\n"
         "WGT: 11.0 3.0\n")
-    with pytest.raises(SNANAError, match="non-uniform"):
+    with pytest.raises(SNANAError, match="not uniformly spaced"):
         read_wgtmap(str(path), SNVARS)
 
 
@@ -120,13 +120,14 @@ def test_host_dust_is_an_sn_variable_for_every_model(tmp_path):
     assert data.snvar_names == ["AV"]
 
 
-def test_duplicate_cell_aborts(tmp_path):
-    path = tmp_path / "DUP.WGTMAP"
-    path.write_text(
-        "VARNAMES_WGTMAP: LOGMASS WGT\n"
-        "WGT: 9.0 1.0\n"
-        "WGT: 9.0 2.0\n")
-    with pytest.raises(SNANAError, match="appears"):
+@pytest.mark.parametrize("rows, message", [
+    ("WGT: 9.0 1.0\nWGT: 9.0 2.0\n", "needs exactly one row"),
+    ("", "has no rows"),
+])
+def test_a_grid_without_one_row_per_cell_aborts(tmp_path, rows, message):
+    path = tmp_path / "BAD.WGTMAP"
+    path.write_text("VARNAMES_WGTMAP: LOGMASS WGT\n" + rows)
+    with pytest.raises(SNANAError, match=message):
         read_wgtmap(str(path), SNVARS)
 
 

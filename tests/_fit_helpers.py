@@ -247,8 +247,8 @@ def load_and_batch_snana_fits(head_path, phot_path, **kwargs):
     return batch_from_columns(head, phot, **metadata, **kwargs)
 
 
-def load_and_batch_snana_text(version_dir, **kwargs):
+def load_and_batch_snana_text(version, **kwargs):
     """Load a TEXT fixture through normal version discovery and batching."""
-    [(path, read)] = version_sources(version_dir, {})
+    [(path, read)] = version_sources(version, {})
     head, phot, metadata = read()
     return batch_from_columns(head, phot, **metadata, **kwargs)

@@ -21,6 +21,7 @@ def test_python_and_file_fit_agree_with_covariance_repair(tmp_path, snana_fixtur
             gzip.decompress((fixture.root / f'{suffix}.FITS.gz').read_bytes()))
     with fits.open(directory / f'{version}_HEAD.FITS', mode='update') as hdus:
         hdus[0].header['ZP_FLUXCAL'] = zp
+        hdus[0].header['PHOTFILE'] = f'{version}_PHOT.FITS'
     (directory / f'{version}.LIST').write_text(f'{version}_HEAD.FITS\n')
     config = parse_fit_input_file(fixture.root / 'fit.nml', {
         'version_photometry': version, 'private_data_path': str(tmp_path),

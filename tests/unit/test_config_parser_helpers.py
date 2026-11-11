@@ -47,7 +47,7 @@ def _parse_with_extra(tmp_path, extra_lines=""):
                                       'fixmag 25', 'LCLIB'])
 def test_magnitude_dictating_genmodels_are_rejected(genmodel):
     """These set the magnitude directly instead of integrating an SED
-    (GENMODEL_NAME table, snlc_sim.c:9463-9479). Unimplemented, so they must
+    (GENMODEL_NAME table, snlc_sim.c:9478-9494). Unimplemented, so they must
     say so: the multi-token forms otherwise die with a TypeError inside
     posixpath, and bare SIMLIB and LCLIB parse to an empty model_type and are
     accepted silently.
@@ -70,7 +70,7 @@ def _field_path(cfg, dotted):
 ])
 def test_key_plus_filter_keys_reach_the_config(tmp_path, base, field):
     """Both SNANA spellings are read: the bare key sets every band
-    (snlc_sim.c:3687), `KEY_FILTER` only the named ones (:3696)."""
+    (snlc_sim.c:3693), `KEY_FILTER` only the named ones (:3702)."""
     bare = _field_path(_parse_with_extra(tmp_path, f"{base}: 5.0"), field)
     assert bare and set(bare.values()) == {5.0}
 
@@ -96,8 +96,8 @@ def test_parse_cutwin_filter_triplets_rejects_short_rows():
 
 def test_solid_angle_names_the_fields(tmp_path):
     """SOLID_ANGLE(FIELDLIST) carries the field list with the solid angle
-    (parse_input_SOLID_ANGLE, snlc_sim.c:4498-4530); naming the fields a
-    second time through SIMLIB_FIELDLIST aborts (:4522-4525)."""
+    (parse_input_SOLID_ANGLE, snlc_sim.c:4510-4542); naming the fields a
+    second time through SIMLIB_FIELDLIST aborts (:4534-4537)."""
     cfg = _parse_with_extra(tmp_path, "SOLID_ANGLE(DEEP+SHALLOW): 0.02\n")
     assert cfg.rates.solid_angle == 0.02
     assert cfg.survey.simlib_fieldlist == "DEEP+SHALLOW"
@@ -192,7 +192,7 @@ def test_key_snana_never_uses_is_ignored(tmp_path, caplog):
     # a submit_batch_jobs master file fed to the simulator
     "BATCH_INFO: sbatch x 20", "CONFIG: 1",
     # bug-compatibility switches for old analyses
-    "RESTORE_BUGS_DES3YR: 1", "RESTORE_BUG_ZHEL: 1", "RESTORE_DES5YR: 1",
+    "RESTORE_BUGS_DES3YR: 1", "RESTORE_BUG_GALMAG: 1", "RESTORE_DES5YR: 1",
     "RESTORE_WRONG_VPEC: 1",
     # harness/debug knobs with no analogue in a vectorized batch simulator
     "CLEARPROMPT: 1", "TRACE_MAIN: 1", "UNIT_TEST: IGM",
@@ -203,6 +203,7 @@ def test_key_snana_never_uses_is_ignored(tmp_path, caplog):
     "LCLIB_DEBUG_TOBS_OFFSET: 10.0", "LCLIB_DEBUG_ZERO_TEMPLATE_FLUX: 1",
     "LCLIB_DEBUG_FORCE_NREPEAT: 3", "STRONGLENS_FILE: lens.DAT",
     "NPSFSIGMA_MINSEP_DETECT: 1.0", "USE_SIMLIB_GALID: 0",
+    "HOSTLIB_FIELD_MAP: DEEP(C3+X3),SHALLOW(X1+X2)",
     # not a sim-input key; unusable smear keys; unguarded S/N targeting
     "SNTYPE: 120 220", "GENMAG_SMEAR_USRFUN: 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8",
     "GENMAG_SMEARPAR_OVERRIDE: BIMODAL_SIGMACOH 0.12",
@@ -220,7 +221,7 @@ def test_rejected_key_aborts(tmp_path, line):
 
 def test_path_sndata_sim_is_the_output_directory(tmp_path):
     """PATH_SNDATA_SIM names where the GENVERSION folder is written
-    (prep_simpath, snlc_sim.c:8551), with environment variables expanded;
+    (prep_simpath, snlc_sim.c:8566), with environment variables expanded;
     SNDATA_ROOT is not an input key in SNANA and is not one here."""
     cfg = _parse_with_extra(tmp_path, "PATH_SNDATA_SIM: $HOME/sims\n")
     assert cfg.output.path_sndata_sim == os.path.expandvars("$HOME/sims")
@@ -280,7 +281,7 @@ def test_live_snana_spelling_resolves_to_canonical(tmp_path, alt, canonical):
     """SNANA accepts these spellings, so jax must too — they set the same field.
 
     Confirmed against snlc_sim.exe: each runs to completion, assigning
-    GENGAUSS_SALT2{ALPHA,BETA}.PEAK (snlc_sim.c:2351-2362).
+    GENGAUSS_SALT2{ALPHA,BETA}.PEAK (snlc_sim.c:2357-2368).
 
     The sentinel must differ from the fixture's own value, or the assertion
     holds whether or not the alias fired.
@@ -370,7 +371,7 @@ def test_values_continue_onto_the_lines_below_their_key(tmp_path):
     """SNANA reads the input as a stream of words rather than as lines, so a
     key's values may run on beneath it: NON1A_KEYS names its columns on the
     following line in every NON1ASED library SNDATA_ROOT ships
-    (snlc_sim.c:3559-3585), and SIMGEN_DUMP does the same for its variables
+    (snlc_sim.c:3565-3591), and SIMGEN_DUMP does the same for its variables
     (:5046-5059)."""
     raw = read_keys(_write_with_extra(
         tmp_path,
@@ -509,7 +510,7 @@ def test_no_overrides_leaves_the_config_untouched(tmp_path):
 
 
 def test_dndz_override_replaces_the_files_rate_model(tmp_path):
-    """A command-line rate model clears the file's (snlc_sim.c:2712)."""
+    """A command-line rate model clears the file's (snlc_sim.c:2718)."""
     path = _write_with_extra(tmp_path)
     assert parse_snana_input_file(path).rates.dndz_entries == [['POWERLAW', 2.5e-05, 1.5]]
     after = parse_snana_input_file(path, ['DNDZ', 'MD14', '2.5E-5']).rates.dndz_entries
@@ -536,14 +537,14 @@ def test_two_rate_model_names_in_a_file_abort(tmp_path):
 
 
 def test_a_repeated_rate_model_keeps_the_last(tmp_path):
-    """Every model but POWERLAW2 sets NMODEL_ZRANGE = 1 (snlc_sim.c:2802)."""
+    """Every model but POWERLAW2 sets NMODEL_ZRANGE = 1 (snlc_sim.c:2808)."""
     cfg = _parse_with_extra(tmp_path, "DNDZ: POWERLAW 1.0E-4 1.5\n")
     assert cfg.rates.dndz_entries == [['POWERLAW', 1.0e-4, 1.5]]
 
 
 def test_powerlaw2_ranges_accumulate(tmp_path):
     """POWERLAW2 alone does NMODEL_ZRANGE++ — its repeats are one model's
-    z-ranges (snlc_sim.c:2816)."""
+    z-ranges (snlc_sim.c:2822)."""
     path = tmp_path / "in.input"
     path.write_text(open(_A_FIXTURE_INPUT).read().replace(
         "DNDZ:  POWERLAW  2.5E-5  1.5",
@@ -581,7 +582,7 @@ _A_NON1ASED_INPUT = 'tests/fixtures/snana/non1ased_v19_replay/input.input'
 
 @pytest.mark.parametrize("alias", ['NONIA', 'NON1ASED', 'NONIASED'])
 def test_non1ased_row_key_aliases_are_read(tmp_path, alias):
-    """All four spellings set IS_NON1AKEY (snlc_sim.c:3528)."""
+    """All four spellings set IS_NON1AKEY (snlc_sim.c:3534)."""
     expected = parse_snana_input_file(
         _A_NON1ASED_INPUT).model._structured_config['non1a_config']
     path = tmp_path / "in.input"
@@ -599,7 +600,7 @@ def test_non1ased_row_key_aliases_are_read(tmp_path, alias):
 ])
 def test_file_only_keys_are_rejected_on_the_command_line(override):
     """parse_input_NON1ASED matches the colon-bearing form only, so check_argv
-    rejects these (snlc_sim.c:3475). A NON1ASED input is what puts them among
+    rejects these (snlc_sim.c:3481). A NON1ASED input is what puts them among
     the known keys in the first place."""
     parse_snana_input_file(_A_NON1ASED_INPUT)
     with pytest.raises(SNANAError, match="belongs in the sim-input file"):
@@ -650,7 +651,7 @@ def test_invalid_mw_dust_option_aborts(tmp_path, key, bad, good):
 
 
 @pytest.mark.parametrize("line,expected", [
-    ('', 1),                       # SNANA's default (snlc_sim.c:1358)
+    ('', 1),                       # SNANA's default (snlc_sim.c:1361)
     ('CUTWIN_NEPOCH: 0 -10', 0),   # kept: NEPOCH < 0 never rejects (:296)
     ('CUTWIN_NEPOCH: 3 -10', 3),
 ])
@@ -663,12 +664,12 @@ def test_cutwin_nepoch_minimum(tmp_path, line, expected):
 
 @pytest.mark.parametrize("opt", [0, 8, 16, 32, 64, 24, 48, 80])
 def test_opt_setpkmjd_is_a_mask_not_an_enum(tmp_path, opt):
-    """SNANA tests each bit separately (sntools.c:1614-1620), so combinations
+    """SNANA tests each bit separately (sntools.c:1609-1615), so combinations
     like 8|16 and 16|32 are ordinary inputs, and bit 64 is defined but nothing
     consumes it. None of these may be rejected.
 
     GENSIGMA_PEAKMJD is stripped because a Gaussian smear forces the option to
-    0 (snlc_sim.c:10105), which would mask the value under test."""
+    0 (snlc_sim.c:10125), which would mask the value under test."""
     src = "\n".join(l for l in open(_A_FIXTURE_INPUT).read().splitlines()
                     if not l.startswith('GENSIGMA_PEAKMJD'))
     path = tmp_path / "in.input"
@@ -752,7 +753,7 @@ def test_genpdf_embedded_keys_override_existing_population(tmp_path, reweight, s
 
 def test_genmag_smear_in_a_genpdf_file(tmp_path):
     """GENMAG_SMEAR may sit in the GENPDF file (sntools_genPDF.c:221); a sim
-    input that also sets it aborts, as init_modelSmear does (snlc_sim.c:9944)."""
+    input that also sets it aborts, as init_modelSmear does (snlc_sim.c:9964)."""
     genpdf = tmp_path / "SMEAR.DAT"
     genpdf.write_text("GENMAG_SMEAR: 0.13\n")
     cfg = _parse_with_extra(tmp_path, f"GENPDF_FILE: {genpdf}\n")
@@ -764,7 +765,7 @@ def test_genmag_smear_in_a_genpdf_file(tmp_path):
 @pytest.mark.parametrize("token", ['+HOSTMAGS', '+HOSTNBR', '+HOSTAPPEND', '+HOSTSELECT'])
 def test_hostlib_rewrite_flags_are_rejected(tmp_path, token):
     """They go through the one rejection list, written bare as SNANA takes
-    them (snlc_sim.c:3964-3990)."""
+    them (snlc_sim.c:3976-4002)."""
     with pytest.raises(SNANAError, match="Unsupported SNANA input key"):
         parse_snana_input_file(_write_with_extra(tmp_path), [token])
 
@@ -839,7 +840,7 @@ def test_include_accumulating_key_merges(tmp_path):
     """Repeatable keys append across files: an include cannot replace the list.
 
     This is why SNANA needs EXCLUDE_INCLUDE_FILE to swap an include out
-    (snlc_sim.c:3545 increments NON1ASED->NINDEX and never resets per file).
+    (snlc_sim.c:3551 increments NON1ASED->NINDEX and never resets per file).
     """
     before = len(read_keys(_A_FIXTURE_INPUT)["DNDZ"])
     path = _write_include_chain(
@@ -941,7 +942,7 @@ def test_include_does_not_warn_as_unrecognised(tmp_path, caplog):
 
 def test_gensigma_peakmjd_forces_opt_setpkmjd_zero(tmp_path):
     """GENSIGMA_PEAKMJD>0 selects the legacy smear, forcing OPT_SETPKMJD=0
-    even when the input sets it to the Fmax-clump default (snlc_sim.c:10105)."""
+    even when the input sets it to the Fmax-clump default (snlc_sim.c:10125)."""
     cfg = _parse_with_extra(tmp_path, "GENSIGMA_PEAKMJD: 1.5\nOPT_SETPKMJD: 16\n")
     assert cfg.rates.gensigma_peakmjd == 1.5
     assert cfg.rates.opt_setpkmjd == 0
@@ -976,7 +977,7 @@ def test_a_broken_value_does_not_shrink_the_known_keys(tmp_path):
 
 # ----------------------------------------------------------------------------
 # KEY_PLUS_FILTER repeatability and pairing (parse_input_KEY_PLUS_FILTER,
-# snlc_sim.c:3648-3741)
+# snlc_sim.c:3654-3747)
 # ----------------------------------------------------------------------------
 
 
@@ -1011,7 +1012,7 @@ def test_key_plus_filter_comma_bands_pair_values(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# GENPERFECT (snlc_sim.c:8725-8731, 8776-8782)
+# GENPERFECT (snlc_sim.c:8740-8746, 8791-8797)
 # ----------------------------------------------------------------------------
 
 
@@ -1038,7 +1039,7 @@ def test_genperfect_smear_bit_clears_filter_smear(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# TAKE_SPECTRUM: NONE (snlc_sim.c:5608)
+# TAKE_SPECTRUM: NONE (snlc_sim.c:5620)
 # ----------------------------------------------------------------------------
 
 
@@ -1051,7 +1052,7 @@ def test_take_spectrum_none_discards_previous_entries(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# WV07 activation (snlc_sim.c:7947-7948): 0 is a meaningful value
+# WV07 activation (snlc_sim.c:7962-7963): 0 is a meaningful value
 # ----------------------------------------------------------------------------
 
 
@@ -1065,8 +1066,8 @@ def test_wv07_rewgt_zero_activates_profile():
 
 def test_cutwin_snrmax_repeatable_with_logic(tmp_path):
     """Each CUTWIN_SNRMAX line is an independent AND-combined cut
-    (snlc_sim.c:4338-4346); the logic token is AND, OR, or a validated
-    integer (prep_user_CUTWIN, snlc_sim.c:7741-7760)."""
+    (snlc_sim.c:4350-4358); the logic token is AND, OR, or a validated
+    integer (prep_user_CUTWIN, snlc_sim.c:7756-7775)."""
     from jax_snlc_sim.inputs import _cuts
     raw = read_keys(_write_with_extra(
         tmp_path,
@@ -1105,7 +1106,7 @@ def test_simgen_dumpall_columns_continue_across_lines(tmp_path):
 ])
 def test_cutwin_epochs_time_above_max_defaults_to_no_upper_bound(
         tmp_path, line, expected):
-    """CUTWIN_EPOCHS_TRANGE[1] is initialised to 99999 (snlc_sim.c:1378), so
+    """CUTWIN_EPOCHS_TRANGE[1] is initialised to 99999 (snlc_sim.c:1381), so
     the short form imposes no upper bound on TIME_ABOVE_SNRMIN. A 0.0 default
     would reject every event, since the cut passes on TIME_ABOVE < max."""
     path = _write_with_extra(tmp_path, line + "\n")
@@ -1115,7 +1116,7 @@ def test_cutwin_epochs_time_above_max_defaults_to_no_upper_bound(
 
 
 def test_genperfect_leaves_ebv_host_dust_alone(tmp_path):
-    """GENPERFECT bit 16 zeroes GENPROFILE_AV in place (snlc_sim.c:8735-8754)
+    """GENPERFECT bit 16 zeroes GENPROFILE_AV in place (snlc_sim.c:8750-8769)
     without activating it, so a run whose host dust is modelled through
     EBV_HOST parses and keeps its own profile instead of gaining an AV one
     and tripping the both-specified guard."""
@@ -1136,7 +1137,7 @@ def test_genperfect_zeroes_an_av_profile_that_exists(tmp_path):
 
 
 def test_cutwin_snrmax_rejects_a_filter_the_survey_lacks(tmp_path):
-    """An undefined filter in CUTWIN_SNRMAX aborts (snlc_sim.c:24351-24358).
+    """An undefined filter in CUTWIN_SNRMAX aborts (snlc_sim.c:24403-24410).
     Dropping it silently would leave the entry with no filters, and the
     NFILT requirement would then reject every event."""
     from jax_snlc_sim.cutwin import prepare_cutwin
@@ -1149,7 +1150,7 @@ def test_cutwin_snrmax_rejects_a_filter_the_survey_lacks(tmp_path):
 
 def test_unused_argv_only_key_aborts():
     """A command-line-only key nothing consumes is fatal, as in SNANA's
-    check_argv (sntools.c:11358-11383); a SALT input has no NON1A table."""
+    check_argv (sntools.c:11053-11078); a SALT input has no NON1A table."""
     with pytest.raises(SNANAError, match="not used by this GENMODEL"):
         parse_snana_input_file('tests/fixtures/snana/salt3_k21_replay/input.input',
                                ['NON1A_INDEX_FORCE', '834'])
@@ -1158,7 +1159,7 @@ def test_unused_argv_only_key_aborts():
 def test_non1a_index_force_declasses_and_matches_index_zero(tmp_path):
     """The forced row is NON1A-classed whatever it was, a table INDEX of 0
     matches any forced index, and the kept row takes the forced index
-    (snlc_sim.c:3612-3620)."""
+    (snlc_sim.c:3618-3626)."""
     path, base = _a_non1a_fixture()
     src = open(path).read()
     first = next(l for l in src.splitlines() if l.startswith('NON1A:'))
@@ -1231,7 +1232,7 @@ _UNPROVEN_KEYS = (
                                        ("SNRCUT_BACKUP", "2.5")])
 def test_the_hardwired_setpkmjd_knobs_are_refused(tmp_path, key, value):
     """SNANA hard-wires the Fmax-clump window and both SNR cuts and reads no
-    input key for any of them (PARLIST_SETPKMJD, snlc_sim.c:10111-10113): it
+    input key for any of them (PARLIST_SETPKMJD, snlc_sim.c:10131-10133): it
     ignores these spellings, so accepting them would silently give a peak
     estimate SNANA cannot produce. OPT_SETPKMJD is the only key there is."""
     with pytest.raises(SNANAError, match=key):

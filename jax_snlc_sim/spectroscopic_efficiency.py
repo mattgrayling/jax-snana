@@ -18,7 +18,6 @@ and arbitrary HOSTLIB column names (r_obs_auto, obs_gr_auto, etc.)
 
 import logging
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -31,9 +30,9 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.filters import filter_band
 from jax_snlc_core.interpolation import interp_nd_regular
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import (COMMENT_CHARS, check_file_docana,
-                                       is_ignorefile, open_text, resolve_fits_path,
-                                       sndata_root)
+from jax_snlc_core.snana_files import (check_file_docana, exact_values, gridmap,
+                                       gridmap_segments, is_ignorefile, leading_values,
+                                       resolve_fits_path, sndata_root, split_names)
 
 logger = logging.getLogger(__name__)
 
@@ -52,24 +51,18 @@ APPLYMASK_SEARCHEFF_SPECID = 2
 APPLYMASK_SEARCHEFF_zHOST = 4
 APPLYMASK_SEARCHEFF_zSPEC = 8
 
-MXMAP_SEARCHEFF_MAP = 50      # sntools_trigger.h:50
-MXROW_SEARCHEFF_MAP = 30000   # sntools_trigger.h:51
-MXDIM_1DINDEX = 10            # sntools.h:285
-
 # the efficiency column of either map type (assign_MAP_VARNAME, sntools_trigger.c:1507-1517)
 EFF_COLUMN_NAMES = ('SPECEFF', 'HOSTEFF')
 
 # row key and input key per map type (read_searcheff_map, sntools_trigger.c:1281-1294)
-_MAPTYPE_KEYS = {'SPEC': ('SPECEFF:', 'SEARCHEFF_SPEC_FILE'),
-                 'zHOST': ('HOSTEFF:', 'SEARCHEFF_zHOST_FILE')}
+_MAPTYPE_KEYS = {'SPEC': ('SPECEFF', 'SEARCHEFF_SPEC_FILE'),
+                 'zHOST': ('HOSTEFF', 'SEARCHEFF_zHOST_FILE')}
 
 # map attributes until a FIELD/PEAKMJD/REQUIRE key sets them (sntools_trigger.c:1341-1342)
 _FIELDLIST_ALL = 'ALL'
 _PEAKMJD_RANGE_DEFAULT = (10000.0, 90000.0)
-
-_C_WHITESPACE = ' \t\n\v\f\r'  # what fscanf("%s") skips
-_INT_PREFIX = re.compile(r'[+-]?\d+')
-_FLOAT_PREFIX = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+_MAP_SETTINGS_DEFAULT = dict(fieldlist=_FIELDLIST_ALL, peakmjd_range=_PEAKMJD_RANGE_DEFAULT,
+                             require=False)
 
 
 @dataclass
@@ -83,67 +76,10 @@ class SearchEffMap:
     fieldlist: str = _FIELDLIST_ALL
     peakmjd_range: Optional[Tuple[float, float]] = None
     opt_extrap: int = 0          # 0 = zero out of range, >0 = clip to edge
-    # an event matching no map aborts (1) or gets EFF=0 (0) (sntools_trigger.c:1356, :2984)
+    # an event matching no map aborts (1) or gets EFF=0 (0) (sntools_trigger.c:1356, :2986)
     opt_fieldmatch_require: int = 1
     # per SIMLIB entry, from `fieldlist` by `resolve_fieldlist_indices`
     fieldlist_mask: Optional[np.ndarray] = None
-
-
-class _TextStream:
-    """A text file read as SNANA reads it: word by word with fscanf("%s"),
-    and line by line with fgets."""
-
-    def __init__(self, text: str):
-        self.text = text
-        self.pos = 0
-
-    def word(self) -> Optional[str]:
-        """The next whitespace-separated word, or None at the end of the file."""
-        text, n, i = self.text, len(self.text), self.pos
-        while i < n and text[i] in _C_WHITESPACE:
-            i += 1
-        j = i
-        while j < n and text[j] not in _C_WHITESPACE:
-            j += 1
-        self.pos = j
-        return text[i:j] if j > i else None
-
-    def line(self, size: int) -> str:
-        """fgets(LINE, size): the rest of the line up to and including its
-        newline, at most ``size - 1`` characters; '' at the end of the file."""
-        start = self.pos
-        limit = min(len(self.text), start + size - 1)
-        newline = self.text.find('\n', start, limit)
-        self.pos = newline + 1 if newline >= 0 else limit
-        return self.text[start:self.pos]
-
-
-def _parse_words(line: str, comma: bool) -> List[str]:
-    """The words of ``line`` as store_PARSE_WORDS splits a string and
-    get_PARSE_WORD trims each word (store_PARSE_WORDS, splitString2 and
-    trim_blank_spaces, sntools.c:2646, :6888, :6713).
-
-    Words are separated by blanks, or by commas when ``comma`` is set and the
-    line holds one. A tab does not separate words. Each word ends at its
-    first blank, newline or carriage return."""
-    sep = ',' if comma and ',' in line else ' '
-    words = []
-    for token in line.split(sep):
-        if not token or token[0] == '\n':
-            continue
-        words.append(re.split(r'[ \n\r]', token.lstrip(' '), maxsplit=1)[0])
-    return words
-
-
-def _read_number(stream: _TextStream, pattern, key: str, path: Path) -> str:
-    """The leading number of the word after ``key``, as readint and
-    readdouble take it (sntools.c:11650-11680, :11744-11775)."""
-    word = stream.word()
-    match = pattern.match(word or '')
-    if match is None:
-        raise SNANAError(f"Could not read a number for {key} from '{word}' "
-                         f"in {path}", function_name='read_searcheff_maps')
-    return match.group(0)
 
 
 def resolve_searcheff_file(name: str, key_file: str, path_user_input: str
@@ -158,11 +94,6 @@ def resolve_searcheff_file(name: str, key_file: str, path_user_input: str
     dirs = [Path(os.path.expandvars(d)) for d in path_user_input.split()]
     dirs.append(sndata_root() / 'models' / 'searcheff')
     for candidate in [given] + [directory / given for directory in dirs]:
-        gzipped = candidate.with_name(candidate.name + '.gz')
-        if candidate.exists() and gzipped.exists():
-            raise SNANAError(
-                f"{key_file}: found both {candidate} and {gzipped}; "
-                f"remove one", function_name='open_TEXTgz')
         found = Path(resolve_fits_path(candidate))
         if found.exists():
             return found
@@ -175,22 +106,23 @@ def resolve_searcheff_file(name: str, key_file: str, path_user_input: str
 def read_searcheff_maps(filepath: str, maptype: str, path_user_input: str
                         ) -> Tuple[List[SearchEffMap], int]:
     """Read a SEARCHEFF_SPEC_FILE (``maptype`` 'SPEC') or a
-    SEARCHEFF_zHOST_FILE ('zHOST') as read_searcheff_map does
+    SEARCHEFF_zHOST_FILE ('zHOST'), as read_searcheff_map reads it
     (sntools_trigger.c:1238-1470).
 
     NONE (or another IGNOREFILE spelling) and ONE give every event EFF=1,
-    ZERO gives EFF=0 (:1297-1316). Otherwise the file, its DOCANA block
-    included, is read word by word. Only a ``VARNAMES:`` word opens a map,
-    whose rows follow it, keyed ``SPECEFF:`` or ``HOSTEFF:`` by map type
-    (`_read_map_rows`). Every other word that is not a key is passed over,
-    so rows with no VARNAMES line above them are never read, and a file
-    with no map gives every event EFF=1 (gen_searcheff_map, :2898-2908).
+    ZERO gives EFF=0 (:1297-1316). In a file, a ``VARNAMES:`` key opens a
+    map, whose rows follow it, keyed ``SPECEFF:`` or ``HOSTEFF:`` by map
+    type, until a blank line or the next VARNAMES; other keys among its rows
+    are passed over (read_GRIDMAP, sntools_gridmap.c:120-200). Rows with no
+    VARNAMES above them are not a map, as in SNANA's own
+    SEARCHEFF_zHOST_SDSS.DAT; they are reported
+    and not read. A file with no map gives every event EFF=1
+    (gen_searcheff_map, :2898-2908).
 
     ``FIELD:``/``FIELDLIST:``, ``PEAKMJD:``/``PEAKMJD_RANGE:`` and
     ``REQUIRE:`` apply to the next map and reset after it (:1361-1368,
     :1413-1415). ``OPT_EXTRAP:`` applies to the maps after it (:1396), and
-    ``OPT_FIELDMATCH_REQUIRE:`` to the whole file, its last value winning
-    (:1356-1357, :2864).
+    ``OPT_FIELDMATCH_REQUIRE:`` to the whole file (:1356-1357, :2864).
 
     ``path_user_input`` is PATH_USER_INPUT, searched for a file not found
     as given (`resolve_searcheff_file`).
@@ -206,228 +138,98 @@ def read_searcheff_maps(filepath: str, maptype: str, path_user_input: str
         return [], FLAG_ALL_FAIL
 
     path = resolve_searcheff_file(filepath, key_file, path_user_input)
-    # DOCANA required whatever REQUIRE_DOCANA says (snlc_sim.c:1297)
+    # DOCANA required whatever REQUIRE_DOCANA says (snlc_sim.c:1300)
     check_file_docana(path)
-    with open_text(path) as f:
-        stream = _TextStream(f.read())
 
     maps = []
     opt_extrap = 0
     opt_fieldmatch_require = 1
-    fieldlist, peakmjd_range, require = (
-        _FIELDLIST_ALL, _PEAKMJD_RANGE_DEFAULT, 0)
-    while (word := stream.word()) is not None:
-        if word[0] in COMMENT_CHARS:
-            stream.line(100)
-            continue
-        if word == 'NVAR:':
-            logger.warning(f"Should remove obsolete NVAR key from {path}")
-        elif word == 'OPT_EXTRAP:':
-            opt_extrap = int(_read_number(stream, _INT_PREFIX, word, path))
-        elif word == 'OPT_FIELDMATCH_REQUIRE:':
-            opt_fieldmatch_require = int(
-                _read_number(stream, _INT_PREFIX, word, path))
-        elif word in ('FIELD:', 'FIELDLIST:'):
-            fieldlist = stream.word()
-            if fieldlist is None:
-                break
-        elif word in ('PEAKMJD:', 'PEAKMJD_RANGE:'):
-            peakmjd_range = (
-                float(_read_number(stream, _FLOAT_PREFIX, word, path)),
-                float(_read_number(stream, _FLOAT_PREFIX, word, path)))
-        elif word == 'REQUIRE:':
-            require = int(_read_number(stream, _INT_PREFIX, word, path))
-        # maps past the limit are passed over (:1373)
-        elif word == 'VARNAMES:' and len(maps) < MXMAP_SEARCHEFF_MAP:
-            names = _parse_words(stream.line(100), comma=True)
-            maps.append(_read_map(stream, names, key_row, key_file, path,
-                                  opt_extrap, fieldlist, peakmjd_range,
-                                  require))
-            fieldlist, peakmjd_range, require = (
-                _FIELDLIST_ALL, _PEAKMJD_RANGE_DEFAULT, 0)
+    upcoming = dict(_MAP_SETTINGS_DEFAULT)
+    current = None   # the open map: its VARNAMES, rows and settings
+    n_unread = 0     # rows outside any map
+    for segment in gridmap_segments(path, f'{key_row}:'):
+        for key, values in segment:
+            if key == key_row:
+                if current is None:
+                    n_unread += 1
+                else:
+                    current['rows'].append([float(v) for v in exact_values(
+                        path, key, values, len(current['names']))])
+                continue
+            if current is not None and key != 'VARNAMES':
+                log.warn(logger, "SEARCHEFF", f"{key_file} {path}: {key}: among a map's "
+                         f"rows is not read")
+                continue
+            if current is not None:
+                maps.append(_build_map(path, key_file, **current))
+                current = None
+            if key == 'VARNAMES':
+                current = dict(names=split_names(' '.join(values)), rows=[],
+                               opt_extrap=opt_extrap, **upcoming)
+                upcoming = dict(_MAP_SETTINGS_DEFAULT)
+            elif key == 'NVAR':
+                leading_values(path, key, values, 1)
+                log.warn(logger, "SEARCHEFF", f"Should remove obsolete NVAR key from {path}")
+            elif key == 'OPT_EXTRAP':
+                opt_extrap = int(leading_values(path, key, values, 1)[0])
+            elif key == 'OPT_FIELDMATCH_REQUIRE':
+                opt_fieldmatch_require = int(leading_values(path, key, values, 1)[0])
+            elif key in ('FIELD', 'FIELDLIST'):
+                upcoming['fieldlist'] = leading_values(path, key, values, 1)[0]
+            elif key in ('PEAKMJD', 'PEAKMJD_RANGE'):
+                upcoming['peakmjd_range'] = tuple(
+                    float(v) for v in leading_values(path, key, values, 2))
+            elif key == 'REQUIRE':
+                upcoming['require'] = bool(int(leading_values(path, key, values, 1)[0]))
+            else:
+                log.warn(logger, "SEARCHEFF", f"{key_file} {path}: {key}: is not a key here "
+                         f"and is not read")
+        if current is not None:
+            maps.append(_build_map(path, key_file, **current))
+            current = None
+    if n_unread:
+        log.warn(logger, "SEARCHEFF", f"{path}: {n_unread} {key_row}: rows have no "
+                 f"VARNAMES above them and are not read")
 
     for m in maps:
         m.opt_fieldmatch_require = opt_fieldmatch_require
     return maps, FLAG_NORMAL
 
 
-def _read_map(stream, names, key_row, key_file, path, opt_extrap, fieldlist,
-              peakmjd_range, require) -> SearchEffMap:
-    """One map: the VARNAMES ``names`` and the rows after them.
+def _build_map(path, key_file, names, rows, opt_extrap, fieldlist, peakmjd_range,
+               require) -> SearchEffMap:
+    """One map from its VARNAMES ``names`` and rows.
 
     The efficiency is the column named SPECEFF or HOSTEFF, in either file
     (assign_MAP_VARNAME, sntools_trigger.c:1507-1517). It must be the last
     column: read_GRIDMAP takes the last column as the function of the others
     (:1397-1400), and an efficiency column anywhere else is a map variable
-    SNANA cannot evaluate (LOAD_SEARCHEFF_VAR, :3125-3128).
+    SNANA cannot evaluate (LOAD_SEARCHEFF_VAR, :3125-3128). A variable of a
+    map with several variables must take more than one value, since
+    interp_GRIDMAP cannot interpolate across it (sntools_gridmap.c:649-661).
     """
     where = f"{key_file} {path}, map 'VARNAMES: {' '.join(names)}'"
     eff_columns = [i for i, name in enumerate(names) if name in EFF_COLUMN_NAMES]
     if not eff_columns:
         raise SNANAError(f"{where}: no efficiency column; name it SPECEFF or "
                          f"HOSTEFF", function_name='read_searcheff_maps')
-    if eff_columns != [len(names) - 1]:
-        raise SNANAError(f"{where}: the efficiency column "
-                         f"{names[eff_columns[0]]} must be the last column",
-                         function_name='read_searcheff_maps')
-    ndim = len(names) - 1
-    # init_1DINDEX, sntools_gridmap.c:825-829
-    if not 1 <= ndim < MXDIM_1DINDEX:
-        raise SNANAError(f"{where}: {ndim} map variables; a map takes 1 to "
-                         f"{MXDIM_1DINDEX - 1}",
-                         function_name='read_searcheff_maps')
+    if eff_columns != [len(names) - 1] or len(names) < 2:
+        raise SNANAError(f"{where}: the efficiency column must be the last "
+                         f"of two or more", function_name='read_searcheff_maps')
     # interp_GRIDMAP has no rule for a negative OPT_EXTRAP (sntools_gridmap.c:579-581)
     if opt_extrap < 0:
         raise SNANAError(f"{key_file} {path}: OPT_EXTRAP: {opt_extrap} is not "
                          f"supported; 0 gives zero outside a map, 1 its edge "
                          f"value", function_name='read_searcheff_maps')
-    rows = _read_map_rows(stream, len(names), key_row, where)
-    axes, values = _uniform_grid(np.asarray(rows), names[:-1], where)
+    axes, values = gridmap(rows, names[:-1], where)
+    single = [name for name, axis in zip(names[:-1], axes) if len(axis) == 1]
+    if single and len(axes) > 1:
+        raise SNANAError(f"{where}: {single[0]} takes a single value",
+                         function_name='read_searcheff_maps')
     return SearchEffMap(varnames=names[:-1], grid_axes=axes,
-                        grid_values=values, require=bool(require),
+                        grid_values=values[..., 0], require=require,
                         fieldlist=fieldlist, peakmjd_range=peakmjd_range,
                         opt_extrap=opt_extrap)
-
-
-def _read_map_rows(stream, nvartot, key_row, where) -> List[List[float]]:
-    """The rows of one map, read line by line as read_GRIDMAP reads them
-    (sntools_gridmap.c:23-240).
-
-    A line starting ``key_row`` holds the ``nvartot`` values, then nothing
-    or a comment starting with '#'. Any other line is passed over, but ten
-    in a row, or twenty lines without a row, abort. The first blank line
-    after a row ends the map. Along each map variable, every positive step
-    between successive rows must equal the variable's previous positive
-    step to 1e-6, 1-D maps included.
-    """
-    rows = []
-    n_line = n_skip = n_bad = 0
-    first_bad = None
-    ndim = nvartot - 1
-    last, step = [None] * ndim, [None] * ndim
-    while True:
-        words = _parse_words(stream.line(200), comma=False)
-        n_line += 1
-        if n_line > 20 and not rows:
-            raise SNANAError(f"{where}: no '{key_row}' row in the 20 lines "
-                             f"after VARNAMES", function_name='read_GRIDMAP')
-        if not words:
-            if rows:
-                break
-            continue
-        # the empty stop key (sntools_trigger.c:1256, sntools_gridmap.c:130)
-        if words[0] == '':
-            break
-        if words[0] != key_row:
-            n_skip += 1
-            if n_skip >= 10:
-                raise SNANAError(
-                    f"{where}: 10 lines in a row that are not '{key_row}' "
-                    f"rows; a blank line ends a map",
-                    function_name='read_GRIDMAP')
-            continue
-        n_skip = 0
-        n_values = len(words) - 1
-        if n_values < nvartot or (n_values > nvartot
-                                  and not words[nvartot + 1].startswith('#')):
-            raise SNANAError(
-                f"{where}: expected {nvartot} values after '{key_row}', "
-                f"found {n_values} in row {len(rows)}",
-                function_name='read_GRIDMAP')
-        values = []
-        for word in words[1:nvartot + 1]:
-            match = _FLOAT_PREFIX.match(word)
-            if match is None:
-                raise SNANAError(f"{where}: '{word}' in row {len(rows)} is not "
-                                 f"a number", function_name='read_GRIDMAP')
-            values.append(float(match.group(0)))
-        # uniform-bin check (sntools_gridmap.c:163-177)
-        for d in range(ndim):
-            if last[d] is not None:
-                dif = values[d] - last[d]
-                if dif > 0.0:
-                    if step[d] is not None and abs((dif - step[d]) / dif) > 1.0e-6:
-                        n_bad += 1
-                        first_bad = len(rows) if first_bad is None else first_bad
-                    step[d] = dif
-            last[d] = values[d]
-        rows.append(values)
-        if len(rows) >= MXROW_SEARCHEFF_MAP:
-            raise SNANAError(f"{where}: {len(rows)} rows reach the limit of "
-                             f"{MXROW_SEARCHEFF_MAP}",
-                             function_name='read_GRIDMAP')
-    if not rows:
-        raise SNANAError(f"{where}: no '{key_row}' rows",
-                         function_name='read_GRIDMAP')
-    if n_bad:
-        raise SNANAError(
-            f"{where}: {n_bad} non-uniform bin(s), the first at row "
-            f"{first_bad}; every map variable needs uniform steps",
-            function_name='read_GRIDMAP')
-    return rows
-
-
-def _uniform_grid(data: np.ndarray, varnames: List[str], where: str
-                  ) -> Tuple[List[np.ndarray], np.ndarray]:
-    """The knots of each map variable and the efficiency at every grid
-    point, as init_interp_GRIDMAP builds them (sntools_gridmap.c:307-479).
-
-    A variable's bin is its last positive step between successive rows,
-    and its number of knots the range over that bin, which must divide the
-    range to 1e-4. Each row lands on the knot just below its value; a later
-    row on the same grid point replaces an earlier one. A grid the rows do
-    not fill aborts, as does a variable of a map with several variables that
-    takes one value only, since interp_GRIDMAP cannot interpolate across it
-    (sntools_gridmap.c:649-661).
-    """
-    ndim = len(varnames)
-    eff = data[:, ndim]
-    axes, cells = [], []
-    for d, name in enumerate(varnames):
-        col = data[:, d]
-        lo, hi = col.min(), col.max()
-        span = hi - lo
-        if span <= 1.0e-12:
-            if ndim > 1:
-                raise SNANAError(f"{where}: {name} takes a single value",
-                                 function_name='init_interp_GRIDMAP')
-            axes.append(np.array([lo]))
-            cells.append(np.zeros(len(col), dtype=int))
-            continue
-        steps = np.diff(col)
-        steps = steps[steps > 0.0]
-        if steps.size == 0:
-            raise SNANAError(f"{where}: {name} never increases from one row "
-                             f"to the next", function_name='init_interp_GRIDMAP')
-        bin_size = steps[-1]
-        n_bin = int((span + 0.001 * bin_size) / bin_size) + 1
-        if abs((n_bin - 1) * bin_size / span - 1.0) > 1.0e-4:
-            raise SNANAError(
-                f"{where}: non-uniform binning in {name}: its range {span:g} "
-                f"is not a whole number of bins of {bin_size:g}",
-                function_name='init_interp_GRIDMAP')
-        cell = np.floor((col - lo) * (1.0 + 1.0e-9) / bin_size).astype(int)
-        if cell.max() >= n_bin:
-            raise SNANAError(f"{where}: {name} does not lie on a uniform grid",
-                             function_name='init_interp_GRIDMAP')
-        axis = lo + bin_size * np.arange(n_bin)
-        axis[-1] = hi
-        axes.append(axis)
-        cells.append(cell)
-
-    shape = tuple(len(axis) for axis in axes)
-    flat = np.ravel_multi_index(tuple(cells), shape)
-    # the last row on a grid point wins (INVMAP, sntools_gridmap.c:477)
-    _, from_end = np.unique(flat[::-1], return_index=True)
-    keep = len(flat) - 1 - from_end
-    values = np.full(int(np.prod(shape)), np.nan)
-    values[flat[keep]] = eff[keep]
-    n_filled = len(keep)
-    if n_filled < values.size:
-        raise SNANAError(f"{where}: the rows fill {n_filled} of the "
-                         f"{values.size} grid points",
-                         function_name='init_interp_GRIDMAP')
-    return axes, values.reshape(shape)
 
 
 def read_specid_zhost(config, spellings):
@@ -511,7 +313,7 @@ def resolve_fieldlist_indices(maps, simlib_field_names):
 
     A SIMLIB field matches when its name is a substring of the FIELDLIST
     string, and 'ALL' matches every field (MATCH_SEARCHEFF_FIELD,
-    sntools_trigger.c:3266-3306). ``maps`` (efficiency or PHOTPROB maps) is
+    sntools_trigger.c:3268-3308). ``maps`` (efficiency or PHOTPROB maps) is
     mutated in place: each gets `fieldlist_mask` populated, None for 'ALL'.
     ``simlib_field_names`` is one str per SIMLIB field entry; the per-SN
     `field_idx` returned by the scheduler indexes into this list, so
@@ -535,7 +337,7 @@ def _is_magshift_var(vname: str) -> bool:
     """True when MAGSHIFT_<MAPTYPE>EFF applies to this variable.
 
     Mirrors SNANA's FLAG_EFFMAP_MAG classification
-    (sntools_trigger.c:1748,3171+): single-char filter mags, PEAKMAG_<f>,
+    (sntools_trigger.c:1748,3173+): single-char filter mags, PEAKMAG_<f>,
     HOSTMAG_<f>. Excludes:
     - 3-char colours 'a-b' (SNANA skips MAGSHIFT in the colour branch)
     - SBMAG_<f> (SNANA passes MAGSHIFT=0 for SBMAG, line 3116)
@@ -604,7 +406,7 @@ def _resolve_variable(varname: str, sn_vars: Dict,
         if key in sn_vars:
             return jnp.asarray(sn_vars[key])
 
-    # mean of the valid (0 < mag < 40) mags, else -9 (sntools_trigger.c:3171-3189)
+    # mean of the valid (0 < mag < 40) mags, else -9 (sntools_trigger.c:3173-3191)
     if '+' in varname:
         parts = [p for p in varname.split('+') if p]
         if parts:
@@ -676,8 +478,8 @@ def prepare_searcheff(maps, sn_vars, zp_fluxcal: float, var_shifts: Dict,
     is the per-SN variable dict; it must include 'field_idx' (int32), which
     also sets the number of SNe, and 'PEAKMJD'. ``var_shifts`` is a
     ``{varname: shift}`` added to resolved values (SNANA
-    sntools_trigger.c:2952); ``magshift`` a scalar added to mag-type
-    variables (sntools_trigger.c:3186).
+    sntools_trigger.c:2954); ``magshift`` a scalar added to mag-type
+    variables (sntools_trigger.c:3188).
 
     Returns ``(prepared, n_matches_per_sn)``: ``prepared`` is a list of
     per-map dicts (points/grid_axes/grid_values/opt_extrap/applies_to/
@@ -698,7 +500,7 @@ def prepare_searcheff(maps, sn_vars, zp_fluxcal: float, var_shifts: Dict,
         else:
             field_match = jnp.ones(n_sne, dtype=bool)
 
-        # inclusive both ends (sntools_trigger.c:2936)
+        # inclusive both ends (sntools_trigger.c:2938)
         if m.peakmjd_range is not None:
             mjd_lo, mjd_hi = m.peakmjd_range
             mjd_match = (peakmjds >= mjd_lo) & (peakmjds <= mjd_hi)
@@ -741,12 +543,12 @@ def evaluate_searcheff(prepared_maps, flag, n_sne, rng_key, sn_idx,
 
     Every matched map, REQUIRE included, folds into the OR combination
     EFF = 1 - prod(1 - eff_imap); a REQUIRE map additionally gets its own
-    independent draw against its eff (sntools_trigger.c:2971-2978). An SN
+    independent draw against its eff (sntools_trigger.c:2973-2980). An SN
     matched by no map has every eff zeroed, so EFF=0; the caller aborts on
     such an SN unless the map file sets OPT_FIELDMATCH_REQUIRE: 0. A
     combined EFF just outside [0, 1], within the round-off window
     (EFF_ROUNDOFF_MIN, EFF_ROUNDOFF_MAX), is set to 0 or 0.99999 as in
-    gen_searcheff_map (sntools_trigger.c:3011-3019); one beyond the window
+    gen_searcheff_map (sntools_trigger.c:3013-3021); one beyond the window
     is left for the caller to abort on (`eff_outside_window`).
 
     ``prepared_maps`` is the output of prepare_searcheff; ``flag`` is
@@ -756,7 +558,7 @@ def evaluate_searcheff(prepared_maps, flag, n_sne, rng_key, sn_idx,
     window and clipped to [0, 1]. ``require_key``, where given, replaces
     the key the REQUIRE draws come from, so that two map sets can share
     them as SNANA's SPECID and zHOST maps do under REFAC_SEARCHEFF_MAP 1
-    (snlc_sim.c:24771). Returns ``(eff, passed, unscaled_eff)``, each
+    (snlc_sim.c:24823). Returns ``(eff, passed, unscaled_eff)``, each
     (n_sne,) jnp arrays, ``unscaled_eff`` being the EFF before
     ``spec_scale``.
     """
@@ -798,7 +600,7 @@ def evaluate_searcheff(prepared_maps, flag, n_sne, rng_key, sn_idx,
     rand_combined = jax.vmap(lambda k: jax.random.uniform(k))(keys1)
     passed = rand_combined < combined_eff
 
-    # a REQUIRE draw per map index, only where it matches (sntools_trigger.c:2976)
+    # a REQUIRE draw per map index, only where it matches (sntools_trigger.c:2978)
     for imap, eff, applies_to in require_maps:
         key_req = jax.random.fold_in(key2, imap)
         keys_req = jax.vmap(lambda k: jax.random.fold_in(key_req, k))(sn_idx)

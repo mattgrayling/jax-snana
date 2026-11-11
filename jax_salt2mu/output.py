@@ -21,9 +21,9 @@ from .fitter import BBCResult, padded
 from .likelihood import LikelihoodInputs, event_chi2, m0_for, make_loss, mu_and_parts
 from .tablevar import CUTBIT_BIASCOR, MISSING_TOKEN, force_probcc0, output_varnames
 
-MUDIFERR_EMPTY = 999.0   # z-bin not floated (SALT2mu.c:501)
-MUDIFERR_ZERO = 666.0    # floated z-bin with zero error (SALT2mu.c:502)
-# crazy_M0_errors thresholds (SALT2mu.c:4823-4832)
+MUDIFERR_EMPTY = 999.0   # z-bin not floated (SALT2mu.c:503)
+MUDIFERR_ZERO = 666.0    # floated z-bin with zero error (SALT2mu.c:504)
+# crazy_M0_errors thresholds (SALT2mu.c:4826-4835)
 CRAZY_SIGINT_REF = 0.100      # an M0 error cannot sensibly beat sigint/sqrt(N)
 CRAZY_ERRMIN_FRAC = 0.67
 CRAZY_ERRMAX = 1.5
@@ -34,7 +34,7 @@ PIA_MIN = 1.0e-6         # pIa floor in muerr_renorm, avoids WGT=0 (SALT2mu.c:25
 
 @dataclass
 class YamlSummary:
-    """Counts for the .YAML aggregator summary (write_yaml_info, SALT2mu.c:23571).
+    """Counts for the .YAML aggregator summary (write_yaml_info, SALT2mu.c:23585).
 
     Gathered in finish_cell, where the IDSAMPLE partition is still in scope.
     SNANA prepends a synthetic "ALL" row at IDSAMPLE=-1 to every by-sample list.
@@ -50,7 +50,7 @@ class YamlSummary:
     isdata_real: bool = False
     cpu_minutes: float = 0.0
     ncrazy: int = 0
-    # contamination under a CC prior (write_yaml_info, SALT2mu.c:23775-23801)
+    # contamination under a CC prior (write_yaml_info, SALT2mu.c:23789-23815)
     contam_data: float = None
     contam_true: float = None          # sim data only
     contam_true_err: float = 0.0
@@ -110,7 +110,7 @@ def _output_parts(spec, inp, nuis, m0, sigint):
     """The fit's residual and error decomposition at the fitted values, as
     MNCHI2FUN leaves them (SALT2mu.c:5463): mu -= muBias, muerr *= scale;
     and each event's PROBCC and chi2 from the reference mu-variance the
-    final fcn pass read (:5622, before the :5661 update)."""
+    final fcn pass read (:5632, before the :5671 update)."""
     parts = mu_and_parts(spec, inp, nuis, m0, sigint)
     muerrsq = (parts["uncorrected_variance"] * parts["mucovscale"]
                + parts["vpec_sq"] + parts["mucovadd"])
@@ -141,7 +141,7 @@ def compute_output(spec, inputs: LikelihoodInputs, zbins: ZBinGrid,
     muerrsq = (parts["uncorrected_variance"] * scale + vpec
                + parts["mucovadd"])
     muerr = np.sqrt(muerrsq)
-    # the two diagnostic errors carry neither sigint nor muCOVscale (SALT2mu.c:5642):
+    # the two diagnostic errors carry neither sigint nor muCOVscale (SALT2mu.c:5652):
     # MUERR_RAW includes LC-fit and lensing; MUERR_VPEC is peculiar velocity alone
     muerr_raw = np.sqrt(parts["fit_sq"])
     muerr_vpec = np.sqrt(vpec)
@@ -153,29 +153,29 @@ def compute_output(spec, inputs: LikelihoodInputs, zbins: ZBinGrid,
     floated = nfit > 0
     avg_m0 = np.average(m0[floated], weights=nfit[floated]) if floated.any() else 0.0
 
-    # MU = MURES + MUMODEL + M0DIF, i.e. mu - AVEMAG0 (SALT2mu.c:25437/24347).
+    # MU = MURES + MUMODEL + M0DIF, i.e. mu - AVEMAG0 (SALT2mu.c:25471/24347).
     m0dif = m0 - avg_m0
     mumodel = np.asarray(inputs.mumodel)
-    # SNANA writes MU from a per-event INFO_DATA.M0[n] (SALT2mu.c:25274), which
+    # SNANA writes MU from a per-event INFO_DATA.M0[n] (SALT2mu.c:25308), which
     # under uM0=2 is the interpolated value rather than the bin's.
     m0_event = np.asarray(m0_for(inputs, jnp.asarray(m0)))
     mu_out = mures + mumodel + (m0_event - avg_m0)
     if not config.uave:
         # uave=0 reports MU against the nominal M0 instead of the fitted average
-        # (SNANA SNMAG0, SALT2mu.c:24382).
+        # (SNANA SNMAG0, SALT2mu.c:24396).
         mu_out = mu_out + (avg_m0 - model.m0_reference)
-    # MUz blinding offsets MUDIF only, after MU is formed (SALT2mu.c:25438).
+    # MUz blinding offsets MUDIF only, after MU is formed (SALT2mu.c:25472).
     m0dif = blind_distance_offsets(config, m0dif, zbins.lo)
-    # an unfloated bin is written as an exact zero, after the blind offset (:25443)
+    # an unfloated bin is written as an exact zero, after the blind offset (:25477)
     m0dif = np.where(floated, m0dif, 0.0)
     mupull = mures / muerr
     chi2 = np.asarray(c2_j[:n])
 
     m0diferr = np.where(floated, result.m0err, MUDIFERR_EMPTY)
-    # a floated bin with zero error writes 666 (SALT2mu.c:25444)
+    # a floated bin with zero error writes 666 (SALT2mu.c:25478)
     m0diferr = np.where(floated & (m0diferr < 1.0e-12), MUDIFERR_ZERO, m0diferr)
     # MUREF = 1/muerrsq-weighted mean of the reference mumodel per bin (calc_zM0_data,
-    # SALT2mu.c:14904); the reported z inverts the cosmology to it (finish_cell).
+    # SALT2mu.c:14917); the reported z inverts the cosmology to it (finish_cell).
     w = 1.0 / muerrsq
     wsum = np.bincount(izbin, weights=w, minlength=nbin)
     muref = np.where(floated,
@@ -200,7 +200,7 @@ def compute_output(spec, inputs: LikelihoodInputs, zbins: ZBinGrid,
             # with the bias on MU there are no per-parameter biases (:24181)
             for k, nm in enumerate(model.lcpar_names):
                 biascor[f"biasCor_{nm}"] = parbias[:, k]
-        # as applied / as blended (SALT2mu.c:5426-5430)
+        # as applied / as blended (SALT2mu.c:5436-5440)
         biascor["biasCor_muCOVSCALE"] = scale
         if inputs.mucovadd_nodes is not None:
             biascor["biasCor_muCOVADD"] = np.einsum(
@@ -244,7 +244,7 @@ def compute_output(spec, inputs: LikelihoodInputs, zbins: ZBinGrid,
 
 def _muerr_renorm(probcc, chi2, muerr, izbin, m0diferr, nbin) -> np.ndarray:
     """Per-event error rescaled so that ``sum 1/MUERR_RENORM^2 == 1/M0DIFERR^2`` in
-    each z bin, carrying the BEAMS 1/sqrt(pIa) (muerr_renorm, SALT2mu.c:25456)."""
+    each z bin, carrying the BEAMS 1/sqrt(pIa) (muerr_renorm, SALT2mu.c:25490)."""
     pia = np.maximum(1.0 - probcc, PIA_MIN)
     pia = np.where(chi2 == CHI2_BEAMS_NOPROB, 0.0, pia)
     wgt = pia / (muerr * muerr)
@@ -259,11 +259,11 @@ def _muerr_renorm(probcc, chi2, muerr, izbin, m0diferr, nbin) -> np.ndarray:
 def crazy_m0_errors(m0err, nfit, izbin, mucovscale, config, dust) -> np.ndarray:
     """Per z bin, is the fitted M0 error physically implausible?
 
-    crazy_M0_errors (SALT2mu.c:4811). An M0 error cannot sensibly fall below
+    crazy_M0_errors (SALT2mu.c:4814). An M0 error cannot sensibly fall below
     sigint/sqrt(N); SNANA treats anything under 0.67 of that, or above 1.5, as a
     sign the fit is untrustworthy, with the reference sigint halved for a dust
-    model's biasCor (:4824). Bins with fewer than 3 events are not judged, and
-    fixpar_all skips the check entirely (:4845).
+    model's biasCor (:4827). Bins with fewer than 3 events are not judged, and
+    fixpar_all skips the check entirely (:4848).
 
     jax reports these and never re-fits. SNANA's retry nudges alpha/beta to escape
     a kink in MINUIT's numerical derivatives; Newton-LM with autodiff gradients does
@@ -291,10 +291,10 @@ def crazy_m0_errors(m0err, nfit, izbin, mucovscale, config, dust) -> np.ndarray:
 # wide enough to reproduce any input column (SNANA copies them verbatim, :23348)
 _PASSTHROUGH_FLOAT_FMT = "%.9g"
 
-# the written MUPULL is capped here (SALT2mu.c:25296)
+# the written MUPULL is capped here (SALT2mu.c:25330)
 MUPULL_MAX = 99.999
 
-# rows cat_only copies; any other leading key is skipped (SALT2mu.c:24436)
+# rows cat_only copies; any other leading key is skipped (SALT2mu.c:24450)
 _ROW_KEYS = frozenset(("SN:", "ROW:", "GAL:"))
 
 
@@ -308,7 +308,7 @@ def _fmt_for(arr):
 
 
 def _param_label(name, config):
-    """u13=2 renames the CC-prior scale in every output (SALT2mu.c:22112)."""
+    """u13=2 renames the CC-prior scale in every output (SALT2mu.c:22126)."""
     if name == "scalePCC" and config._u_flags.get("u13", 0) == 2:
         return "scalePIa"
     return name
@@ -316,7 +316,7 @@ def _param_label(name, config):
 
 def _fit_summary(result, out: BBCOutput, zbins: ZBinGrid, config):
     """The ``# SALT2mu fit results:`` block (write_fitres_misc,
-    SALT2mu.c:24935-24998): NSNFIT / contamination under a CC prior /
+    SALT2mu.c:24969-25032): NSNFIT / contamination under a CC prior /
     -2lnL / chi2(Ia)/dof / sigint / each floated nuisance +- err /
     per-bin m0 +- err / M0avg."""
     lines = ["SALT2mu fit results: "]
@@ -400,7 +400,7 @@ def _cosmo_header(config):
 
 
 def _blind_message(config) -> list:
-    """write_blindFlag_message (SALT2mu.c:24880)."""
+    """write_blindFlag_message (SALT2mu.c:24914)."""
 
     flag = config.blindflag
     if not flag:
@@ -446,7 +446,7 @@ def write_m0dif(path, zbins: ZBinGrid, out: BBCOutput, result, config, warnings=
     fmt = {"ROW": "%d", "zHDMIN": "%.5f", "zHDMAX": "%.5f", "zHD": "%.5f",
            "MUDIF": "%.5f", "MUDIFERR": "%.5f", "MUREF": "%.5f", "NFIT": "%d"}
     write_varnames_table(path, list(cols), cols, fmt, rowkey="ROW:",
-                         header_comments=header, blank_separator=False)
+                         header_comments=header, sntable_frame=False)
 
 
 # write_fitres_line_append column order and formats (SALT2mu.c:25281)
@@ -463,7 +463,7 @@ _BBC_FMT = {"CUTMASK": "%d",
 
 
 def _cutmask_write_warning(config) -> List[str]:
-    """write_NWARN(FLAG=1) (SALT2mu.c:24752): the FITRES, and only the FITRES,
+    """write_NWARN(FLAG=1) (SALT2mu.c:24786): the FITRES, and only the FITRES,
     says when the written row set is not the fitted sample."""
     if config.cutmask_write == 0:
         return []
@@ -519,14 +519,14 @@ def write_fitres(path, out: BBCOutput, zbins: ZBinGrid, result, config,
     post = [None] * 3 + _fit_summary(result, out, zbins, config) + [None]
     if config.cutmask_write == -9:
         # no SN rows, so no VARNAMES line either: the file is the header and the
-        # fit-results block (write_fitres_driver, SALT2mu.c:24254, :24399)
+        # fit-results block (write_fitres_driver, SALT2mu.c:24268, :24413)
         with open(path, "w") as f:
             for line in header + post:
                 f.write("\n" if line is None else f"# {line}\n")
         return
     write_varnames_table(path, list(cols), cols, fmt, rowkey="SN:",
                          header_comments=header + [None],
-                         blank_separator=False, post_varnames_comments=post)
+                         sntable_frame=False, post_varnames_comments=post)
 
 
 def write_cov(path, cov_m0):
@@ -544,7 +544,7 @@ def write_cov(path, cov_m0):
 
 def write_yaml(path, summary, result, config, timings=None):
     """SNANA's .YAML summary for the pipeline aggregator (write_yaml_info,
-    SALT2mu.c:23571): per-event-type counts, reject tallies, the by-sample
+    SALT2mu.c:23585): per-event-type counts, reject tallies, the by-sample
     breakdown, and the fitted parameters; then, jax's own, the seconds each
     section of the cell took, so a slow run says where.
 
@@ -617,7 +617,7 @@ def _yaml_list(f, key, values, lead_first=True):
 
 
 def write_m0_csv(path, zbins, out, config):
-    """Binned Hubble diagram for CosmoMC (write_M0_csv, SALT2mu.c:23962). MU is the
+    """Binned Hubble diagram for CosmoMC (write_M0_csv, SALT2mu.c:23976). MU is the
     reference distance at the reported z plus M0DIF, not the weighted MUREF column."""
     zhd = out.zbin_z
     muref = mu_at(zhd, config)
@@ -630,11 +630,11 @@ def write_m0_csv(path, zbins, out, config):
 
 def write_chi2grid(path, spec, inputs, result, nbin):
     """chi2 scan over the model's ``chi2grid_axes`` (write_chi2grid,
-    SALT2mu.c:24085): each row varies one parameter over its fixed range with
+    SALT2mu.c:24099): each row varies one parameter over its fixed range with
     the others held at their fitted values.
 
     SNANA scans ``fcn`` itself, so under a CC prior this is the BEAMS sum and not the
-    Ia chi2. It runs from outFile_driver (:23511), after the fit has restored
+    Ia chi2. It runs from outFile_driver (:23525), after the fit has restored
     muerrsq_last to its own errors, hence the swapped-in muerrsq_final.
     Joint mode scans its normalized likelihood at the fitted intrinsic scatter.
     """
@@ -708,7 +708,7 @@ def _cat_comment_notes(tables, paths, config, droplist) -> List[str]:
 
 
 def _cat_header(tables, paths, config, droplist) -> str:
-    """write_cat_info (SALT2mu.c:25005).
+    """write_cat_info (SALT2mu.c:25039).
 
     With a DOCUMENTATION block in the first input, copy it and embed the cat notes
     just before its end key; otherwise write the same provenance as comments.
@@ -740,7 +740,7 @@ def _read_docana(path):
 def _cat_droplist(varnames_by_file, kept) -> str:
     """Input columns present in some file but not carried into the output.
 
-    catVarList_with_comma (SALT2mu.c:9784) joins them with commas.
+    catVarList_with_comma (SALT2mu.c:9794) joins them with commas.
     """
     seen = dict.fromkeys(n for names in varnames_by_file for n in names)
     kept = set(kept)
@@ -750,10 +750,10 @@ def _cat_droplist(varnames_by_file, kept) -> str:
 def write_cat_fitres(path, tables, paths, config) -> int:
     """Concatenate the input rows and return how many were written.
 
-    write_fitres_driver under cat_only (SALT2mu.c:24172): no cuts, no fit, and no
-    appended BBC block (define_varnames_append returns early, :24688). Values are
+    write_fitres_driver under cat_only (SALT2mu.c:24186): no cuts, no fit, and no
+    appended BBC block (define_varnames_append returns early, :24722). Values are
     re-emitted as their original tokens with "-9.0" where a file lacks the column,
-    matching write_fitres_line (:24501), so the read must be ``as_text``.
+    matching write_fitres_line (:24515), so the read must be ``as_text``.
     """
 
     varnames_by_file = [t.varnames_by_file[0] for t in tables]
@@ -784,11 +784,11 @@ def write_cat_fitres(path, tables, paths, config) -> int:
 
 
 def yaml_summary(cell, output, cpu_minutes):
-    """Gather write_yaml_info's counts (SALT2mu.c:23571).
+    """Gather write_yaml_info's counts (SALT2mu.c:23585).
 
     The two reject counts are not the bit tallies they look like. SNANA's
     NREJECT_CUTWIN counts events failing *any* cut that is not the biasCor
-    (cutmask_noBCOR > 0, :18665), and NREJECT_BIASCOR counts only events that
+    (cutmask_noBCOR > 0, :18679), and NREJECT_BIASCOR counts only events that
     would otherwise have passed, so an event cut for two reasons appears once.
     """
 
@@ -805,7 +805,7 @@ def yaml_summary(cell, output, cpu_minutes):
         ncrazy=int(output.crazy_m0.sum()),
     )
     if output.probcc is not None:
-        # 0/0 writes nan, as SNANA (write_yaml_info, SALT2mu.c:23775)
+        # 0/0 writes nan, as SNANA (write_yaml_info, SALT2mu.c:23789)
         summary.contam_data = output.contam_data
         with np.errstate(invalid="ignore", divide="ignore"):
             if tv.sim_truth:
@@ -867,6 +867,6 @@ def write_outputs(fitres_path, result, output, zbins, tv, accept):
         write_cov(f"{stem}.COV", result.cov_m0)
         if config.write_csv:
             write_m0_csv(f"{stem}.CSV", zbins, output, config)
-    if config.write_yaml:          # SNANA default is off (SALT2mu.c:6485)
+    if config.write_yaml:          # SNANA default is off (SALT2mu.c:6495)
         write_yaml(f"{stem}.YAML", output.yaml, result, config,
                    timings=output.timings)

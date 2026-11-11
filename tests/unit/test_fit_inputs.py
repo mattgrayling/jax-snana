@@ -344,10 +344,10 @@ def test_cut_quantity_case_and_override_precedence(tmp_path, setting, quantity):
 
 
 def test_cut_quantity_normalization_preserves_column_and_band_names():
-    config = build_config({'private_cutwin': {'PRIVATE(Foo)': (1., 20.)},
+    config = build_config({'private_cutwin': {'Foo': (1., 20.)},
                            'simvar_cutwin': {'x1': (-2., 2.)},
                            'epcut_snrmin': {'ZTF_g': 3.}})
-    assert config.selection.private_cutwin == {'PRIVATE(Foo)': (1., 20.)}
+    assert config.selection.private_cutwin == {'Foo': (1., 20.)}
     assert config.selection.simvar_cutwin == {'x1': (-2., 2.)}
     assert config.selection.epcut_snrmin == {'ZTF_g': 3.}
 

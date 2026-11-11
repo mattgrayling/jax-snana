@@ -33,7 +33,7 @@ BASE = {
 }
 
 # avmin/avmax/thetamin/thetamax are BayeSN's half of the range inputs that set both
-# the cut and the biasCor cell ranges (SALT2mu.c:18816-18823, :18876-18880), the
+# the cut and the biasCor cell ranges (SALT2mu.c:18830-18837, :18890-18894), the
 # same role cmin/cmax/x1min/x1max play for SALT. The cuts below reject events
 # that pass the default AV (0..1) and THETA (-3..3) ranges.
 CONFIGS = {

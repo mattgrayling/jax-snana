@@ -352,7 +352,7 @@ def test_environment_variables_in_paths_are_expanded(tmp_path):
 
 def test_a_row_without_a_finite_error_names_its_bin():
     """A BBC bin with no events carries MUDIFERR 999 (MUDIFERR_EMPTY,
-    SALT2mu.c:501), read as NaN, and one too thin to fit leaves NaN; the
+    SALT2mu.c:503), read as NaN, and one too thin to fit leaves NaN; the
     inversion cannot take either, so the abort names the bins rather than
     letting numpy fail on the matrix."""
 

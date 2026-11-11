@@ -1,5 +1,6 @@
 """WFIT YAML and optional SNANA-compatible output writers."""
 
+import logging
 import math
 import platform
 from pathlib import Path
@@ -9,8 +10,8 @@ import jax
 import numpy as np
 import numpyro
 import yaml
-from scipy.linalg import cho_factor, cho_solve
 
+from jax_snlc_core import logging as log
 from jax_snlc_core.cosmology import distance_modulus
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import dense_factorized_covariance
@@ -21,6 +22,8 @@ from .config import OMEGA_MATTER_DEFAULT, W0_DEFAULT, WA_DEFAULT, WFITConfig
 from .hubble import HubbleDiagram
 from .inference import free_parameter_names
 from .likelihood import hdibc_observed_mu, offset_marginalised_chi2
+
+logger = logging.getLogger(__name__)
 
 
 def _plain(value: Any) -> Any:
@@ -187,7 +190,7 @@ def write_yaml(
         ensemble = ensemble_summary(results, diagrams, config)
         if ensemble:
             payload["ensemble"] = ensemble
-    # the batch aggregator sums this key (wfit.c:5314 writes it to the YAML)
+    # the batch aggregator sums this key (wfit.c:5594 writes it to the YAML)
     payload["CPU_MINUTES"] = float(cpu_minutes)
     with open(path, "wt") as stream:
         yaml.safe_dump(
@@ -203,8 +206,8 @@ def _resolved_cosmology(
     """The cosmology the residual file is evaluated at.
 
     Blinded, when the fit is: ``write_output_resid`` builds its ``cpar`` from
-    ``WORKSPACE.omm_final``/``w0_final``/``wa_final`` (wfit.c:5345-5348), which
-    ``wfit_final`` has already offset by ``sin(ran)`` (wfit.c:3922-3935).
+    ``WORKSPACE.omm_final``/``w0_final``/``wa_final`` (wfit.c:5625-5628), which
+    ``wfit_final`` has already offset by ``sin(ran)`` (wfit.c:4188-4201).
     """
     point = apply_blinding(
         result["point_estimate"], config, result["blinded"])
@@ -233,7 +236,7 @@ def write_residuals(
     else:
         mu_observed_raw = diagram.mu
         interpolation_fraction = np.zeros_like(np.asarray(diagram.mu))
-    # muresid_avg at the written cosmology, blinding included (wfit.c:3952-3956, :5375)
+    # muresid_avg at the written cosmology, blinding included (wfit.c:4218-4222, :5655)
     intercept = float(offset_marginalised_chi2(
         np.asarray(mu_observed_raw) - mu_model,
         diagram.precision,
@@ -247,7 +250,7 @@ def write_residuals(
         / np.asarray(diagram.muerr)**2
     )
     # mu_sim: the distance at the simulated cosmology (write_output_resid,
-    # wfit.c:5358-5360), which COSPAR_SIM carries (wfit.c:1272-1275)
+    # wfit.c:5638-5640), which COSPAR_SIM carries (wfit.c:1325-1328)
     om_sim = (config.om_sim if config.om_sim is not None
               else OMEGA_MATTER_DEFAULT)
     w0_sim = config.w0_sim if config.w0_sim is not None else W0_DEFAULT
@@ -306,7 +309,7 @@ def _cospar_entries(
     result: Mapping[str, object],
     config: WFITConfig,
 ) -> list[tuple[str, str]]:
-    """The (name, value) list of write_output_cospar (wfit.c:5122-5277):
+    """The (name, value) list of write_output_cospar (wfit.c:5402-5557):
     w first, sigma columns split by -marg, then the reduced covariances,
     FoM, chi2, Ndof, sigint and the blinding integers."""
     var_w = "w0" if config.model == "w0wa" else "w"
@@ -330,7 +333,7 @@ def _cospar_entries(
 
     def par_block(name, label, sig_fmt="%8.5f"):
         if name not in summaries:
-            # fixed parameters still get their columns (wfit.c:5164)
+            # fixed parameters still get their columns (wfit.c:5444)
             entries.append((label, "%8.5f" % fixed[name]))
             if config.marg or name == "omega_m":
                 entries.append((f"{label}sig_marg", sig_fmt % 0.0))
@@ -357,10 +360,10 @@ def _cospar_entries(
     entries.append((f"rho_{var_w}om", "%6.3f" % rho("w0", "omega_m")))
     if config.model == "w0wa":
         entries.append((f"rho_{var_w}wa", "%6.3f" % rho("w0", "wa")))
-        entries.append(("rho_waom", "%6.3f" % rho("wa", "omega_m")))   # wfit.c:5233
+        entries.append(("rho_waom", "%6.3f" % rho("wa", "omega_m")))   # wfit.c:5513
 
     # FoM = 1/(sig_w * sig_partner * sqrt(1-rho^2)) (wfit_FoM,
-    # wfit.c:3988-4023); the partner is wa for w0wa, omega_m for wCDM
+    # wfit.c:4254-4289); the partner is wa for w0wa, omega_m for wCDM
     if config.model == "w0wa":
         partner, rho_fom = "wa", rho("w0", "wa")
     else:
@@ -382,7 +385,7 @@ def _cospar_entries(
 
     entries.append(("chi2", "%.1f" % float(result["likelihood"]["total_chi2"])))
     entries.append(("Ndof", "%5d" % int(result["ndof_hd"])))
-    # single-fit runs report sigint 0 (wfit_final, wfit.c:3978-3980)
+    # single-fit runs report sigint 0 (wfit_final, wfit.c:4244-4246)
     entries.append(("sigint", "%6.3f" % 0.0))
     entries.append((f"{var_w}ran", "%d" % rans.get("w0", 0)))
     if config.model == "w0wa":
@@ -412,7 +415,7 @@ def write_grid(
     config: WFITConfig,
     blinded: bool,
 ) -> None:
-    """write_output_chi2grid (wfit.c:5436-5541): both chi2 columns as offsets
+    """write_output_chi2grid (wfit.c:5716-5821): both chi2 columns as offsets
     from their grid minima, every row (the -weightmin cut is not carried)."""
     if grid.get("chi2") is None or grid.get("weight") is None:
         raise SNANAError(
@@ -421,7 +424,7 @@ def write_grid(
         )
     names = tuple(grid["axes"])
     axes = grid["axes"]
-    # raw integers, not the sine offsets write_cospar uses (wfit.c:3923)
+    # raw integers, not the sine offsets write_cospar uses (wfit.c:4189)
     offsets = parameter_random_integers(config) if blinded else None
     ran = {"omega_m": 0.0, "w0": 0.0, "wa": 0.0} if offsets is None else offsets
     coordinates = [
@@ -495,14 +498,6 @@ def _realisation_path(path: str, index: int, count: int) -> str:
 
 
 def _final_precision(diagram: HubbleDiagram) -> np.ndarray:
-    if diagram.covariance_kind == "factorized":
-        # Explicit dense output is opt-in. Reconstruct from the host float64
-        # covariance, rather than subtracting rounded float32 factor products.
-        covariance = diagram.covariance
-        weighted = covariance["U"] / covariance["diag"][:, None]
-        small = np.eye(covariance["U"].shape[1]) + covariance["U"].T @ weighted
-        return (np.diag(1. / covariance["diag"])
-                - weighted @ cho_solve(cho_factor(small), weighted.T))
     precision = np.asarray(diagram.precision)
     if diagram.covariance_kind == "diagonal":
         return np.diag(precision)
@@ -519,7 +514,7 @@ def _final_covariance(diagram: HubbleDiagram) -> np.ndarray:
 
 def write_covariance_matrix(path: str, matrix: np.ndarray) -> None:
     """Write a dense matrix in SNANA's dimension-plus-elements format, with
-    wfit.exe's element format (wfit.c:4102)."""
+    wfit.exe's element format (wfit.c:4368)."""
     with open(path, "wt") as stream:
         stream.write(f"{matrix.shape[0]}\n")
         for value in matrix.ravel():
@@ -590,7 +585,11 @@ def write_outputs(
                 ),
                 _final_covariance(diagrams[index]),
             )
-        if config.outfile_mucovtot_inv:
+        if config.outfile_mucovtot_inv and diagrams[index].covariance_kind == "factorized":
+            # the inverse is never formed from factors (wfit.c:730-736)
+            log.warn(logger, "WFIT", "a factorized covariance has no inverse to write "
+                     f"to {config.outfile_mucovtot_inv}")
+        elif config.outfile_mucovtot_inv:
             write_covariance_matrix(
                 _realisation_path(
                     config.outfile_mucovtot_inv, index, len(results),

@@ -215,7 +215,7 @@ def test_nuts_accepts_padded_realisations(tmp_path, repo_root):
 def test_sig_type_selects_the_reported_uncertainty(repo_root):
     """-sig_type picks which posterior width every consumer reports.
 
-    "68" is SNANA's default (wfit.c:792) and averages the two half-widths of the
+    "68" is SNANA's default (wfit.c:837) and averages the two half-widths of the
     68.3% interval about the mean, which reduces to half the q16-q84 width.
     "std" is SNANA's legacy option. Both are always computed; only the choice of
     which one `sigma` carries changes.

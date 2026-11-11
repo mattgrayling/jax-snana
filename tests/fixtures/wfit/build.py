@@ -9,7 +9,7 @@ the live_snana suite makes can run without SNANA installed.
 It also builds the HDIBC fixture under `hdibc/`: one pair of Hubble diagrams
 whose `INFO.YML` files name two biasCor cosmologies, and the per-event
 `f_interp_hdibc` / `mu_bcor*_hdibc` columns wfit.exe writes for them
-(`wfit.c:5366-5408`). Three omega_m priors put the interpolation fraction
+(`wfit.c:5646-5688`). Three omega_m priors put the interpolation fraction
 inside the clip window and hard against each of its bounds.
 
     python3 tests/fixtures/wfit/build.py           # regenerate

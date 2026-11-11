@@ -71,7 +71,7 @@ def test_photprob_without_detection_curves_stays_null(snana_fixture,
                                                       tmp_path):
     """PHOTPROB is drawn only inside the detection pass, which a pipeline
     file with no curves never runs, so every PHOTPROB stays -9
-    (gen_SEARCHEFF, sntools_trigger.c:2041; :2211)."""
+    (gen_SEARCHEFF, sntools_trigger.c:2043; :2213)."""
     fx = snana_fixture("searcheff_snii_basic")
     src = Path(os.path.expandvars(
         "$JAX_TEST_FIXTURE_ROOT/searcheff/SEARCHEFF_PIPELINE_PHOTPROB_TEST.DAT"))
@@ -108,8 +108,8 @@ def test_photprob_without_detection_curves_stays_null(snana_fixture,
 def test_text_output_writes_photprob_only_with_photprob_maps(snana_fixture,
                                                              tmp_path):
     """TEXT writes a PHOTPROB column, after PHOTFLAG, only when the pipeline
-    file holds PHOTPROB maps (WRFLAG_PHOTPROB, snlc_sim.c:25364;
-    sntools_dataformat_text.c:959-960)."""
+    file holds PHOTPROB maps (WRFLAG_PHOTPROB, snlc_sim.c:25417;
+    sntools_dataformat_text.c:957-958)."""
     fx = snana_fixture("searcheff_snii_basic")
     src = fx.input_file.read_text().replace("FORMAT_MASK:  32", "FORMAT_MASK:  2")
 

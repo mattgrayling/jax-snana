@@ -20,7 +20,6 @@ import gzip
 import logging
 import os
 import re
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -37,8 +36,8 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.interpolation import compute_catmullrom_slopes, hermite_interp_1d
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import (
-    is_ignorefile, open_text, resolve_fits_path,
-    read_two_column_file)
+    is_ignorefile, key_runs, leading_values, open_text, read_sed_file,
+    read_two_column_file, resolve_fits_path, text_lines)
 from jax_snlc_core.spectrograph import (parse_spectrograph_filename, read_spectrograph,
                                         read_spectrograph_fits)
 from jax_snlc_core.utils import HC_ERG_A, LIGHT_A, float_dtype
@@ -48,8 +47,13 @@ logger = logging.getLogger(__name__)
 # Default zero point of simulated and Python-input FLUXCAL photometry.
 ZEROPOINT_FLUXCAL_SNANA = 31.4
 
-# pre-nJy FLUXCAL zero point (sndata.h:46)
+# pre-nJy FLUXCAL zero point (sndata.h:48)
 ZEROPOINT_FLUXCAL_SNANA_ORIG = 27.5
+
+# The kcor ZPoff table's columns by position (read_calib_zpoff); any later
+# columns are not read.
+ZPOFF_COLUMNS = ('filter name', 'primary name', 'primary magnitude',
+                 'primary zero-point offset', 'SNpot zero-point offset')
 
 
 # Calibration-input keys, with the number of values each takes, that describe
@@ -57,11 +61,11 @@ ZEROPOINT_FLUXCAL_SNANA_ORIG = 27.5
 # integrated through.
 _KCOR_INPUT_TABLE_KEYS = {
     'OUTFILE': 1, 'KCOR': 3, 'REDSHIFT_RANGE': 2, 'REDSHIFT_BINSIZE': 1,
-    'TREST_RANGE': 2, 'AV_RANGE': 2, 'AV_BINSIZE': 1, 'AV_OPTION': 1,
+    'AV_RANGE': 2, 'AV_BINSIZE': 1, 'AV_OPTION': 1,
     'RV': 1, 'RV_MWCOLORLAW': 1, 'OPT_MWCOLORLAW': 1,
     'SN_TYPE': 1, 'SN_MAGOFF': 1, 'TREF_EXPLODE': 1,
     'PLOTFLAG_SN': 1, 'PLOTFLAG_PRIMARY': 1, 'DUMP_SNMAG': 1,
-    'SN_SED_FUDGE': 1, 'NLAMBIN_FT': 1,
+    'SN_SED_FUDGE': 1, 'SN_SED_POWERLAW': 1, 'NLAMBIN_FT': 1,
 }
 _MAGNITUDE_TERM = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
 
@@ -103,12 +107,6 @@ def read_kcor_input(path):
     entries. A new magnitude system resets SURVEY and ZPOFF_FILE, as in SNANA.
     """
     path = path.resolve()
-    with open_text(path) as stream:
-        contents = stream.read()
-    lexer = shlex.shlex(contents, posix=True)
-    lexer.whitespace_split = True
-    lexer.commenters = '#!'
-    tokens = iter(lexer)
     catalogue = {'filters': {}, 'standards': {}}
     magsystem = filtsystem = None
     survey = 'UNDEFINED'
@@ -117,19 +115,11 @@ def read_kcor_input(path):
     offsets = {}
     read_zpoff = True
     wavelength_range = (2000., 12000.)  # SNANA's default LAMBDA_RANGE
+    day_range = (-30., 100.)  # SNANA's default TREST_RANGE, which the SN_SED is read over
     sn_sed = None
     leakage_cut = 0.
     duplicate_shift = 0.
     n_system_filters = 0
-
-    def values(key, count):
-        result = []
-        for _ in range(count):
-            value = next(tokens, None)
-            if value is None or value.endswith(':'):
-                raise SNANAError(f'{path}: {key} requires {count} values')
-            result.append(value)
-        return result
 
     def standard(name, filename):
         catalogue['standards'][name] = {'path': filename}
@@ -146,37 +136,36 @@ def read_kcor_input(path):
             'zpoff_snpot': offsets.get(name[-1], 0.) if read_zpoff else 0.,
         }
 
+    # a stream of keyed words, others passed over (rd_input, kcor.c:442-779)
     try:
-        for token in tokens:
-            if not token.endswith(':'):
-                raise SNANAError(f'{path}: expected a calibration key, got {token!r}')
-            key = token[:-1].upper()
+        for key, words in key_runs(path):
+            key = key.upper()
             if key in _KCOR_INPUT_TABLE_KEYS:
-                values(key, _KCOR_INPUT_TABLE_KEYS[key])
-            elif key in ('AB_SED', 'VEGA_SED', 'BD17_SED'):
-                standard(key.removesuffix('_SED'), values(key, 1)[0])
+                leading_values(path, key, words, _KCOR_INPUT_TABLE_KEYS[key])
+            elif key in ('AB_SED', 'VEGA_SED', 'BD17_SED', 'CALSPEC_SED'):
+                standard(key.removesuffix('_SED'), leading_values(path, key, words, 1)[0])
             elif key == 'PRIMARY_SED':
-                name, filename = values(key, 2)
+                name, filename = leading_values(path, key, words, 2)
                 standard(name, filename)
             elif key == 'MAGSYSTEM':
-                magsystem = values(key, 1)[0]
+                magsystem = leading_values(path, key, words, 1)[0]
                 survey, zpoff_file = 'UNDEFINED', None
             elif key == 'FILTSYSTEM':
-                filtsystem = values(key, 1)[0].upper()
+                filtsystem = leading_values(path, key, words, 1)[0].upper()
                 n_system_filters = 0
                 if filtsystem not in ('COUNT', 'ENERGY'):
                     raise SNANAError(f'{path}: unknown FILTSYSTEM {filtsystem!r}')
             elif key in ('SURVEY', 'SURVEYS'):
-                survey = values(key, 1)[0]
+                survey = leading_values(path, key, words, 1)[0]
             elif key == 'READ_ZPOFF':
-                flag = int(values(key, 1)[0])
+                flag = int(leading_values(path, key, words, 1)[0])
                 if flag not in (0, 1):
                     raise SNANAError(f'{path}: READ_ZPOFF must be 0 or 1')
                 read_zpoff = bool(flag)
             elif key == 'ZPOFF_FILE':
-                zpoff_file = values(key, 1)[0]
+                zpoff_file = leading_values(path, key, words, 1)[0]
             elif key == 'FILTPATH':
-                filtpath = values(key, 1)[0]
+                filtpath = leading_values(path, key, words, 1)[0]
                 explicit = not is_ignorefile(zpoff_file)
                 filename = zpoff_file if explicit else 'ZPOFF.DAT'
                 offset_path = (str(Path(filtpath) / filename)
@@ -185,17 +174,13 @@ def read_kcor_input(path):
                                           required=explicit)
                 offsets = {}
                 if source is not None and read_zpoff:
-                    with open_text(source) as stream:
-                        offset_tokens = shlex.shlex(stream, posix=True)
-                        offset_tokens.whitespace_split = True
-                        offset_tokens.commenters = '#!'
-                        pairs = list(offset_tokens)
+                    pairs = [value for line in text_lines(source) for value in line]
                     if len(pairs) % 2:
                         raise SNANAError(f'{source}: expected band and zero-point offset pairs')
                     offsets = {band: float(offset) for band, offset
                                in zip(pairs[::2], pairs[1::2])}
             elif key == 'FILTER':
-                name, filename, magnitude = values(key, 3)
+                name, filename, magnitude = leading_values(path, key, words, 3)
                 if filtpath is None:
                     raise SNANAError(f'{path}: FILTER needs FILTPATH')
                 source = calibration_path(str(Path(filtpath) / filename),
@@ -203,19 +188,19 @@ def read_kcor_input(path):
                 add_filter(name, magnitude, {'path': str(source)})
                 n_system_filters += 1
             elif key == 'SPECTROGRAPH':
-                filename, rebin = parse_spectrograph_filename(values(key, 1)[0])
+                filename, rebin = parse_spectrograph_filename(leading_values(path, key, words, 1)[0])
                 source = calibration_path(str(Path(filtpath or '') / filename),
                                           path.parent, 'filters')
                 catalogue['spectrograph'] = {'filepath': str(source), 'rebin': rebin}
             elif key == 'SYN_FILTER':
-                name, lo, hi, magnitude = values(key, 4)
+                name, lo, hi, magnitude = leading_values(path, key, words, 4)
                 if 'spectrograph' not in catalogue:
                     raise SNANAError(f'{path}: SYN_FILTER requires SPECTROGRAPH')
                 bounds = (float(lo), float(hi))
                 add_filter(name, magnitude, {'synthetic_range': bounds})
                 n_system_filters += 1
             elif key == 'FILTER_OOB':
-                bands, lo, hi, ratio = values(key, 4)
+                bands, lo, hi, ratio = leading_values(path, key, words, 4)
                 bounds = (float(lo), float(hi))
                 ratio = float(ratio)
                 if not 0. < bounds[0] < bounds[1] or not np.isfinite(ratio) or ratio < 0.:
@@ -227,21 +212,24 @@ def read_kcor_input(path):
                         raise SNANAError(f'{path}: FILTER_OOB band {band!r} is missing or ambiguous')
                     matches[0]['out_of_band'] = (*bounds, ratio)
             elif key == 'DUPLICATE_LAMSHIFT_GLOBAL':
-                duplicate_shift = float(values(key, 1)[0])
+                duplicate_shift = float(leading_values(path, key, words, 1)[0])
                 if not np.isfinite(duplicate_shift):
                     raise SNANAError(f'{path}: wavelength shift must be finite')
             elif key == 'SNMAG0_CHECK':
-                values(key, n_system_filters + 1)
+                leading_values(path, key, words, n_system_filters + 1)
             elif key == 'LAMBDA_RANGE':
-                wavelength_range = tuple(float(v) for v in values(key, 2))
+                wavelength_range = tuple(float(v) for v in leading_values(path, key, words, 2))
+            elif key == 'TREST_RANGE':
+                day_range = tuple(float(v) for v in leading_values(path, key, words, 2))
             elif key == 'SN_SED':
-                sn_sed = values(key, 1)[0]
+                sn_sed = leading_values(path, key, words, 1)[0]
             elif key == 'LEAKAGE_CUT':
-                leakage_cut = float(values(key, 1)[0])
+                leakage_cut = float(leading_values(path, key, words, 1)[0])
                 if not 0. <= leakage_cut < 1.:
                     raise SNANAError(f'{path}: LEAKAGE_CUT must be between 0 and 1')
             else:
-                raise SNANAError(f'{path}: unsupported calibration setting {key!r}')
+                log.warn(logger, 'KCOR', f"{path}: {key}: is not a calibration key "
+                         f"and is not read")
     except (ValueError, OSError) as exc:
         raise SNANAError(f'{path}: {exc}') from exc
 
@@ -253,10 +241,9 @@ def read_kcor_input(path):
     # SNANA stores filter curves on the SN_SED wavelength grid, or a 10 A
     # grid when no SN_SED is supplied. Only its wavelengths are needed here.
     if not is_ignorefile(sn_sed):
-        source = calibration_path(sn_sed, path.parent, 'snsed')
-        data = np.loadtxt(source, usecols=(0, 1), ndmin=2)
-        grid = np.unique(data[:, 1])
-        grid = grid[(grid >= lo) & (grid <= hi)]
+        _, grid, _ = read_sed_file(calibration_path(sn_sed, path.parent, 'snsed'),
+                                   day_range, wavelength_range, t0shift_peakmag=False,
+                                   uniform_days=True)
     else:
         grid = lo + 10. * np.arange(int((hi - lo) / 10.) + 1)
     if len(grid) < 2 or not np.allclose(np.diff(grid), grid[1] - grid[0]):
@@ -335,7 +322,7 @@ class KcorReader:
         environment variables). ``leakage_cut`` is
         LEAKAGE_CUT; 0, SNANA's default, keeps every filter as stored."""
         source = Path(os.path.expandvars(kcor_file_path)).expanduser()
-        self.kcor_file_path = Path(resolve_fits_path(source, required=True))
+        self.kcor_file_path = Path(resolve_fits_path(source, required=True, plain_first=True))
 
         self.filter_data: Dict[str, Dict[str, jnp.ndarray]] = {}
         self.filter_names: List[str] = []
@@ -408,8 +395,6 @@ class KcorReader:
         self.filter_names = list(catalogue['filters'])
         if not self.filter_names:
             raise SNANAError(f'{self.kcor_file_path}: no filters defined')
-        self.header = {'NFILTERS': len(self.filter_names)}
-        self.filter_name_width = max(len(name) for name in self.filter_names)
         grid = catalogue.get('wavelength_grid')
         filter_bounds = []
         if 'spectrograph' in catalogue:
@@ -422,7 +407,7 @@ class KcorReader:
 
         for name, spec in catalogue.get('standards', {}).items():
             self.primary_seds[name] = self._read_curve(resource(spec, 'standards'))
-        for i, (name, spec) in enumerate(catalogue['filters'].items(), 1):
+        for name, spec in catalogue['filters'].items():
             if 'synthetic_range' in spec:
                 bounds = spec['synthetic_range']
                 wave, transmission = synthetic_filter_transmission(self.spectrograph, *bounds)
@@ -466,7 +451,6 @@ class KcorReader:
                 + float(spec.get('magupdate', 0.)) + float(spec.get('magcal', 0.)))
             self.filter_zpoff_snpot[name] = float(spec.get('zpoff_snpot', 0.))
             self.filter_survey[name] = spec.get('survey', 'UNDEFINED')
-            self.header[f'FILT{i:03d}'] = name
         wave = np.unique(np.concatenate([
             np.asarray(values['wavelength']) for values in self.filter_data.values()]))
         if 'AB' not in self.primary_seds:
@@ -532,7 +516,7 @@ class KcorReader:
 
     def _cut_leakage(self, leakage_cut):
         """Out-of-band leakage removed as kcor.exe's LEAKAGE_CUT does
-        (cutOOBTrans_filter, kcor.c:2513): a wavelength bin whose
+        (cutOOBTrans_filter, kcor.c:2525): a wavelength bin whose
         transmission is below ``leakage_cut`` times the filter's peak is
         dropped, zeroed here since every filter shares the file's grid, so
         the filter's range becomes the span of the bins kept."""
@@ -546,176 +530,108 @@ class KcorReader:
             self.filter_data[name]['transmission'] = jnp.array(
                 np.where(kept, trans, 0.0))
 
-    @staticmethod
-    def _fix_none_column_names(hdu):
-        """Patch any None column names to placeholder strings.
+    def _header_cards(self, header, count_key, prefix):
+        """The ``prefix001``, ``prefix002``, ... cards that ``count_key``
+        counts. A missing card is an error, as in SNANA's read_calib_head."""
+        keys = [count_key]
+        if count_key in header:
+            keys += [f'{prefix}{i:03d}' for i in range(1, header[count_key] + 1)]
+        missing = [key for key in keys if key not in header]
+        if missing:
+            raise SNANAError(f"{self.kcor_file_path} has no {', '.join(missing)} header card",
+                             function_name="KcorReader")
+        return [header.cards[key] for key in keys[1:]]
 
-        Some older kcor FITS files (e.g. DES 2013) have missing TTYPE keywords,
-        which astropy reads as name=None.  numpy rejects None as a structured-
-        array field name, so ``hdu.data`` would crash.  This assigns
-        ``'UNNAMED_<idx>'`` to any such column before data is accessed.
+    def _columns(self, hdu, fields):
+        """The leading columns of ``hdu``, one per entry of ``fields``.
+
+        Columns are read by position, as SNANA reads them, so their names do
+        not matter. Some older kcor files (e.g. DES 2013) omit TTYPE keywords,
+        and astropy reads a table only once every column has a name.
         """
-        for i, col in enumerate(hdu.columns):
-            if col.name is None:
-                hdu.columns[i].name = f'UNNAMED_{i}'
+        if len(hdu.columns) < len(fields):
+            raise SNANAError(f"{self.kcor_file_path}: the {hdu.name} table has no column for "
+                             f"{', '.join(fields[len(hdu.columns):])}",
+                             function_name="KcorReader")
+        for i, column in enumerate(hdu.columns):
+            if column.name is None:
+                hdu.columns[i].name = f'COLUMN{i + 1}'
+        return [_native_byteorder(hdu.data.field(i)) for i in range(len(fields))]
 
     def _load_kcor_file(self):
-        """Load filter transmission curves and calibration data from kcor FITS file."""
+        """Load filter transmissions and calibration from a kcor FITS file.
+
+        Filter and primary names come from the primary header cards, and each
+        table row and column belongs to the header entry at its position.
+        """
         logger.info(f"Loading kcor file: {self.kcor_file_path}")
-
         with fits.open(self.kcor_file_path) as hdul:
-            self.header = hdul[0].header.copy()
-            self._extract_filter_surveys(self.header)
+            header = hdul[0].header
+            filter_cards = self._header_cards(header, 'NFILTERS', 'FILT')
+            self.filter_names = [str(card.value).strip() for card in filter_cards]
+            primaries = [str(card.value).split()[0]
+                         for card in self._header_cards(header, 'NPRIM', 'PRIM')]
             self.spectrograph = read_spectrograph_fits(hdul, self.kcor_file_path)
-            for hdu in hdul[1:]:
-                self._fix_none_column_names(hdu)
-                if hdu.name == 'FilterTrans':
-                    self._extract_filter_data(hdu)
-                elif hdu.name == 'PrimarySED':
-                    self._extract_primary_seds(hdu)
-                elif hdu.name == 'ZPoff':
-                    self._extract_zpoff(hdu)
-                elif hdu.name == 'SYN_FILTER_SPECTROGRAPH':
-                    self._extract_syn_filters(hdu)
+            tables = {hdu.name.upper(): hdu for hdu in hdul[1:]}
+            required = ['ZPoff', 'FilterTrans', 'PrimarySED']
+            if self.spectrograph is not None:
+                required.append('SYN_FILTER_SPECTROGRAPH')
+            missing = [name for name in required if name.upper() not in tables]
+            if missing:
+                raise SNANAError(f"{self.kcor_file_path} has no {', '.join(missing)} table",
+                                 function_name="KcorReader")
 
-    def _extract_filter_surveys(self, header):
-        """Per-filter survey from the FILT{nnn} card comments."""
-        for card in header.cards:
-            if not card.keyword.startswith('FILT') or not card.keyword[4:].isdigit():
-                continue
-            name = str(card.value).strip()
-            comment = str(card.comment)
-            survey = (comment.split('=', 1)[1].strip().strip("'\"")
-                      if '=' in comment else 'UNDEFINED')
-            self.filter_survey[name] = survey or 'UNDEFINED'
+            wave, *transmissions = self._columns(tables['FILTERTRANS'],
+                                                 ('wavelength', *self.filter_names))
+            for name, transmission in zip(self.filter_names, transmissions):
+                self.filter_data[name] = {'wavelength': jnp.array(wave),
+                                          'transmission': jnp.array(transmission)}
 
-    def _extract_filter_data(self, hdu):
-        """Extract filter transmission data from HDU."""
-        col_names = [col.name for col in hdu.columns]
-        logger.debug(f"Filter HDU columns: {col_names}")
+            wave, *fluxes = self._columns(tables['PRIMARYSED'], ('wavelength', *primaries))
+            for name, flux in zip(primaries, fluxes):
+                self.primary_seds[name] = (np.asarray(wave, dtype=np.float64),
+                                           np.asarray(flux, dtype=np.float64))
 
-        wave_col = None
-        for col in col_names:
-            if col is not None and any(w in col.lower() for w in ['lambda', 'wavelength', 'wave']):
-                wave_col = col
-                break
+            zpoff = tables['ZPOFF']
+            if len(zpoff.data) != len(self.filter_names):
+                raise SNANAError(f"{self.kcor_file_path}: the ZPoff table has {len(zpoff.data)} "
+                                 f"rows for {len(self.filter_names)} filters",
+                                 function_name="KcorReader")
+            row_names, primary_names, primary_mags, _, zpoffs_snpot = self._columns(
+                zpoff, ZPOFF_COLUMNS)
+            for i, (name, card) in enumerate(zip(self.filter_names, filter_cards)):
+                if not name.startswith(str(row_names[i]).strip()):
+                    raise SNANAError(f"{self.kcor_file_path}: ZPoff row {i + 1} is for "
+                                     f"{str(row_names[i]).strip()}, but {card.keyword} is {name}",
+                                     function_name="KcorReader")
+                self.filter_primary[name] = str(primary_names[i]).strip()
+                self.filter_primary_mag[name] = float(primary_mags[i])
+                self.filter_zpoff_snpot[name] = float(zpoffs_snpot[i])
+                survey = (card.comment.split('=', 1)[1].strip().strip("'\"")
+                          if '=' in card.comment else 'UNDEFINED')
+                self.filter_survey[name] = survey or 'UNDEFINED'
+            log.line(logger, f"ZPoff: {len(self.filter_primary)} filters, "
+                     f"primaries used: {sorted(set(self.filter_primary.values()))}")
 
-        if wave_col is None:
-            raise SNANAError(f"No wavelength column in the FilterTrans HDU of "
-                             f"{self.kcor_file_path}: {col_names}",
-                             function_name="_extract_filter_data")
-
-        data = hdu.data
-        wavelengths = data[wave_col]
-        logger.debug(f"Found wavelength column: {wave_col}")
-
-        # Every non-wavelength column is a filter transmission
-        for col_name in col_names:
-            if col_name == wave_col:
-                continue
-            if col_name is None or col_name.startswith('UNNAMED_'):
-                continue
-            self.filter_data[col_name] = {
-                'wavelength': jnp.array(_native_byteorder(wavelengths)),
-                'transmission': jnp.array(_native_byteorder(data[col_name]))
-            }
-            self.filter_names.append(col_name)
-            logger.debug(f"Loaded filter: {col_name}")
-        # PHOT.FITS BAND width, before any GENFILTERS restriction
-        self.filter_name_width = max(len(name) for name in self.filter_names)
-
-    def _extract_syn_filters(self, hdu):
-        """Record which FilterTrans bands are synthetic spectrograph filters.
-
-        kcor.exe writes each synthetic band into FilterTrans like any filter, so
-        the transmission is already registered by ``_extract_filter_data``; this
-        only tags the band with its (lammin, lammax) range.
-        """
-        for row in hdu.data:
-            name = row['NAME']
-            name = (name.decode() if isinstance(name, bytes) else str(name)).strip()
-            self.syn_filters[name] = (float(row['LAMMIN']), float(row['LAMMAX']))
-
-    def _extract_primary_seds(self, hdu):
-        """Extract all primary reference SEDs from the PrimarySED HDU.
-
-        Stores each primary as ``self.primary_seds[name] = (waves, flux)``.
-        The column names (e.g. 'AB', 'VEGA', 'BD17') serve as the lookup keys
-        and match the 'Primary Name' column in the ZPoff HDU.
-        """
-        data = hdu.data
-        col_names = [col.name for col in hdu.columns]
-
-        wave_col = next(
-            (c for c in col_names
-             if c is not None and ('wave' in c.lower() or 'lambda' in c.lower())),
-            None,
-        )
-        if wave_col is None:
-            raise SNANAError(f"No wavelength column in the PrimarySED HDU of "
-                             f"{self.kcor_file_path}: {col_names}",
-                             function_name="_extract_primary_seds")
-
-        waves = np.array(data[wave_col], dtype=np.float64)
-
-        for col_name in col_names:
-            if col_name == wave_col:
-                continue
-            if col_name is None or col_name.startswith('UNNAMED_'):
-                continue
-            flux = np.array(data[col_name], dtype=np.float64)
-            self.primary_seds[col_name] = (waves, flux)
-            logger.debug(f"  Loaded PrimarySED '{col_name}': {len(waves)} points, "
-                         f"{waves.min():.0f}-{waves.max():.0f} A")
-
-    def _extract_zpoff(self, hdu):
-        """Extract per-filter primary reference mapping from the ZPoff HDU.
-
-        Populates ``self.filter_primary`` mapping filter short names (e.g.
-        'DES-g') to primary short names (e.g. 'AB'), plus the per-filter
-        'Primary Mag' and 'ZPoff(SNpot)' calibration values.
-
-        SNANA reads the same table positionally for every filter and treats
-        a FITS read failure as fatal (read_calib_zpoff,
-        sntools_calib.c:563-611), so a ZPoff table without the required
-        columns or rows is a malformed calibration file.
-        """
-        col_names = [col.name for col in hdu.columns]
-        required = ('Filter Name', 'Primary Name', 'Primary Mag',
-                    'ZPoff(SNpot)')
-        missing = [c for c in required if c not in col_names]
-        if missing:
-            raise SNANAError(
-                f"KCOR ZPoff table is missing required column(s) {', '.join(missing)} "
-                f"(has {col_names}); SNANA reads these positionally for every filter.",
-                function_name="_extract_zpoff")
-
-        for row in hdu.data:
-            fname = str(row['Filter Name']).strip()
-            pname = str(row['Primary Name']).strip()
-            if not fname or not pname:
-                raise SNANAError(
-                    f"KCOR ZPoff table row has empty Filter Name/Primary Name ('{fname}', "
-                    f"'{pname}'); SNANA aborts on an unrecognised PRIMARY_NAME.",
-                    function_name="_extract_zpoff")
-            self.filter_primary[fname] = pname
-            self.filter_primary_mag[fname] = float(row['Primary Mag'])
-            self.filter_zpoff_snpot[fname] = float(row['ZPoff(SNpot)'])
-
-        log.line(logger, f"ZPoff: {len(self.filter_primary)} filters, "
-                 f"primaries used: {sorted(set(self.filter_primary.values()))}")
-        if any(v != 0.0 for v in self.filter_primary_mag.values()):
-            logger.debug(f"  Primary Mag (non-zero): "
-                         f"{ {k: v for k, v in self.filter_primary_mag.items() if v != 0.0} }")
-        if any(v != 0.0 for v in self.filter_zpoff_snpot.values()):
-            logger.debug(f"  ZPoff(SNpot) (non-zero): "
-                         f"{ {k: v for k, v in self.filter_zpoff_snpot.items() if v != 0.0} }")
+            if self.spectrograph is not None:
+                names, lammin, lammax = self._columns(tables['SYN_FILTER_SPECTROGRAPH'],
+                                                      ('name', 'minimum wavelength',
+                                                       'maximum wavelength'))
+                # rows in FILTnnn order, names cut to 20 characters
+                later_filters = iter(self.filter_names)
+                for row_name, low, high in zip(names, lammin, lammax):
+                    row_name = str(row_name).strip()
+                    name = next((f for f in later_filters if f.startswith(row_name)), None)
+                    if name is None:
+                        raise SNANAError(f"{self.kcor_file_path}: SYN_FILTER_SPECTROGRAPH row "
+                                         f"'{row_name}' names none of the FILTnnn filters in "
+                                         f"order", function_name="KcorReader")
+                    self.syn_filters[name] = (float(low), float(high))
 
     def get_primary_sed(self, name: str) -> Tuple[np.ndarray, np.ndarray]:
         """The (wavelengths, flux_density) numpy arrays for the primary
-        reference SED ``name`` (e.g. 'AB', 'VEGA', 'BD17'), which must match
-        a column name in the PrimarySED HDU and the 'Primary Name' column in
-        ZPoff."""
+        reference SED ``name`` (e.g. 'AB', 'VEGA', 'BD17'), as the kcor
+        file's PRIMnnn cards and ZPoff primary names give it."""
         if name not in self.primary_seds:
             raise SNANAError(
                 f"Primary SED '{name}' not found. "
@@ -736,6 +652,12 @@ class KcorReader:
     def get_filter_names(self) -> List[str]:
         """Available bands, without the starred shifted curves."""
         return [name for name in self.filter_names if not name.startswith('*')]
+
+    @property
+    def filter_name_width(self) -> int:
+        """The longest band name, which sets the width of the BAND column;
+        the starred shifted curves do not count (sntools_calib.c:1420-1437)."""
+        return max(len(name) for name in self.get_filter_names())
 
     def get_filter_transmission(self, filter_name: str) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """The (wavelength, transmission) arrays for ``filter_name`` (e.g.
@@ -929,15 +851,16 @@ def filter_mean_wavelength(wave, trans) -> float:
     """Transmission-weighted mean observer wavelength of one filter.
 
     SNANA's FILTOBS_LAMAVG, sum(dlam*T*lam)/sum(dlam*T) with dlam the central
-    difference and one-sided at the ends (kcor.c:2340-2356), which is what
-    np.gradient produces. An empty filter falls back to its grid centre.
+    difference and one-sided at the ends (kcor.c:2352-2368), which is what
+    np.gradient produces. A filter with no transmission has none.
     """
     wave = np.asarray(wave)
     trans = np.asarray(trans)
     dlam = np.gradient(wave)
     tsum = float(np.sum(dlam * trans))
     if tsum <= 0.0:
-        return float(np.mean(wave))
+        raise SNANAError("a filter with no transmission has no mean wavelength",
+                         function_name="filter_mean_wavelength")
     return float(np.sum(dlam * trans * wave) / tsum)
 
 
@@ -1092,7 +1015,7 @@ def load_photometry_resources(
     filter_ref_fluxes_array = jnp.asarray(filter_ref_fluxes_list)
     filter_ref_fluxes_snana_array = jnp.asarray(filter_ref_fluxes_snana_list)
 
-    # delta = magprimary - ZPoff(SNpot) - user_zp (genmag_SEDtools.c:338, snlc_sim.c:8487, sntools_calib.c:1028)
+    # delta = magprimary - ZPoff(SNpot) - user_zp (genmag_SEDtools.c:338, snlc_sim.c:8502, sntools_calib.c:1028)
     scale_per_filter: List[float] = []
     for name in filter_names:
         short_band = filter_band(name)
@@ -1134,15 +1057,14 @@ def load_photometry_resources(
 
 def read_calib_shifts(path):
     """MAGSHIFT/WAVESHIFT/LAMSHIFT entries of a model metadata file, as
-    ('mag'|'lam', survey_csv, filter, shift) tuples (genmag_SALT2.c:1307)."""
+    ('mag'|'lam', survey_csv, filter, shift) tuples, read from the stream of
+    words as SNANA reads them (genmag_SALT2.c:1307-1325)."""
     shifts = []
-    with open(path) as fh:
-        for line in fh:
-            key, _, value = line.split('#')[0].partition(':')
-            if key.strip() in ('MAGSHIFT', 'WAVESHIFT', 'LAMSHIFT'):
-                survey, filt, shift = value.split()
-                shifts.append(('mag' if key.strip() == 'MAGSHIFT' else 'lam',
-                               survey, filt, float(shift)))
+    for key, values in key_runs(path):
+        if key in ('MAGSHIFT', 'WAVESHIFT', 'LAMSHIFT'):
+            survey, filt, shift = leading_values(path, key, values, 3)
+            shifts.append(('mag' if key == 'MAGSHIFT' else 'lam',
+                           survey, filt, float(shift)))
     return shifts
 
 

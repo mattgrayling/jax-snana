@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _m0_halfwidth(config):
-    """M0 bound half-width about M0_DEFAULT (SALT2mu.c:2627-2634)."""
+    """M0 bound half-width about M0_DEFAULT (SALT2mu.c:2630-2637)."""
     if config.uM0 == M0FITFLAG_CONSTANT:
         return M0_HALFWIDTH_FIXED
     if config.muref_zpoly:
@@ -63,7 +63,7 @@ def build_inputs(tv, izbin, config, model, accept, biascor=None,
                  zM0=None, idsample=None, gammadm_offset=0.0) -> LikelihoodInputs:
     m = accept
     vpec_sq = muerr_vpec_sq(tv.zhd[m], tv.zmuerr[m])
-    # compute_more_INFO_DATA (SALT2mu.c:9463): start values; sigint_fix[0] overrides (:20852)
+    # compute_more_INFO_DATA (SALT2mu.c:9463): start values; sigint_fix[0] overrides (:20866)
     sigmB = (config.sigint_fix[0] if config.sigint_fix
              else config.sigint)
     start = {n: parval(config, n) for n in model.nuisance_spec}
@@ -101,7 +101,7 @@ def build_inputs(tv, izbin, config, model, accept, biascor=None,
 
 
 def check_vpec_sign(tv, config, model):
-    """Abort if the peculiar velocities look sign-inverted (SALT2mu.c:4131).
+    """Abort if the peculiar velocities look sign-inverted (SALT2mu.c:4134).
 
     Measures RMS(MURES) over a low-z window twice: at the reported zHD, and at zHD
     recomputed with the vpec sign flipped. A smaller RMS after flipping means the
@@ -170,8 +170,8 @@ def _exempt_nobiascor(ok, tv, maps, config):
 
 
 def _warn_biascor_loss(ok, tv, maps, config, model):
-    """BCOR_LOSS warning above frac_warn_nobiascor (SALT2mu.c:24797), plus the
-    ndump_nobiascor listing of individual events with no valid biasCor (:11587)."""
+    """BCOR_LOSS warning above frac_warn_nobiascor (SALT2mu.c:24831), plus the
+    ndump_nobiascor listing of individual events with no valid biasCor (:11597)."""
     ndump = config.ndump_nobiascor
     if ndump > 0:
         for cid in tv.name[~ok & tv.cutmask][:ndump]:
@@ -214,8 +214,8 @@ def floated_and_defaults(model, config, *, ccprior=None):
     defaults.update(config.nuisance_val)
     floated = [name for name, on in config.nuisance_float.items()
                if on and name in defaults]
-    # scalePCC never floats without CC contamination (SALT2mu.c:20230/19725); H11
-    # floats it (INPUTS.ipar[IPAR_scalePCC]=1, SALT2mu.c:22143).
+    # scalePCC never floats without CC contamination (SALT2mu.c:20244/19739); H11
+    # floats it (INPUTS.ipar[IPAR_scalePCC]=1, SALT2mu.c:22157).
     perfect = config.force_pia is not None and config.force_pia < 0
     if (ccprior is None and not config.use_h11) or perfect:
         floated = [n for n in floated if n != "scalePCC"]
@@ -234,7 +234,7 @@ def floated_and_defaults(model, config, *, ccprior=None):
         frozen = {n: parval(config, n) for n in defaults}
         _warn_held_at_parval(frozen, config)
         return [], frozen            # every nuisance frozen; M0 still floats
-    # a fixed model nuisance holds parval, not the model's default (SALT2mu.c:22354)
+    # a fixed model nuisance holds parval, not the model's default (SALT2mu.c:22368)
     held = {}
     for name in model.nuisance_spec:
         if name not in floated and name not in config.nuisance_val:
@@ -254,11 +254,11 @@ def _warn_held_at_parval(held, config):
 
 
 def _chi2max_keep(spec, inputs, config, m0_reference, chi2max):
-    """applyCut_chi2max (SALT2mu.c:3347-3487): evaluate the fit chi2 at the
+    """applyCut_chi2max (SALT2mu.c:3350-3490): evaluate the fit chi2 at the
     initial parameters, shift M0 by the pIa-weighted H0-marg offset
-    (:3411-3432), re-evaluate at the bound-clamped values MINUIT holds, and
+    (:3414-3435), re-evaluate at the bound-clamped values MINUIT holds, and
     keep chi2 <= the per-event threshold. Under a CC prior the per-event chi2
-    is the BEAMS value (:3353-3354), not a Hubble residual.
+    is the BEAMS value (:3356-3357), not a Hubble residual.
 
     Both passes run with the FCN's final-iteration flag (DO_H0marg forces
     iflag=3, :5024), so each stores its own mu-variance as the reference the
@@ -319,9 +319,9 @@ def _chi2max_per_event(tv, accept, config):
 def _m0_interp_weights(zhd, izbin, zM0, isfloat):
     """Per-event (iz1, zfrac) for uM0=2, so M0 is linear between bin knots.
 
-    fcn_M0 (SALT2mu.c:5826): the neighbour is the next bin up at the low edge, down
+    fcn_M0 (SALT2mu.c:5836): the neighbour is the next bin up at the low edge, down
     at the high edge, else whichever side the event's z falls on relative to its own
-    bin's knot. A neighbour whose M0 is fixed leaves the event on a flat M0 (:5859),
+    bin's knot. A neighbour whose M0 is fixed leaves the event on a flat M0 (:5869),
     which is zfrac=0 here.
     """
     nbin = len(zM0)
@@ -340,7 +340,7 @@ def _izbin_for(tv, zbins, config):
     """Per-event z bin. izbin_from_cid_file overrides the z-derived bin with the
     IZBIN column of cid_select_file, matching CID and any survey/field columns,
     where the selected bin is >= 0
-    (SALT2mu.c:3075)."""
+    (SALT2mu.c:3078)."""
     izbin = zbins.index(tv.zhd)
     if config.izbin_from_cid_file and config.cid_select_file:
         _, selected_bins = match_cid_selection(tv, config.cid_select_file)
@@ -350,7 +350,7 @@ def _izbin_for(tv, zbins, config):
 
 def _sqsigint_fix(config: BBCConfig, samples, idsample, acc) -> np.ndarray:
     """Per-event sigma_int^2 from ``sigint_fix``, indexed by IDSAMPLE
-    (parse_sigint_fix, SALT2mu.c:20820). One value applies to every IDSAMPLE;
+    (parse_sigint_fix, SALT2mu.c:20834). One value applies to every IDSAMPLE;
     otherwise the count must match."""
     vals = config.sigint_fix
     if len(vals) == 1:
@@ -389,7 +389,7 @@ class BBCCell:
     spec: FitSpec
     maps: Optional[BiasCorMaps]
     summary_maps: Optional[BiasCorMaps]
-    nevt_zfit: np.ndarray          # NEVT_zFIT, the M0DIF's NFIT (SALT2mu.c:3091)
+    nevt_zfit: np.ndarray          # NEVT_zFIT, the M0DIF's NFIT (SALT2mu.c:3094)
     timings: Dict[str, float]      # seconds per section, prepare through output
     warnings: list = field(default_factory=list)
     ccprior_counts: tuple = ()
@@ -407,12 +407,12 @@ def _reject(tv, accept, drop, bit):
 
 
 def _apply_zbin_cuts(tv, accept, izbin, zbins, config):
-    """setup_zbins_fit (SALT2mu.c:3042), on the bin the fit uses: a bin index
-    outside the grid fails CUTBIT_z (:3087), and a bin holding fewer than
-    min_per_zbin events fails CUTBIT_MINBIN (:3127). CUTWIN NONE leaves the
-    second but not the first (setbit_CUTMASK, :19016). Also returns NEVT_zFIT,
+    """setup_zbins_fit (SALT2mu.c:3045), on the bin the fit uses: a bin index
+    outside the grid fails CUTBIT_z (:3090), and a bin holding fewer than
+    min_per_zbin events fails CUTBIT_MINBIN (:3130). CUTWIN NONE leaves the
+    second but not the first (setbit_CUTMASK, :19030). Also returns NEVT_zFIT,
     the per-bin count taken before the min_per_zbin pass, which the M0DIF's
-    NFIT column reports (SALT2mu.c:3091, :24349)."""
+    NFIT column reports (SALT2mu.c:3094, :24363)."""
     out_of_grid = (izbin < 0) | (izbin >= zbins.nbin)
     accept = _reject(tv, accept, out_of_grid[accept], CUTBIT_z)
     izb = izbin[accept]
@@ -475,8 +475,12 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
         if maps is None:
             warnings = _warn_biascor_loss(ok, tv, summary_maps, config, model)
     accept = tv.cutmask
-    cc_prior, cc_ncell, cc_counts, cc_version = (ccprior if ccprior is not None
-                                               else (None, 0, (), None))
+    if ccprior is not None:
+        cc_prior, cc_ncell, cc_counts, cc_version = ccprior
+    else:
+        # the H11 prior's version is its name (prepare_CCprior, SALT2mu.c:16868)
+        cc_prior, cc_ncell, cc_counts = None, 0, ()
+        cc_version = "H11" if config.use_h11 else None
     izbin = _izbin_for(tv, zbins, config)
 
     def assemble(acc):
@@ -486,7 +490,7 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
             idsample=(tv.idsample
                       if summary_maps is not None else None),
             gammadm_offset=maps.gammadm_offset if maps is not None else 0.0)
-        # sigint_fix applies only on the cell-map path without muCOVADD (SALT2mu.c:10151, :13101)
+        # sigint_fix applies only on the cell-map path without muCOVADD (SALT2mu.c:10161, :13111)
         if (config.sigint_fix and config.fitflag_sigmb > 0
                 and config.opt_biascor & MASK_BIASCOR_CELLMAP
                 and not config.opt_biascor & MASK_BIASCOR_MUCOVADD):
@@ -509,8 +513,8 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
         inputs, ncell = assemble(accept)
     spec = fit_spec(config, model, maps, cc_prior, ncell)
     # chi2max: reject high-chi2 events pre-fit and rebuild on the reduced
-    # sample, or deweight them in place under FITWGT0 (SALT2mu.c:3491);
-    # skipped under CUTWIN NONE (:3396).
+    # sample, or deweight them in place under FITWGT0 (SALT2mu.c:3494);
+    # skipped under CUTWIN NONE (:3399).
     if (config.chi2max <= 1.0e8 or config.chi2max_surveys
             or config.chi2max_fitwgt0) and not config.cutwin_disable:
         with _section(timings, "chi2max"):
@@ -528,7 +532,7 @@ def _prepare_cell(config, tv, summary_maps, biascor, ccprior):
             reference = np.zeros(len(tv.zhd))
             reference[accept] = np.asarray(muerrsq_last)
             accept = _reject(tv, accept, ~keep, CUTBIT_CHI2)
-            # SNANA re-runs setup_zbins_fit after this cut (SALT2mu.c:3542)
+            # SNANA re-runs setup_zbins_fit after this cut (SALT2mu.c:3545)
             accept, nevt_zfit = _apply_zbin_cuts(tv, accept, izbin, zbins,
                                                  config)
             with _section(timings, "inputs"):
@@ -580,24 +584,24 @@ def finish_cell(cell: BBCCell, result: BBCResult, n_pad: int, t_start: float, *,
             dust=summary_maps is not None and summary_maps.dust_flag)
     output.timings = cell.timings
     # M0DIF zHD/MUREF: 1/muerrsq-weighted (via zmu_solve) with biasCor, else the
-    # bin center and its reference mu (SALT2mu.c:23927).
+    # bin center and its reference mu (SALT2mu.c:23941).
     if config.opt_biascor > 0:
         output.zbin_z = np.where(output.nfit > 0,
                                  _zmu_solve(output.muref, config), zbins.centers)
     else:
         output.muref = mu_at(zbins.centers, config)
         output.zbin_z = zbins.centers.copy()
-    # NFIT is the pre-min_per_zbin count (SALT2mu.c:3091)
+    # NFIT is the pre-min_per_zbin count (SALT2mu.c:3094)
     output.nfit = cell.nevt_zfit
 
     if output.probcc is not None:
         # fitted-subset counters for the contamination lines (NSNSPEC_IA and
-        # NSNFIT_TRUECC, SALT2mu.c:5607/5657)
+        # NSNFIT_TRUECC, SALT2mu.c:5617/5667)
         valid = output.chi2 != CHI2_BEAMS_NOPROB
         output.nsnspec_ia = (int((force_probcc0(tv, config)[accept] & valid).sum())
-                             if config.varname_pia else 0)   # REQUIRE_pIa (:9301)
+                             if config.varname_pia else 0)   # REQUIRE_pIa (:9311)
         # spec-confirmed Ia are excluded from the photo-classified subset
-        # (write_fitres_misc, SALT2mu.c:24968-24986); on an all-spec sample the
+        # (write_fitres_misc, SALT2mu.c:25002-25020); on an all-spec sample the
         # 0/0 ratio prints as nan, as SNANA's C division does
         photo = (~force_probcc0(tv, config)[accept] if config.varname_pia
                  else np.ones_like(valid))
@@ -614,11 +618,10 @@ def finish_cell(cell: BBCCell, result: BBCResult, n_pad: int, t_start: float, *,
     output.isdata_real = not tv.sim_truth
     versions = {"VERSION_PHOTOMETRY(DATA)": tv.version_photometry}
     if summary_maps is not None and summary_maps.biascor_counts:
-        versions["VERSION_PHOTOMETRY(BIASCOR)"] = \
-            summary_maps.version_photometry or ""
+        versions["VERSION_PHOTOMETRY(BIASCOR)"] = summary_maps.version_photometry
         output.biascor_cosmology = summary_maps.sim_cosmology
     if cell.ccprior_version is not None:
-        versions["VERSION_PHOTOMETRY(CCPRIOR)"] = cell.ccprior_version or ""
+        versions["VERSION_PHOTOMETRY(CCPRIOR)"] = cell.ccprior_version
     output.version_photometry = versions
 
     if summary_maps is not None and summary_maps.biascor_counts:
@@ -700,7 +703,7 @@ def run_bbc_fit(config: BBCConfig, tables=None, *, write=True):
 
 
 def run_cat(config: BBCConfig) -> BBCConfig:
-    """Concatenate the datafiles and stop (SALT2mu.c:2266)."""
+    """Concatenate the datafiles and stop (SALT2mu.c:2269)."""
     if not config.cat_file_out:
         raise SNANAError("cat_only needs cat_file_out=<file>",
                          function_name="write_fitres_driver")

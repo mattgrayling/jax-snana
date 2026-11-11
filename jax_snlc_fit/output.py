@@ -16,8 +16,7 @@ from jax_snlc_core.cosmology import zhelio_to_zcmb
 from jax_snlc_core.models import MODEL_REGISTRY, FittedModel
 from jax_snlc_core.noise import fluxcal_errcalc
 from jax_snlc_core.snana_files import (HOSTGAL_PREFIXES, HOSTGAL_PROPERTY_NULL, SNANA_NULLFLOAT,
-                                       FitresTable, jax_snana_version_comment, load_survey_ids,
-                                       program_comment, snana_version_comment,
+                                       SNANA_VERSION_STRING, FitresTable, load_survey_ids,
                                        write_varnames_table)
 from jax_snlc_core.utils import LIGHT_KM
 
@@ -44,7 +43,7 @@ def _head_scalar(batch, col, default=0.0):
 def _data_zhel(batch):
     """(zHEL, zHELERR), SNANA's SNLC_ZHELIO: the HEAD helio redshift where it
     is defined, and otherwise the batch's, converted from zCMB as SET_ZHELIO
-    converts it (snana.F90:17710)."""
+    converts it (snana.F90:17799)."""
     redshifts, errors = np.asarray(batch.redshifts), np.asarray(batch.redshift_errs)
     if 'REDSHIFT_HELIO' not in batch.head_extras:
         return redshifts, errors
@@ -78,12 +77,12 @@ def build_event_columns(batch, fit_mask=None, zfit=None, zfit_err=None,
         zhel, zhelerr = _data_zhel(batch)
         zcmb = np.asarray(batch.zcmb)
 
-    # zHD = zCMB + VPEC correction (REDSHIFT_HD, snana.F90:17040)
+    # zHD = zCMB + VPEC correction (REDSHIFT_HD, snana.F90:17129)
     vpec = extra('VPEC')
     vpec_err = extra('VPEC_ERR')
     zpec = vpec / LIGHT_KM
     docor = (vpec != 0.0) | (vpec_err != 0.0)
-    # the key also restores the wrong sign of the VPEC term (snana.F90:17045)
+    # the key also restores the wrong sign of the VPEC term (snana.F90:17134)
     corrected = ((1.0 + zcmb) * (1.0 + zpec) - 1.0 if restore_wrong_vpec
                  else (1.0 + zcmb) / (1.0 + zpec) - 1.0)
     zhd = np.where(docor, corrected, zcmb)
@@ -122,7 +121,7 @@ def build_event_columns(batch, fit_mask=None, zfit=None, zfit_err=None,
     }
 
     snr, band_max, has_epoch = band_snr_maxima(batch, mask=fit_mask)
-    # only SNRMAX honours SNRMAX_FILTERS (snana.F90:17454)
+    # only SNRMAX honours SNRMAX_FILTERS (snana.F90:17543)
     use_band = snrmax_band_mask(batch.filter_names, snrmax_filters)
     ranked = np.sort(np.where(use_band, band_max, SNANA_NULLFLOAT), axis=1)[:, ::-1]
     obs_ok = np.asarray(fit_mask if fit_mask is not None
@@ -438,8 +437,9 @@ def build_lcplot_table(batch, fit_mask, model_flux, model_flux_err,
     with np.errstate(divide='ignore', invalid='ignore'):
         chi2 = np.where(obs_ok, (flux - mfit) ** 2 / (err**2 + mferr**2),
                         0.0)
-    is_sim = batch.sim_truth is not None
+    # a simulation's, or fakes', true flux (SIMFLAG = ISJOB_SIM, snana.F90:6658)
     trueflux = batch.true_fluxcals()
+    is_sim = trueflux is not None
     band_chars = batch.band_names()
 
     rows = {c: [] for c in
@@ -469,7 +469,7 @@ def build_lcplot_table(batch, fit_mask, model_flux, model_flux_err,
             # used epochs first, fit-rejected at the end of the band block
             for e in np.concatenate([np.nonzero(in_band & mask[i])[0],
                                      np.nonzero(in_band & ~mask[i])[0]]):
-                simf = 0.0 if trueflux is None else trueflux[i, e]
+                simf = trueflux[i, e] if is_sim else 0.0
                 add(cid, mjd[i, e], mjd[i, e] - pkmjd[i], simf,
                     flux[i, e], err[i, e], 1 if mask[i, e] else -1, ch,
                     chi2[i, e])
@@ -490,7 +490,7 @@ def build_lcplot_table(batch, fit_mask, model_flux, model_flux_err,
 
 def _host_confusion(nmatch2, ddlrs, objids):
     """Gupta 2016 Eq 3 over the stored host slots (host_confusion,
-    sntools.c:4256; SET_SNHOST_CONFUSION, snana.F90:18134): the first
+    sntools.c:4253; SET_SNHOST_CONFUSION, snana.F90:18226): the first
     NMATCH2 slots, capped at the slots the file holds, count only where the
     slot carries an OBJID, and a third slot without one drops the count to
     two. ``ddlrs`` and ``objids`` are [n_sne, n_slots]."""
@@ -552,10 +552,10 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
                        zpdf_quantiles=None, zpdf_percentiles=None, *, zpdf_nbin=None,
                        quantile_spline):
     """FITRES HOST_* columns from raw HOSTGAL* HEAD columns, in SNANA column
-    order (INIT_TABLE_HOSTVAR, snana.F90:23778). Identity columns need
+    order (INIT_TABLE_HOSTVAR, snana.F90:24148). Identity columns need
     text:host; properties and mags of the best match are always written;
     the quantile mean and width read the ``quantile_spline`` the fit does."""
-    identity_on = host_text or host2_text  # snana.F90:23440
+    identity_on = host_text or host2_text  # snana.F90:23808-23809
     out = {}
 
     def copy(raw, name):
@@ -572,6 +572,7 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
         copy('HOSTGAL_NMATCH', 'HOST_NMATCH')
         copy('HOSTGAL_NMATCH2', 'HOST_NMATCH2')
         copy('HOSTGAL_OBJID', 'HOST_OBJID')
+        copy('HOSTGAL_FLAG', 'HOST_FLAG')
         copy('HOSTGAL_PHOTOZ', 'HOST_ZPHOT')
         copy('HOSTGAL_PHOTOZ_ERR', 'HOST_ZPHOTERR')
         if zpdf_quantiles is not None:
@@ -597,7 +598,7 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
             copy(f'{raw_pre}{sfx}', f'{out_pre}{sfx}')
             if sfx == 'LOGMASS_ERR' and f'{out_pre}LOGMASS_ERR' in out:
                 # SNANA declares these and never sets them, so they hold
-                # the null for every event (snana.F90:15076, :24149)
+                # the null for every event (snana.F90:15165, :24257)
                 n = len(out[f'{out_pre}LOGMASS_ERR'])
                 out[f'{out_pre}LOGMASS_ZPHOT'] = np.full(n, HOSTGAL_PROPERTY_NULL)
                 out[f'{out_pre}LOGMASS_ZPHOTERR'] = np.full(n, HOSTGAL_PROPERTY_NULL)
@@ -607,6 +608,7 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
 
     if host2_text:
         copy('HOSTGAL2_OBJID', 'HOST2_OBJID')
+        copy('HOSTGAL2_FLAG', 'HOST2_FLAG')
         copy('HOSTGAL2_PHOTOZ', 'HOST2_ZPHOT')
         copy('HOSTGAL2_PHOTOZ_ERR', 'HOST2_ZPHOTERR')
         if zpdf_quantiles is not None:
@@ -635,18 +637,19 @@ def build_host_columns(host_data, zp_fluxcal, host_text=False, host2_text=False,
     return out
 
 
-def header_comments(table, version_photometry, extra=()):
-    """The comment lines every snlc_fit table starts with: the data version,
-    any ``extra`` lines, the SNANA, program and jax-snana versions, and the
-    table's name."""
-    comments = [f"VERSION_PHOTOMETRY: {version_photometry}"] if version_photometry else []
-    return comments + list(extra) + [snana_version_comment(), program_comment("snlc_fit.py"),
-                                     jax_snana_version_comment(), f"TABLE_NAME:    {table}"]
+def header_comments(table, *items):
+    """The header lines every snlc_fit table starts with, laid out as SNANA's
+    table writer does (SNTABLE_WRITE_HEADER_TEXT, sntools_output_text.c:714-728):
+    the SNANA, program and jax-snana versions and the table's name, then the
+    table's own ``(key, value)`` items."""
+    pairs = [('SNANA_VERSION', SNANA_VERSION_STRING), ('PROGRAM_NAME', 'snlc_fit.py'),
+             ('JAX-SNANA_VERSION', log.version_string()), ('TABLE_NAME', table), *items]
+    return [f"{key + ':':<20}  {value} " for key, value in pairs]
 
 
 def build_fitres_table(results, redshifts, mu_ref, model, sim_truth=None,
                        event_columns=None, event_fmt=None,
-                       opt_photoz=0, version_photometry=None,
+                       opt_photoz=0, version_photometry=None, fitmodel_name=None,
                        sim_cosmology=None,
                        physical_only=False, ideal_columns=None):
     """The FITRES table, its column formats and its header comments.
@@ -668,7 +671,8 @@ def build_fitres_table(results, redshifts, mu_ref, model, sim_truth=None,
     for ``event_columns``; a column left out takes the writer's per-value
     float rule, except the host NMATCH and OBJID columns, written as ``%d``.
     ``ideal_columns`` are SIMFIT_IDEAL_PRESCALE's ``<param>_IDEAL`` columns.
-    ``sim_cosmology`` is the simulated data's generating cosmology
+    ``version_photometry`` and ``fitmodel_name`` are header items, written
+    when given. ``sim_cosmology`` is the simulated data's generating cosmology
     (:mod:`jax_snlc_core.snana_files`), written as ``SIM_<key>`` header
     lines.
     """
@@ -778,13 +782,18 @@ def build_fitres_table(results, redshifts, mu_ref, model, sim_truth=None,
     for col in varnames:
         fmt.setdefault(col, None)
 
-    comments = header_comments(
-        'FITRES', version_photometry,
-        [f"SIM_{key}: {value}" for key, value in (sim_cosmology or {}).items()])
+    items = []
+    if version_photometry is not None:
+        items.append(('VERSION_PHOTOMETRY', version_photometry))
+    if fitmodel_name is not None:
+        items.append(('FITMODEL_NAME', fitmodel_name))
+    if sim_cosmology is not None:
+        items += [(f'SIM_{key}', value) for key, value in sim_cosmology.items()]
     if results.minos_errors is not None:
-        comments.append("ERROR_SOURCE: ERRFLAG_<parameter>: 1=MINOS mean, 2=Hessian, 6=bad error")
-        comments.append("MINOS_STATUS: 0=crossing, 1=bound, 2=failed minimisation, "
-                        "3=lower minimum, 4=search exhausted, 5=not profiled")
+        items.append(('ERROR_SOURCE', 'ERRFLAG_<parameter>: 1=MINOS mean, 2=Hessian, 6=bad error'))
+        items.append(('MINOS_STATUS', '0=crossing, 1=bound, 2=failed minimisation, '
+                      '3=lower minimum, 4=search exhausted, 5=not profiled'))
+    comments = header_comments('FITRES', *items)
     meta = {k.strip(): v.strip() for k, v in
             (c.split(':', 1) for c in comments if ':' in c)}
     # native byte order
@@ -864,7 +873,7 @@ def write_lcplot(fitter, batch, fit_mask, model_flux, model_flux_err, params,
         {'CID': np.asarray(batch.snids)[plot_idx],
          'IFIT': np.ones(n_plot, dtype=int)},
         {'CID': '%s', 'IFIT': '%d'}, style=style,
-        header_comments=LCLIST_HEADER.splitlines(), blank_separator=False)
+        header_comments=LCLIST_HEADER.splitlines(), sntable_frame=False)
     log.line(logger, f"Wrote LCPLOT: {lcplot_path} ({n_plot} SNe)")
 
 
@@ -887,7 +896,7 @@ def write_tables(fitter, config, full_batch, jax_results, precut_batch,
         cids, counts = np.unique(table_cols['CID'].astype(str),
                                  return_counts=True)
         nepoch_outlier = dict(zip(cids, counts))
-        comments = list(summary) + header_comments('OUTLIER', config.data.version_photometry)
+        comments = list(summary) + header_comments('OUTLIER')
         outlier_path = out_dir / f"{prefix}.OUTLIER.TEXT"
         write_varnames_table(outlier_path, varnames, table_cols, table_fmt,
                              style=outlier_style, header_comments=comments)
@@ -912,7 +921,10 @@ def write_tables(fitter, config, full_batch, jax_results, precut_batch,
             snrmax_filters=config.selection.snrmax_filters,
             restore_wrong_vpec=config.data.restore_wrong_vpec,
             quantile_spline=config.photoz.quantile_spline())
-        comments = header_comments('SNANA', config.data.version_photometry)
+        items = []
+        if config.data.version_photometry is not None:
+            items.append(('VERSION_PHOTOMETRY', config.data.version_photometry))
+        comments = header_comments('SNANA', *items)
         snana_path = out_dir / f"{prefix}.SNANA.TEXT"
         write_varnames_table(snana_path, varnames, table_cols,
                              table_fmt, style=snana_style,
@@ -964,6 +976,7 @@ def write_tables(fitter, config, full_batch, jax_results, precut_batch,
         event_columns=event_columns, event_fmt=event_fmt,
         opt_photoz=config.photoz.opt_photoz,
         version_photometry=config.data.version_photometry,
+        fitmodel_name=Path(config.model.fitmodel_name).name,
         sim_cosmology=sim_cosmology,
         physical_only=config.output.nonuisance)
     write_varnames_table(

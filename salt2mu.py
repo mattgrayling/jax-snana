@@ -44,7 +44,7 @@ def _parse_cli_args(argv):
             overrides.insert(0, args.input)
         input_file = args.input_opt
     cat_prescale = _parse_cat_only(input_file)
-    # key=value, NULL/BLANK (SALT2mu.c:19321) and cat_only are not filenames
+    # key=value, NULL/BLANK (SALT2mu.c:19335) and cat_only are not filenames
     if input_file is not None:
         if "=" in input_file:
             overrides.insert(0, input_file)

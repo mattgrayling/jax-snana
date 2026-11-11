@@ -77,8 +77,6 @@ def test_cuts_and_scatter_rebuild_small_operator():
     reset = cut_supplied_diagram(replace(config, snrms=.01), cut)
     expected += np.eye(cut.n_rows) * (.01**2 - .03**2)
     np.testing.assert_allclose(dense_factorized_covariance(reset.covariance), expected)
-    from jax_wfit.output import _final_precision
-    np.testing.assert_allclose(_final_precision(reset), np.linalg.inv(expected), atol=1e-11)
 
 
 def test_vector_selection_scales_and_calibrators():
@@ -103,10 +101,11 @@ def test_snana_file_roundtrip_and_pipeline_preference(tmp_path, mask):
     stage = Covariance('cov', SimpleNamespace(name='distances'))
     loaded = stage.load({}, tmp_path)
     assert set(loaded['covariances']) == set(result.covariances)
+    written = {'factorized', 'total_inverse'} if mask & 2 else {'factorized'}
     for label, entry in result.covariances.items():
-        # Factors are preferred even when both files exist.
-        assert entry['kind'] == loaded['covariances'][label]['kind'] == 'factorized'
-        np.testing.assert_allclose(dense_factorized_covariance(loaded['covariances'][label]),
+        forms = loaded['covariances'][label]
+        assert entry['kind'] == 'factorized' and set(forms) == written
+        np.testing.assert_allclose(dense_factorized_covariance(forms['factorized']),
                                    dense_factorized_covariance(entry))
     info = yaml.safe_load((tmp_path / 'INFO.YML').read_text())
     label, _, inverse, filename = info['COVOPTS'][0].split()
@@ -115,7 +114,7 @@ def test_snana_file_roundtrip_and_pipeline_preference(tmp_path, mask):
                         zmin=.04, snrms=.03)
     d = load_hubble_diagrams(config)[0]
     supplied = hubble_diagram_from_covariance(loaded['hubble_diagram'],
-        loaded['covariances'][label], loaded['isdata_real'], source='pipeline')
+        loaded['covariances'][label]['factorized'], loaded['isdata_real'], source='pipeline')
     supplied = cut_supplied_diagram(config, supplied)
     np.testing.assert_allclose(supplied.mu, d.mu)
     np.testing.assert_allclose(dense_factorized_covariance(supplied.covariance), dense_factorized_covariance(d.covariance))
@@ -124,19 +123,22 @@ def test_snana_file_roundtrip_and_pipeline_preference(tmp_path, mask):
     assert (inverse != 'None') == (mask == 10)
 
 
-def test_external_covariance_falls_back_only_for_matching_covopts(tmp_path):
+def test_external_covariance_skips_factorized_output(tmp_path):
+    """An EXTRA_COVS matrix has no compact factors, so with WRITE_MASK_COV 8
+    the covopts it enters write nothing, as SNANA skips them, and the others
+    write their factors."""
     from jax_create_cov.config import build_config
     cfg = build_config(yaml.safe_load(open('tests/fixtures/snana/create_cov/input_extracov.yml')),
                        {'mode': 'unbinned'})
     cfg.outdir, cfg.write_mask_cov = tmp_path, 8
     result = create_covariance(cfg)
-    loaded = Covariance('cov', SimpleNamespace(name='distances')).load({}, tmp_path)
-    assert {entry['kind'] for entry in loaded['covariances'].values()} == {
-        'total_inverse', 'factorized'}
-    for label, entry in result.covariances.items():
-        if entry['kind'] == 'systematics':
-            np.testing.assert_allclose(loaded['covariances'][label]['matrix'],
-                                       result.covtot_inv(label), rtol=1e-6, atol=1e-6)
+    info = yaml.safe_load((tmp_path / 'INFO.YML').read_text())
+    kinds = [entry['kind'] for entry in result.covariances.values()]
+    assert {'factorized', 'systematics'} <= set(kinds)
+    for i, kind in enumerate(kinds):
+        _, covsys, inverse, factors = info['COVOPTS'][i].split()
+        assert (covsys, inverse) == ('None', 'None')
+        assert (factors != 'None') == (kind == 'factorized')
 
 
 @pytest.mark.parametrize('bad_diag,bad_u', [([0., 1.], [[1.], [2.]]),
@@ -156,6 +158,8 @@ def test_reader_size_validation_and_zero_rank(tmp_path):
 
 @pytest.mark.parametrize('method', ['laplace', 'grid'])
 def test_full_fit_matches_dense_and_writes_residuals(tmp_path, method):
+    """A factorized covariance fits as its dense form does; it has no inverse
+    for -outfile_mucovtot_inv to write (wfit.c:730-736), and the dense one does."""
     d = diagram(factors())
     dense = replace(d, precision=jnp.asarray(np.linalg.inv(dense_factorized_covariance(d.covariance))),
                     covariance_kind='total', covariance=jnp.asarray(dense_factorized_covariance(d.covariance)))
@@ -163,13 +167,16 @@ def test_full_fit_matches_dense_and_writes_residuals(tmp_path, method):
                         omsteps=31, blind_mode='none',
                         cospar_yaml=str(tmp_path/'fit.yaml'),
                         outfile_cospar=str(tmp_path/'fit.cospar'),
-                        outfile_resid=str(tmp_path/'resid.txt'))
+                        outfile_resid=str(tmp_path/'resid.txt'),
+                        outfile_mucovtot_inv=str(tmp_path/'inverse.txt'))
     actual = run_wfit(config, diagrams=[d], write=True)[0]
-    expected = run_wfit(config, diagrams=[dense], write=False)[0]
+    assert (tmp_path/'resid.txt').is_file()
+    assert not (tmp_path/'inverse.txt').exists()
+    expected = run_wfit(config, diagrams=[dense], write=True)[0]
+    assert (tmp_path/'inverse.txt').is_file()
     np.testing.assert_allclose(actual['covariance'], expected['covariance'], rtol=2e-9)
     for key in actual['likelihood']:
         np.testing.assert_allclose(actual['likelihood'][key], expected['likelihood'][key], atol=1e-9)
-    assert (tmp_path/'resid.txt').is_file()
 
 
 def test_nuts_accepts_factorized_pytree():
@@ -215,17 +222,16 @@ def test_single_precision_with_large_offset():
     np.testing.assert_allclose(actual, expected, rtol=5e-6)
 
 
-def test_snana_four_field_legacy_inverse_metadata(tmp_path):
+def test_four_field_inverse_metadata(tmp_path):
+    """INFO.YML names four files per covariance; with WRITE_MASK_COV 2 the
+    inverse is written and the factor field is None."""
     cfg = load_config('tests/fixtures/snana/create_cov/input.yml')
     cfg.outdir = tmp_path
+    cfg.write_mask_cov = 2
     create_covariance(cfg)
-    path = tmp_path / 'INFO.YML'
-    info = yaml.safe_load(path.read_text())
-    info['COVOPTS'] = {i: entry + ' None' for i, entry in info['COVOPTS'].items()}
-    path.write_text(yaml.safe_dump(info))
     loaded = Covariance('cov', SimpleNamespace(name='distances')).load({}, tmp_path)
     assert loaded['covariances']
-    assert all(entry['kind'] == 'total_inverse' for entry in loaded['covariances'].values())
+    assert all(set(forms) == {'total_inverse'} for forms in loaded['covariances'].values())
 
 
 def test_factorized_cli_and_error_override_rejection():
@@ -322,18 +328,3 @@ def test_single_precision_backend_with_padded_factorized_diagrams(method):
             assert np.isfinite(result["covariance"]).all()
 
 
-@pytest.mark.parametrize("rank", [0, 3])
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_explicit_precision_output_uses_host_covariance_in_float32(rank, dtype):
-    from jax_wfit.output import _final_precision
-    cov = factors(100, rank)
-    cov = {**cov, "diag": cov["diag"].astype(dtype), "U": cov["U"].astype(dtype)}
-    with jax.enable_x64(False):
-        d = hubble_diagram_from_covariance(pd.DataFrame({
-            "CID": np.arange(100).astype(str), "zHD": np.linspace(.02, 1., 100),
-            "MU": np.full(100, 40.), "MUERR": np.sqrt(cov["diag"])}),
-            cov, 0, source="array input")
-        actual = _final_precision(d)
-    assert actual.dtype == np.float64
-    expected = np.linalg.inv(dense_factorized_covariance(validate_factorized_covariance(cov)))
-    np.testing.assert_allclose(actual, expected, rtol=1e-11, atol=1e-11)

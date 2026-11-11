@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_sim.lensing import _sample_lensdmu, read_lensing_probmap
 
 
@@ -27,6 +28,19 @@ def test_redshift_interpolation(tmp_path, last_z):
     np.testing.assert_allclose(draws[1:],
                                [draws[0] + 0.2, draws[0]/2., 2.*(draws[0] + 0.3)],
                                atol=2e-8)
+
+
+@pytest.mark.parametrize('rows, message', [
+    ('0.1 0.0 0\n0.1 0.1 0\n', 'z = 0.1 bin has no probability'),
+    ('0.1 0.0 1 0.5\n', 'takes 3 value'),
+])
+def test_unreadable_probmap_aborts(tmp_path, rows, message):
+    """A redshift bin with no probability has no distribution to draw from,
+    and a row must hold z, deltaMU and probability."""
+    path = tmp_path / 'lensing.dat'
+    path.write_text(rows)
+    with pytest.raises(SNANAError, match=message):
+        read_lensing_probmap(str(path), dmuscale=1.)
 
 
 def test_inv_cdf_is_monotonic_per_redshift(lensing_probmap_path):

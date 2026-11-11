@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_snlc_core.filters import KcorReader, load_photometry_resources
+from jax_snlc_core.filters import KcorReader, load_photometry_resources, read_kcor_input
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit.calibration import resolve_filtlist
 
@@ -60,10 +60,19 @@ def test_input_matches_snana_generated_fits(calibration_dir, no_sndata_root, ste
                                    recorded.filter_zpoff_snpot[name], atol=1e-9, rtol=0)
     if direct.spectrograph is not None:
         assert recorded.spectrograph is not None
-        for field in ('lam_min', 'lam_max', 'lam_sigma', 'texpose_list',
-                      'zp', 'sqsigsky', 'islam_extend'):
-            np.testing.assert_allclose(getattr(direct.spectrograph, field),
-                                       getattr(recorded.spectrograph, field), rtol=5e-7)
+        np.testing.assert_allclose(direct.spectrograph.texpose_list,
+                                   recorded.spectrograph.texpose_list, rtol=5e-7)
+        fields = ('lam_min', 'lam_max', 'lam_sigma', 'zp', 'sqsigsky', 'islam_extend')
+        direct_bins = recorded_bins = slice(None)
+        if stem == 'calibration_rebin':
+            # SNANA leaves a rebinned bin's resolution, which sizes the edge bins, at 0
+            fields = ('lam_min', 'lam_max', 'zp', 'sqsigsky')
+            direct_bins = ~np.asarray(direct.spectrograph.islam_extend)
+            recorded_bins = ~np.asarray(recorded.spectrograph.islam_extend)
+        for field in fields:
+            direct_values = np.asarray(getattr(direct.spectrograph, field))[direct_bins]
+            recorded_values = np.asarray(getattr(recorded.spectrograph, field))[recorded_bins]
+            np.testing.assert_allclose(direct_values, recorded_values, rtol=5e-7)
     for name in ('AB', 'BD17'):
         active = np.logical_or.reduce([
             np.asarray(recorded.filter_data[band]['transmission']) > 0
@@ -88,6 +97,20 @@ def test_zero_point_override_and_disabled_offsets(calibration_dir):
     assert reader.filter_zpoff_snpot == dict(zip(reader.filter_names, (.12, -.13, .14, -.15)))
     path.write_text('READ_ZPOFF: 0\n' + original)
     assert set(KcorReader(path).filter_zpoff_snpot.values()) == {0.}
+
+
+def test_notes_between_keys_are_passed_over(calibration_dir):
+    """SNANA reads the input as a stream of words in which each key takes its
+    own values, so a note after a value or free text ending in a colon is
+    passed over (rd_input, kcor.c:442-779)."""
+    path = calibration_dir / 'calibration.input'
+    original = path.read_text()
+    reference = read_kcor_input(path)
+    path.write_text('Updated Dec 30 2012: new filters\n' + original.replace(
+        'MAGSYSTEM: AB\n', 'MAGSYSTEM: AB (define mag system for filters below)\n'))
+    noted = read_kcor_input(path)
+    assert noted['filters'] == reference['filters']
+    assert noted['standards'] == reference['standards']
 
 
 def test_data_tree_and_environment_paths(calibration_dir, tmp_path):
@@ -203,6 +226,8 @@ def test_text_calibration_has_no_embedded_spectrograph(calibration_dir):
 def test_shifted_duplicates_are_selected_by_full_name(calibration_dir):
     reader = KcorReader(calibration_dir / 'calibration_duplicate.input')
     assert reader.get_filter_names() == ['Test-g', 'Test-r', 'Test-i', 'Test-z']
+    # the starred curves do not widen the BAND column (sntools_calib.c:1420-1437)
+    assert reader.filter_name_width == len('Test-g')
     assert resolve_filtlist(['*Test-g'], reader) == ['*Test-g']
     resource = load_photometry_resources(reader, jnp.linspace(3000., 9000., 300), ['*Test-g'])
     assert resource.filter_names == ['*Test-g']

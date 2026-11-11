@@ -50,6 +50,18 @@ def test_simlib_header_keys_parse_in_any_order(tmp_path, lsst_simlib_path):
     assert abs(f2.ra - 55.06) < 1e-6 and abs(f2.dec + 32.39) < 1e-6
 
 
+def test_simlib_header_photflag_spellings(tmp_path, lsst_simlib_path):
+    """Either spelling of a PHOTFLAG mask sets it while it is still 0, so a
+    0 followed by a mask gives the mask (snlc_sim.c:18502-18516)."""
+    base = open(str(lsst_simlib_path)).read()
+    sml = tmp_path / "photflag.SIMLIB"
+    sml.write_text(base.replace("BEGIN", "PHOTFLAG_SNRMAX: 0\nPHOTMASK_SNRMAX: 2048\n"
+                                         "PHOTMASK_NEARPEAK: 4096\nPHOTFLAG_NEARPEAK: 8\n"
+                                         "BEGIN", 1))
+    defaults = read_simlib(str(sml), require_docana=False, cache_dir=tmp_path).instrument_defaults
+    assert (defaults['photflag_snrmax'], defaults['photflag_nearpeak']) == (2048, 4096)
+
+
 def test_simlib_entry_without_coordinates(tmp_path, lsst_simlib_path):
     """An entry with no RA/DEC keeps SNANA's 9999 (init_SIMLIB_HEADER), which
     fails GENRANGE_RA/DEC; MWEBV is not reset per entry, so one without it
@@ -73,8 +85,8 @@ def test_simlib_entry_without_coordinates(tmp_path, lsst_simlib_path):
 def test_global_header_field_is_each_entrys_default(tmp_path,
                                                     lsst_simlib_path):
     """A FIELD in the global header, which ends at BEGIN, starts every
-    entry's header (SIMLIB_readGlobalHeader_TEXT, snlc_sim.c:18436, :18529;
-    init_SIMLIB_HEADER, :21898); an entry's own FIELD replaces it, and a
+    entry's header (SIMLIB_readGlobalHeader_TEXT, snlc_sim.c:18453, :18546;
+    init_SIMLIB_HEADER, :21938); an entry's own FIELD replaces it, and a
     FIELD after BEGIN is not global."""
     base = open(str(lsst_simlib_path)).read()
     obs = "S: 60132.42 100*1 g 1.00 4.00 6.00 1.00 0.00 0.00 30.470 0.005 99.0\n"
@@ -94,7 +106,7 @@ def test_global_header_field_is_each_entrys_default(tmp_path,
     assert fields(header + "FIELD: WFD\nBEGIN LIBGEN\n" + entries,
                   "global.SIMLIB") == ["WFD", "DDF"]
     assert fields(header + "BEGIN LIBGEN\nFIELD: WFD\n" + entries,
-                  "late.SIMLIB") == ["FIELD_NONAME", "DDF"]
+                  "late.SIMLIB") == ["VOID", "DDF"]
 
 def test_docana_key_is_the_first_token_of_the_file(lsst_simlib_path, tmp_path):
     """SNANA opens a SIMLIB through snana_openTextFile, whose DOCANA check is
@@ -114,12 +126,38 @@ def test_docana_key_is_the_first_token_of_the_file(lsst_simlib_path, tmp_path):
 def test_texpose_field_header_key_is_refused(tmp_path, lsst_simlib_path):
     """TEXPOSE(<field>) gives every epoch in a matching field a per-band
     exposure time that SNANA writes to the PHOT TEXPOSE column
-    (get_TEXPOSE, snlc_sim.c:21945); jax has no such column value, so the
+    (get_TEXPOSE, snlc_sim.c:21984); jax has no such column value, so the
     key cannot pass silently."""
     base = open(str(lsst_simlib_path)).read()
-    start = re.search(r'^LIBID:', base, re.M).start()
+    start = re.search(r'^BEGIN', base, re.M).start()
     sml = tmp_path / "texpose.SIMLIB"
     sml.write_text(base[:start] + "TEXPOSE(WFD): 30 30 30 30 30 30\n"
                    + base[start:])
     with pytest.raises(SNANAError, match=r"TEXPOSE\(WFD\)"):
+        read_simlib(str(sml), require_docana=False, cache_dir=tmp_path)
+
+
+def test_simlib_observation_rows(tmp_path, lsst_simlib_path):
+    """An S: row may leave out MAG, which only GENMODEL: SIMLIB reads, but
+    every row of an entry has the same columns (snlc_sim.c:19837); its band
+    is the last character of the name given, and a band FILTERS lacks is an
+    error rather than another band's observation. A comment may end a row,
+    and END_OF_SIMLIB: ends the entries."""
+    base = open(str(lsst_simlib_path)).read()
+    no_mag = re.sub(r'(?m)^(S: .*) 99\.000$', r'\1', base)
+    sml = tmp_path / "rows.SIMLIB"
+    sml.write_text(no_mag.replace(' u  1.00', ' LSST-u  1.00', 1)
+                   .replace('\nLIBID: 1', '\nEND_OF_SIMLIB:\nLIBID: 1', 1)
+                   .replace(' 0.005\n', ' 0.005  # a comment\n', 1))
+    reader = read_simlib(str(sml), require_docana=False, cache_dir=tmp_path)
+    full = read_simlib(str(lsst_simlib_path), require_docana=False, cache_dir=tmp_path)
+    assert len(reader.fields) == 1
+    assert (reader.fields[0].filter_indices == full.fields[0].filter_indices).all()
+    assert (reader.fields[0].zptavgs == full.fields[0].zptavgs).all()
+
+    sml.write_text(base.replace(' 0.005 99.000\n', ' 0.005\n', 1))
+    with pytest.raises(SNANAError, match="its first S: line"):
+        read_simlib(str(sml), require_docana=False, cache_dir=tmp_path)
+    sml.write_text(base.replace(' u  1.00', ' X  1.00', 1))
+    with pytest.raises(SNANAError, match="band X is not in FILTERS"):
         read_simlib(str(sml), require_docana=False, cache_dir=tmp_path)

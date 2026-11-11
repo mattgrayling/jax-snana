@@ -201,7 +201,7 @@ def _aligned(clean, contam):
 
 
 def test_host_contamination_is_additive():
-    """GENSPEC_HOST_CONTAMINATION (snlc_sim.c:11748) adds SCALE x the host to
+    """GENSPEC_HOST_CONTAMINATION (snlc_sim.c:11766) adds SCALE x the host to
     every SN spectrum and leaves host rows alone. Running the same fixture with
     and without the key isolates exactly that addition.
     """
@@ -218,7 +218,7 @@ def test_host_contamination_is_additive():
 
 
 def test_hostsnfrac_uses_bin_widths_and_shared_support():
-    """HOSTSNFRAC is defined as SCALE*FSUM_HOST/FSUM_PEAK (snlc_sim.c:11730),
+    """HOSTSNFRAC is defined as SCALE*FSUM_HOST/FSUM_PEAK (snlc_sim.c:11748),
     the sums running only over bins where both spectra carry flux -- so an
     empty SN-peak bin must drop the host flux there from the ratio too.
     """
@@ -244,7 +244,7 @@ def test_hostsnfrac_uses_bin_widths_and_shared_support():
 
 def test_hostsnfrac_scale_is_epoch_independent():
     """FSUM_PEAK comes from GENSPEC_TRUE(ISPEC_PEAK), the SN at TOBS=0
-    (snlc_sim.c:10578), not from the epoch being contaminated. Moving that
+    (snlc_sim.c:10596), not from the epoch being contaminated. Moving that
     epoch must therefore leave the scale untouched.
     """
     from jax_snlc_sim import run as sim_run
@@ -335,7 +335,7 @@ def test_host_bins_apply_mw_extinction():
 
 def test_host_bins_outside_the_basis_grid_are_zeroed(tmp_path):
     """A spectrograph bin whose rest range leaves the basis span carries no
-    flux (sntools_host.c:2310-2311). The fixture's bins all land on-grid.
+    flux (sntools_host.c:2321-2322). The fixture's bins all land on-grid.
     """
     from jax_snlc_sim.hostlib.spectra import read_host_spec_table
     text = ("FLAM_SCALE: 1.0\nVARNAMES: ROW WAVELENGTH SPECBASIS00\n"

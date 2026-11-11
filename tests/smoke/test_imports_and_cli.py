@@ -99,11 +99,11 @@ def test_an_input_that_omits_precision_preserves_it_until_cli_setup(repo_root) -
 
 @pytest.mark.parametrize("argv, expected", [
     (["in.input", "a=1"], ("in.input", ["a=1"], None)),
-    # SNANA's "no parFile" sentinels (parse_parFile, SALT2mu.c:19321)
+    # SNANA's "no parFile" sentinels (parse_parFile, SALT2mu.c:19335)
     (["NULL", "datafile=x"], (None, ["datafile=x"], None)),
     # a key in the positional slot is an override, not a filename
     (["datafile=x"], (None, ["datafile=x"], None)),
-    # cat_only names a mode; the optional /N is its prescale (:20154)
+    # cat_only names a mode; the optional /N is its prescale (:20168)
     (["cat_only", "datafile=x"], (None, ["datafile=x"], 1)),
     (["cat_only/5", "datafile=x"], (None, ["datafile=x"], 5)),
     # words without '=' pass through, so CUTWIN keeps its limits (:19409)

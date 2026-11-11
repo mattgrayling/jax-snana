@@ -6,7 +6,7 @@ DOCUMENTATION:
         5000 synthetic galaxies on the toy SIMLIB pointings.
 
     CAT_FILE_NOTES:
-        SNANA_VERSION: v12_01d-24-g563a1bc7
+        SNANA_VERSION: v12_02f
         PRESCALE: 4
         INPUT_CAT_FILES: 
          - docana.HOSTLIB 

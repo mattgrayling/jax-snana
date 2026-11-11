@@ -46,7 +46,7 @@ from jax_snlc_core.models import (MODEL_REGISTRY, SimulatedModel, infer_model_ty
 from jax_snlc_core.models.registry import model_input_declarations
 from jax_snlc_sim.distributions import (GenExpHalfGauss, GenGaussAsym, flat_distribution,
                                         validate_gaussian)
-from jax_snlc_sim.genpdf import load_all_genpdf
+from jax_snlc_sim.genpdf import GENGAUSS_KEY_STEMS, load_all_genpdf
 from jax_snlc_sim.population import (HOST_DUST_PARAMETERS, Population, configured_distributions,
                                      declared_population, population_spellings, targets)
 from jax_snlc_sim.rate import RateModifiers, neutral_rate_mods
@@ -418,7 +418,7 @@ _REJECTED_KEYS = {
     **refused('a submit_batch_jobs configuration key, not a simulation setting',
         'BATCH_INFO', 'CONFIG',),
     **refused('switches that restore earlier SNANA calculations are not supported',
-        'RESTORE_BUGS_DES3YR', 'RESTORE_BUG_ZHEL', 'RESTORE_DES5YR',
+        'RESTORE_BUGS_DES3YR', 'RESTORE_BUG_GALMAG', 'RESTORE_DES5YR',
         'RESTORE_WRONG_VPEC',),
     **refused('an output field; use SNTYPE_Ia or SNTYPES_Ia to set the simulated type',
         'SNTYPE',),
@@ -434,18 +434,18 @@ _REJECTED_KEYS = {
         'USE_SIMLIB_GALID',),
     **refused('strongly-lensed supernova simulations are not supported',
         'STRONGLENS_FILE',),
+    **refused('per-field HOSTLIB weights are not supported',
+        'HOSTLIB_FIELD_MAP',),
     **refused('selection by lensed-image separation relative to the PSF is not supported',
         'NPSFSIGMA_MINSEP_DETECT',),
     **refused('evaluates the model on a coarse grid and interpolates; not implemented',
         'TGRIDSTEP_MODEL_INTERP',),
     **refused('manual configuration of SNANA random streams and random-list positions is not supported',
         'NSTREAM_RAN', 'RANLIST_START_GENSMEAR',),
-    # rest-frame-only Tshift (snlc_sim.c:29663)
+    # rest-frame-only Tshift (snlc_sim.c:29721)
     **dict.fromkeys(
-        (prefix + family
-         for prefix in ('GENPEAK_', 'GENMEAN_', 'GENPEAKRANGE_', 'GENSIGMA_',
-                        'GENSKEW_', 'GENRANGE_', 'GENGRID_', 'GENPROB2_',
-                        'GENPEAK2_', 'GENSIGMA2_')
+        (stem + family
+         for stem in GENGAUSS_KEY_STEMS
          for family in ('RISETIME_SHIFT', 'FALLTIME_SHIFT')),
         'independent shifts of rise and fall times are not supported'),
 }
@@ -453,7 +453,7 @@ _REJECTED_KEYS = {
 _REQUIRED_KEYS = ('SIMLIB_FILE', 'GENMODEL', 'GENFILTERS', 'KCOR_FILE', 'RANSEED')
 
 # CUTWIN_EPOCHS_TRANGE[1] init: no upper bound on TIME_ABOVE_SNRMIN
-# (snlc_sim.c:1378)
+# (snlc_sim.c:1381)
 CUTWIN_EPOCHS_TRANGE_MAX_DEFAULT = field_default(EpochsTimeCut, 'time_above_max')
 
 _COUNT_PREFIXED_KEYS = ('SIMGEN_DUMP', 'SIMGEN_DUMPALL')
@@ -461,13 +461,13 @@ _COUNT_PREFIXED_KEYS = ('SIMGEN_DUMP', 'SIMGEN_DUMPALL')
 # what a bad input value raises: a wrong cast, a short list, or a failed check
 _BAD_INPUT = (TypeError, ValueError, IndexError, SNANAError)
 
-# SNANA aborts on these in a sim-input file (snlc_sim.c:3595, :3952, :4966).
+# SNANA aborts on these in a sim-input file (snlc_sim.c:3601, :3964, :4978).
 _ARGV_ONLY_KEYS = ('SIMGEN_DUMPADD', 'HOSTLIB_MSKOPT_ADD',
                    'NON1A_INDEX_FORCE', 'NONIA_INDEX_FORCE',
                    'REQUIRE_DOCANA')
 
 # Keys SNANA accepts only in a sim-input file, never on the command line
-# (parse_input_NON1ASED, snlc_sim.c:3481); each model declares its own.
+# (parse_input_NON1ASED, snlc_sim.c:3487); each model declares its own.
 def _file_only_keys():
     return {key for cls in dict.fromkeys(MODEL_REGISTRY.values())
             if issubclass(cls, SimulatedModel)
@@ -543,7 +543,7 @@ def _parse_comma_list(value, cast=float) -> List[Any]:
 
 
 def _parse_simlib_nskipmjd(raw) -> Tuple[Tuple[int, int], ...]:
-    """Parse SIMLIB_NSKIPMJD, e.g. `2(50),4(100)` (snlc_sim.c:6137).
+    """Parse SIMLIB_NSKIPMJD, e.g. `2(50),4(100)` (snlc_sim.c:6149).
 
     Returns ((prescale, trestmin), ...). TRESTMIN defaults to -999999 when the
     parenthesised part is absent; SNANA aborts unless TRESTMIN increases.
@@ -589,7 +589,7 @@ def _parse_warp_spectrum(raw) -> List[float]:
 
 
 def _parse_cutwin_filter_triplets(raw: dict, key: str, cast=int) -> List[Tuple[Any, Any, str]]:
-    """Parse repeatable `KEY: lo hi filters` triplets (snlc_sim.c:4363-4370).
+    """Parse repeatable `KEY: lo hi filters` triplets (snlc_sim.c:4375-4382).
 
     The reader accumulates occurrences as a list-of-lists.
     """
@@ -605,7 +605,7 @@ def _parse_cutwin_filter_triplets(raw: dict, key: str, cast=int) -> List[Tuple[A
 
 def _site_sigmas(raw: Dict[str, Any]) -> Dict[str, float]:
     """ATMOSPHERE_SITE_SIGMAS: one key giving temperature, barometric
-    pressure and precipitable-water sigmas (snlc_sim.c:5474)."""
+    pressure and precipitable-water sigmas (snlc_sim.c:5486)."""
     vals = _parse_comma_list(raw.get('ATMOSPHERE_SITE_SIGMAS'))
     names = ('sigma_site_temp', 'sigma_site_bp', 'sigma_site_pwv')
     return {n: float(v) for n, v in zip(names, vals)}
@@ -613,7 +613,7 @@ def _site_sigmas(raw: Dict[str, Any]) -> Dict[str, float]:
 
 def _wv07_profile(raw: Dict[str, Any]) -> int:
     """GENAV_WV07, which WV07_REWGT_EXPAV alone also turns on for any value
-    above -1e-9, including the meaningful 0 (snlc_sim.c:7947-7948)."""
+    above -1e-9, including the meaningful 0 (snlc_sim.c:7962-7963)."""
     rewgt = raw.get('WV07_REWGT_EXPAV')
     if rewgt is not None:
         rewgt = float(rewgt[0] if isinstance(rewgt, list) else rewgt)
@@ -747,7 +747,7 @@ def _read_line(line: str, raw: UsedTrackingDict, input_dir: Path,
 
     take_spec = re.match(r'(TAKE_SPECTRUM(?:\([^)]*\))?)\s*:\s*(.*)', line)
     if take_spec:
-        # NONE discards the entries read so far (snlc_sim.c:5608)
+        # NONE discards the entries read so far (snlc_sim.c:5620)
         raw.record_line('TAKE_SPECTRUM', line)
         if take_spec.group(2).strip().upper() == 'NONE':
             raw['TAKE_SPECTRUM'] = []
@@ -761,7 +761,7 @@ def _read_line(line: str, raw: UsedTrackingDict, input_dir: Path,
     if snr_scale:
         key, value = snr_scale.group(1).strip(), snr_scale.group(2).strip()
     elif solid_angle:
-        # SOLID_ANGLE(FIELDLIST) names the fields (snlc_sim.c:4498-4530)
+        # SOLID_ANGLE(FIELDLIST) names the fields (snlc_sim.c:4510-4542)
         if raw.get('SIMLIB_FIELDLIST') not in (None, 'ALL'):
             raise SNANAError(
                 "Cannot declare FIELDLIST in two places: check the "
@@ -796,12 +796,12 @@ def _read_line(line: str, raw: UsedTrackingDict, input_dir: Path,
     raw.record_line(key, line)
     parsed_value = _parse_value(value)
 
-    # a command-line nominal rate model replaces the file's (snlc_sim.c:2712)
+    # a command-line nominal rate model replaces the file's (snlc_sim.c:2718)
     if source == 'arg' and key in ('DNDZ', 'DNDZ_FILE'):
         raw.pop('DNDZ', None)
         raw.pop('DNDZ_FILE', None)
 
-    # SIMSED_REDCOR/COV must name a parameter pair (snlc_sim.c:6330)
+    # SIMSED_REDCOR/COV must name a parameter pair (snlc_sim.c:6342)
     if (key.startswith(('SIMSED_REDCOR', 'SIMSED_COV'))
             and re.fullmatch(r'SIMSED_(REDCOR|COV)\((\w+),(\w+)\)', key) is None):
         raise SNANAError(
@@ -841,7 +841,7 @@ def _read_line(line: str, raw: UsedTrackingDict, input_dir: Path,
         raw.setdefault(key, []).append(parsed_value)
 
     elif key in FILTER_ROW_KEYS:
-        # each occurrence applies to its bands (snlc_sim.c:3648-3741)
+        # each occurrence applies to its bands (snlc_sim.c:3654-3747)
         raw.setdefault(f'{key}_ROWS', []).append(parsed_value)
 
     else:
@@ -867,7 +867,7 @@ def _resolve_ransystpar_wildcards(raw: dict) -> None:
 
 
 def _apply_genperfect(raw: dict) -> None:
-    """GENPERFECT: ideal-simulation bitmask (genperfect_override, snlc_sim.c:8582).
+    """GENPERFECT: ideal-simulation bitmask (genperfect_override, snlc_sim.c:8597).
 
     Overrides the raw keys to ideal values before anything reads them. Bit 0
     (=1) sets all bits (MASK=63). Bits: 1 exposure/ZP, 2 mag-smear, 3 MW dust,
@@ -886,7 +886,7 @@ def _apply_genperfect(raw: dict) -> None:
     if mask & 2:
         raw['SMEARFLAG_ZEROPT'] = 0
         raw['EXPOSURE_TIME'] = 1.0e5
-        # per-filter exposures scale by 1e5 too (snlc_sim.c:8725-8731)
+        # per-filter exposures scale by 1e5 too (snlc_sim.c:8740-8746)
         rows = raw.get('EXPOSURE_TIME_FILTER_ROWS')
         if rows:
             scaled_rows = []
@@ -904,13 +904,13 @@ def _apply_genperfect(raw: dict) -> None:
         raw['WEAKLENS_PROBMAP_FILE'] = None
         raw['LENSING_PROBMAP_FILE'] = None
         # SNANA also zeroes NFILT_SMEAR, killing GENMAG_SMEAR_FILTER
-        # (snlc_sim.c:8776-8782)
+        # (snlc_sim.c:8791-8797)
         if 'GENMAG_SMEAR_FILTER' in raw:
             del raw['GENMAG_SMEAR_FILTER']
     if mask & 8:
         raw['OPT_MWEBV'] = 0
     if mask & 16:
-        # zeroes an AV profile without activating one (snlc_sim.c:8735-8754)
+        # zeroes an AV profile without activating one (snlc_sim.c:8750-8769)
         if any(k in raw for k in _AV_PROFILE_KEYS):
             raw['GENRANGE_AV'] = [0.0, 0.0]
             raw['GENTAU_AV'] = 0.0
@@ -932,7 +932,7 @@ def _apply_genperfect(raw: dict) -> None:
 
 def _apply_genpop_asymgauss(raw: dict) -> None:
     """GENPOP_ASYMGAUSS: <file> <model>: read the named MODEL block's SALT2
-    x1/c GENGAUSS keys and override them in the input (snlc_sim.c:6437).
+    x1/c GENGAUSS keys and override them in the input (snlc_sim.c:6449).
 
     The file format itself speaks SALT2 (its blocks carry SALT2x1/SALT2c
     populations), and SNANA applies it whatever the GENMODEL, so the names
@@ -1021,7 +1021,7 @@ def resolve_input_path(path, run) -> str:
     """Resolve a SNANA input-resource path, honouring PATH_USER_INPUT.
 
     Expands env vars; if the file is not found and PATH_USER_INPUT is set, look
-    for it (by basename) in that directory (SNANA snlc_sim.c:7230/18405/22896
+    for it (by basename) in that directory (SNANA snlc_sim.c:7242/18424/22955
     prepends PATH_USER_INPUT to the kcor/simlib/zvariation search path).
     """
     expanded = os.path.expandvars(str(path))
@@ -1124,7 +1124,7 @@ def _survey(raw: dict, genfilters: str) -> Survey:
             "zHOST random); the legacy readers were removed from SNANA",
             function_name="_survey")
 
-    # FLUXERRMODEL sets SIMLIB_MSKOPT bit 32, IGNORE_FLUXERR_COR (snlc_sim.c:18928-18935)
+    # FLUXERRMODEL sets SIMLIB_MSKOPT bit 32, IGNORE_FLUXERR_COR (snlc_sim.c:18945-18952)
     default_mskopt = field_default(Survey, 'simlib_mskopt')
     fluxerr_path = raw.get('FLUXERRMODEL_FILE')
     if not is_ignorefile(fluxerr_path):
@@ -1187,7 +1187,7 @@ def _host(raw: dict) -> Host:
                 f"HOSTLIB position/magnitude/selection knobs require "
                 f"HOSTLIB_FILE: {', '.join(used_without_file)}",
                 function_name="_host")
-    # host dust is on only once a key names it (sentinel -9, snlc_sim.c:889)
+    # host dust is on only once a key names it (sentinel -9, snlc_sim.c:891)
     dust = {}
     if any(k in raw for k in _HOST_DUST_KEYS):
         dust = dict(
@@ -1252,7 +1252,7 @@ def _host(raw: dict) -> Host:
             'genzphot_fudgemap':       (Host.input_names['genzphot_fudgemap'], None),
             'genzphot_bias':           (Host.input_names['genzphot_bias'], _parse_float_list),
             'zphoteff_file':           (Host.input_names['zphoteff_file'], None),
-            # a property under either spelling (sntools_host.c:1098)
+            # a property under either spelling (sntools_host.c:1109)
             'storepar':                (Host.input_names['storepar'],
                                         lambda v: [canonical_property_name(n)
                                                    for n in _parse_comma_list(v, str)]),
@@ -1287,7 +1287,7 @@ def _mw_parlist(raw) -> List[float]:
 
 
 def _mw_dust(raw: dict) -> MWDust:
-    """MW dust; defaults match SNANA init at snlc_sim.c:968-986."""
+    """MW dust; defaults match SNANA init at snlc_sim.c:970-988."""
     if 'OPT_MWCOLORLAW' in raw and raw['OPT_MWCOLORLAW'] not in OPT_MWCOLORLAW_NAMES:
         raise SNANAError(
             f"Invalid OPT_MWCOLORLAW = {raw['OPT_MWCOLORLAW']}. Valid: "
@@ -1308,7 +1308,7 @@ def _mw_dust(raw: dict) -> MWDust:
             'opt_mwebv':   ('OPT_MWEBV', int),
             'sigma_ratio': (MWDust.input_names['sigma_ratio'], float),
             'sigma':       (MWDust.input_names['sigma'], float),
-            # SNANA accepts the FUDGE* spellings too (snlc_sim.c:5189-5195)
+            # SNANA accepts the FUDGE* spellings too (snlc_sim.c:5201-5207)
             'shift':       (MWDust.input_names['shift'], float),
             'scale':       (MWDust.input_names['scale'], float),
             'applyflag_mwebv': ('APPLYFLAG_MWEBV', int),
@@ -1455,7 +1455,7 @@ def _spectra(raw: dict) -> Spectra:
 
 def _lensing(raw: dict) -> Lensing:
     """SNANA accepts both WEAKLENS_ and LENSING_ prefixes
-    (snlc_sim.c:4215-4226); defaults from INPUTS_WEAKLENS init at :1047-1050."""
+    (snlc_sim.c:4227-4238); defaults from INPUTS_WEAKLENS init at :1049-1052."""
     return Lensing(**_supplied(raw, {
         'probmap_file': (Lensing.input_names['probmap_file'],
                          None),
@@ -1507,7 +1507,7 @@ def _cuts(raw: dict) -> Cuts:
         else:
             named['nepoch_min'] = int(params)
 
-    # CUTWIN_SNRMAX entries, AND-combined (snlc_sim.c:4338-4346, :7741-7760)
+    # CUTWIN_SNRMAX entries, AND-combined (snlc_sim.c:4350-4358, :7756-7775)
     snrmax_cuts = []
     for row in raw.get('CUTWIN_SNRMAX') or []:
         if not isinstance(row, (list, tuple)) or len(row) < 5:
@@ -1550,7 +1550,7 @@ def _cuts(raw: dict) -> Cuts:
         if isinstance(params, list):
             named['epochs_time_cut'] = {
                 'snr_min': float(params[0]) if len(params) >= 1 else 0.0,
-                # TRANGE[1] (snlc_sim.c:24295-24297)
+                # TRANGE[1] (snlc_sim.c:24347-24349)
                 'time_above_max': (float(params[1])
                                    if len(params) >= 2
                                    else CUTWIN_EPOCHS_TRANGE_MAX_DEFAULT),
@@ -1568,7 +1568,7 @@ def _cuts(raw: dict) -> Cuts:
         if parsed is not None:
             named[fld] = parsed
 
-    # per-filter saturated-obs count windows (snlc_sim.c:24467-24477)
+    # per-filter saturated-obs count windows (snlc_sim.c:24525-24535)
     for fld, key in (('saturate_ranges', 'CUTWIN_NOBS_SATURATE'),
                      ('nosaturate_ranges', 'CUTWIN_NOBS_NOSATURATE')):
         triplets = _parse_cutwin_filter_triplets(raw, key)
@@ -1588,7 +1588,7 @@ def _cuts(raw: dict) -> Cuts:
         named['peakmag_byfield'] = byfield
 
     # any other CUTWIN_<VAR> is a range on that variable; CUTWIN_REDSHIFT is
-    # CUTWIN_REDSHIFT_TRUE (snlc_sim.c:4301)
+    # CUTWIN_REDSHIFT_TRUE (snlc_sim.c:4313)
     generic: Dict[str, Tuple[float, float]] = {}
     if 'CUTWIN_REDSHIFT' in raw and 'CUTWIN_REDSHIFT_TRUE' not in raw:
         parsed = _cut_range('CUTWIN_REDSHIFT')
@@ -1617,8 +1617,8 @@ def _rates(raw: dict, model_type: str, dndz_entries_pec1a) -> Rates:
     """Rate model + generation ranges.
 
     OPT_SETPKMJD default 16 = OPTMASK_SETPKMJD_FLUXMAX2 (Fmax-clump method;
-    snlc_sim.c:851, sntools.h:413). GENSIGMA_PEAKMJD>0 selects the older
-    Gaussian smear instead, which forces OPT_SETPKMJD=0 (snlc_sim.c:10105)."""
+    snlc_sim.c:853, sntools.h:414). GENSIGMA_PEAKMJD>0 selects the older
+    Gaussian smear instead, which forces OPT_SETPKMJD=0 (snlc_sim.c:10125)."""
     supplied = _supplied(raw, {
         'redshift_range':      (Rates.input_names['redshift_range'], _require_range),
         'peakmjd_range':       (Rates.input_names['peakmjd_range'], _parse_range_tuple),
@@ -1645,12 +1645,12 @@ def _rates(raw: dict, model_type: str, dndz_entries_pec1a) -> Rates:
 def _run(raw: dict) -> Run:
     return Run(
         random_seed=int(_require(raw, 'RANSEED', "_run")),
-        # Valueless flag, so presence is the value (snlc_sim.c:1803).
+        # Valueless flag, so presence is the value (snlc_sim.c:1806).
         readme_dumpflag='README' in raw,
         **_computed(
             ransystpar={k[len('RANSYSTPAR_'):]: v for k, v in raw.items()
                         if k.startswith('RANSYSTPAR_')},
-            # DASHBOARD takes no value; presence turns it on (snlc_sim.c:1799).
+            # DASHBOARD takes no value; presence turns it on (snlc_sim.c:1802).
             dashboard='DASHBOARD' in raw,
         ),
         **_supplied(raw, {
@@ -1672,11 +1672,11 @@ def _run(raw: dict) -> Run:
 
 def _simgen_dump_columns(raw: dict, key: str) -> List[str]:
     """The column list shared by SIMGEN_DUMP and SIMGEN_DUMPALL
-    (snlc_sim.c:4957-4976).
+    (snlc_sim.c:4969-4988).
 
     `KEY: N col1 col2 …` declares its own count; the comma-separated form
     carries none (snlc_sim.c:5046). SNANA appends FLAG_ACCEPT to every
-    user-specified list (snlc_sim.c:5061-5065).
+    user-specified list (snlc_sim.c:5073-5077).
     """
     value = raw[key]
     cols: List[str] = []
@@ -1718,7 +1718,7 @@ def _output(raw: dict) -> Output:
         **_supplied(raw, {
             'genversion':            ('GENVERSION', str),
             # where the GENVERSION folder is written (prep_simpath,
-            # snlc_sim.c:8551); the working directory without it
+            # snlc_sim.c:8566); the working directory without it
             'path_sndata_sim':       ('PATH_SNDATA_SIM',
                                       lambda v: os.path.expandvars(str(v))),
             'genprefix':             ('GENPREFIX', str),
@@ -1750,9 +1750,9 @@ def _dndz_entries(raw: dict, group: str = 'DNDZ') -> List[Any]:
     """The rate models of one population, in the order SNANA accumulates them.
 
     A population carries a single model name (parse_input_RATEPAR,
-    snlc_sim.c:2778): a second, different name aborts, and a repeat of the same
+    snlc_sim.c:2784): a second, different name aborts, and a repeat of the same
     name replaces it, except POWERLAW2, whose repeats are the z-ranges of one
-    multi-range model (snlc_sim.c:2816).
+    multi-range model (snlc_sim.c:2822).
     """
     values: List[Any] = [v.split() if isinstance(v, str) else list(v)
                          for v in raw.get(group, [])]
@@ -1784,7 +1784,7 @@ def _dndz_rate_mods(raw: dict, model_type: str) -> Dict[str, Any]:
     """DNDZ_* reweights and scales, as applied by SNANA's genz_wgt.
 
     DNDZ_SCALE is `<scale_Ia> <scale_NON1A>`; SNANA picks slot [1] when
-    `NON1A_MODELFLAG > 0 || INDEX_GENMODEL == MODEL_SIMSED` (snlc_sim.c:17844).
+    `NON1A_MODELFLAG > 0 || INDEX_GENMODEL == MODEL_SIMSED` (snlc_sim.c:17862).
     DNDZ_SCALE_NON1A/_NONIA set slot [1] alone. Resolved here, where the model
     type is known, so the rate path applies a single factor.
     """
@@ -1814,13 +1814,8 @@ def _dndz_rate_mods(raw: dict, model_type: str) -> Dict[str, Any]:
     return mods
 
 
-# the RV GENGAUSS init (snlc_sim.c:884-887)
+# the RV GENGAUSS init (snlc_sim.c:886-889)
 _RV_GENGAUSS_INIT = {'peak': 3.1, 'range': (1.0, 5.0)}
-
-# the GENGAUSS key family (sntools_genGauss_asym.c:510-606)
-_GENGAUSS_KEY_STEMS = ('GENPEAK_', 'GENMEAN_', 'GENPEAKRANGE_', 'GENSIGMA_',
-                       'GENSKEW_', 'GENRANGE_', 'GENGRID_', 'GENPROB2_',
-                       'GENPEAK2_', 'GENSIGMA2_')
 
 
 def _parse_gengauss_asym(raw: dict, prefix: str, init: Dict[str, Any]
@@ -1834,7 +1829,7 @@ def _parse_gengauss_asym(raw: dict, prefix: str, init: Dict[str, Any]
     defaults or a shared distribution inherited by a SUBPOP. Returns None
     when no family key is present.
     """
-    if not any(f'{stem}{prefix}' in raw for stem in _GENGAUSS_KEY_STEMS):
+    if not any(f'{stem}{prefix}' in raw for stem in GENGAUSS_KEY_STEMS):
         return None
 
     def _as_pair(key, default):
@@ -1889,7 +1884,7 @@ def _parse_gengauss_asym(raw: dict, prefix: str, init: Dict[str, Any]
 def _spell_population_keys(raw: dict, spellings: Dict[str, str]) -> None:
     """Rename the input's GENGAUSS keys to spell their parameter by name."""
     for key in list(raw):
-        renamed = spelled_by_name(key, _GENGAUSS_KEY_STEMS, spellings)
+        renamed = spelled_by_name(key, GENGAUSS_KEY_STEMS, spellings)
         if renamed == key:
             continue
         if renamed in raw.keys():
@@ -1909,9 +1904,9 @@ def _scan_gengauss(raw: dict, distributions: Dict[str, Any],
 
     A GENPEAK_*/GENMEAN_* key declares a population for any suffix. For
     `population_names`, the names SNANA routes through parse_input_GENGAUSS
-    (snlc_sim.c:2303-2378), ANY family key activates the population with the
+    (snlc_sim.c:2309-2384), ANY family key activates the population with the
     SNANA init values filling the rest. The AV/EBV dust profiles are
-    excluded: they are ExpHalfGauss families (snlc_sim.c:2379-2390).
+    excluded: they are ExpHalfGauss families (snlc_sim.c:2385-2396).
     """
     suffixes = set()
     for key in list(raw):
@@ -1919,7 +1914,7 @@ def _scan_gengauss(raw: dict, distributions: Dict[str, Any],
             if key.startswith(prefix) and key[len(prefix):]:
                 suffixes.add(key[len(prefix):])
     for name in population_names:
-        if any(f'{stem}{name}' in raw for stem in _GENGAUSS_KEY_STEMS):
+        if any(f'{stem}{name}' in raw for stem in GENGAUSS_KEY_STEMS):
             suffixes.add(name)
 
     for suffix in suffixes - set(_DUST_PROFILE_NAMES):
@@ -1939,7 +1934,7 @@ def _parse_exp_halfgauss(raw: dict,
     peak), GENSIG_<V>/GENSIGMA_<V>, GENTAU_<V>,
     GENRATIO_<V>/GENRATIO_<V>0 (plus back-compatible EBV0_HOST), and
     GENRANGE_<V>. Both alias VARNAMEs write one profile
-    (snlc_sim.c:2379-2390); any key activates it. Missing values keep
+    (snlc_sim.c:2385-2396); any key activates it. Missing values keep
     SNANA's -9 init (init_GEN_EXP_HALFGAUSS; RATIO inits to 0), under
     which a non-positive peak means the positive half-normal and a -9
     width disables that component. A configured profile without a range is
@@ -1998,7 +1993,7 @@ _DUST_PROFILE_NAMES = tuple(name for p in HOST_DUST_PARAMETERS
 
 def _parse_genpdf_flat(raw) -> List[Tuple[str, Tuple[float, float]]]:
     """Parse GENPDF_FLAT = VAR(min:max),VAR2(min:max) (prep_GENPDF_FLAT,
-    snlc_sim.c:8055). Range is mandatory; returns (jax_varname, (lo, hi))."""
+    snlc_sim.c:8070). Range is mandatory; returns (jax_varname, (lo, hi))."""
     text = (''.join(raw) if isinstance(raw, (list, tuple))
             else str(raw)).replace(' ', '')
     out = []
@@ -2017,7 +2012,7 @@ def _input_genranges(raw: dict, model_cls, structured_config: Dict[str, Any]
                      ) -> Dict[str, Tuple[float, float]]:
     """Each of the model's population parameters' GENRANGE as the input
     gives it, else the default range the model declares
-    (INPUTS.GENGAUSS_SALT2c.RANGE and kin, snlc_sim.c:895-909), whatever
+    (INPUTS.GENGAUSS_SALT2c.RANGE and kin, snlc_sim.c:897-911), whatever
     draws the parameter."""
     named = raw.get('POPULATIONS', {})
     names, _, defaults = declared_population(model_cls, structured_config)
@@ -2122,7 +2117,7 @@ def _build_distributions(raw: dict, model_cls, structured_config: Dict[str, Any]
                 distributions[param] = replace(
                     dist, prob_expon_rewgt=prob_expon_rewgt)
 
-    # GENPDF_FLAT implies GENPDF_IGNORE (snlc_sim.c:8020, sntools_genPDF.c:267)
+    # GENPDF_FLAT implies GENPDF_IGNORE (snlc_sim.c:8035, sntools_genPDF.c:267)
     ignore_vars = set()
     raw_ignore = raw.get('GENPDF_IGNORE')
     if raw_ignore:
@@ -2172,7 +2167,7 @@ def _subpop_key_parameter(key: str, population_names) -> Optional[str]:
     """
     if key == 'GENMAG_OFF_GLOBAL':
         return ''
-    for stem in _GENGAUSS_KEY_STEMS + _DUST_KEY_STEMS:
+    for stem in GENGAUSS_KEY_STEMS + _DUST_KEY_STEMS:
         name = key[len(stem):]
         if key.startswith(stem) and name in population_names:
             return _DUST_KEY_BY_NAME.get(name, name)
@@ -2228,7 +2223,7 @@ def _build_subpops(raw: dict, model_cls, structured_config: Dict[str, Any],
                 f"SUBPOP takes '<class> <key> <values>', got '{text}'",
                 function_name="_build_subpops")
         name, key, rest = (tokens[0],
-                           spelled_by_name(tokens[1], _GENGAUSS_KEY_STEMS, spellings),
+                           spelled_by_name(tokens[1], GENGAUSS_KEY_STEMS, spellings),
                            tokens[2:])
         if name not in order:
             order.append(name)
@@ -2454,7 +2449,7 @@ def _per_filter_offsets(raw: dict, key: str, genfilters: str) -> Dict[str, float
 def _key_plus_filter(raw: dict, base: str, default: float,
                      genfilters: str) -> Dict[str, float]:
     """SNANA KEY_PLUS_FILTER syntax (parse_input_KEY_PLUS_FILTER,
-    snlc_sim.c:3648-3741): the bare key broadcasts to every band, and each
+    snlc_sim.c:3654-3747): the bare key broadcasts to every band, and each
     KEY_FILTER occurrence sets its named bands, applied cumulatively. The
     per-band comma pairing activates only when the filter token itself
     contains commas; otherwise one value serves every named band. Nothing
@@ -2493,9 +2488,9 @@ def _key_plus_filter(raw: dict, base: str, default: float,
 def _genmag_smear_sigma(value) -> float:
     """GENMAG_SMEAR as one coherent sigma.
 
-    SNANA reads the key with split2floats on a comma (snlc_sim.c:5272) and
+    SNANA reads the key with split2floats on a comma (snlc_sim.c:5284) and
     draws an asymmetric coherent smear when the two sigmas differ
-    (:14586-14593); jax implements the symmetric case only.
+    (:14604-14611); jax implements the symmetric case only.
     """
     text = str(value).strip()
     if ',' in text:
@@ -2507,7 +2502,7 @@ def _genmag_smear_sigma(value) -> float:
 
 
 def _genmag_smear_filter(raw: dict) -> Dict[str, float]:
-    """GENMAG_SMEAR_FILTER: repeatable '<filterlist> <sigma>' (snlc_sim.c:5306)."""
+    """GENMAG_SMEAR_FILTER: repeatable '<filterlist> <sigma>' (snlc_sim.c:5318)."""
     out: Dict[str, float] = {}
     for row in raw.get('GENMAG_SMEAR_FILTER', []):
         toks = row if isinstance(row, (list, tuple)) else str(row).split()
@@ -2519,7 +2514,7 @@ def _genmag_smear_filter(raw: dict) -> Dict[str, float]:
 
 def _genmag_smear_scale_poly(raw: dict, model_cls, structured_config
                              ) -> Optional[Tuple[str, Tuple[float, ...]]]:
-    """GENMAG_SMEAR_SCALE(VAR): scale = eval_poly(VAR) (snlc_sim.c:5333,
+    """GENMAG_SMEAR_SCALE(VAR): scale = eval_poly(VAR) (snlc_sim.c:5345,
     sntools_genSmear.c:742). VAR may be any spelling of a population
     parameter, which the sampler reads by name."""
     spellings = _spellings(model_cls, structured_config)
@@ -2550,7 +2545,7 @@ def _check_misnamed_simsed_params(typed_keys: set) -> None:
     itself: "SIMSED_PARAM: stretch" then GENPEAK_stretch. Writing the literal
     words SIMSED_PARAM in place of the parameter name reads as a range but
     sets no distribution; SNANA drops it without a word for any GENMODEL
-    (snlc_sim.c:2250 routes every *SIMSED* key into parse_input_SIMSED,
+    (snlc_sim.c:2256 routes every *SIMSED* key into parse_input_SIMSED,
     where nothing matches).
     """
     found = sorted(k for k in typed_keys
@@ -2567,7 +2562,7 @@ def _check_misnamed_simsed_params(typed_keys: set) -> None:
 def _check_extinc_hostgal(raw: dict) -> None:
     """EXTINC_HOSTGAL selects OPT_SNXT: CCM89, or SJPAR which SNANA itself
     rejects as unavailable (genmag_extinction.c:44-46); anything else is
-    fatal (snlc_sim.c:6833-6836)."""
+    fatal (snlc_sim.c:6845-6848)."""
     value = raw.get('EXTINC_HOSTGAL')
     if value is None or str(value).strip() == 'CCM89':
         return
@@ -2632,7 +2627,7 @@ def _check_explosion_anchor(raw: dict, model_type: str) -> None:
 def _check_spectra_sources(cfg: SimulationConfig, raw: dict) -> None:
     """TAKE_SPECTRUM comes from the SIMLIB header or the sim-input file."""
     if 'USE_SIMLIB_TAKE_SPECTRUM' in raw and 'USE_SIMLIB_SPECTRA' in raw:
-        # USE_SIMLIB_SPECTRA is the pre-Aug-2025 spelling (snlc_sim.c:3833)
+        # USE_SIMLIB_SPECTRA is the pre-Aug-2025 spelling (snlc_sim.c:3839)
         raise SNANAError(
             "USE_SIMLIB_TAKE_SPECTRUM and USE_SIMLIB_SPECTRA are aliases; "
             "set only one.", function_name="_check_spectra_sources")
@@ -2694,7 +2689,7 @@ def _warn_unrecognized_keys(raw: UsedTrackingDict, typed_keys: set) -> None:
                  f"Unrecognized SNANA input key(s) ignored: {', '.join(unknown)}")
 
 
-# GENMODELs that set magnitudes directly (snlc_sim.c:9463-9479)
+# GENMODELs that set magnitudes directly (snlc_sim.c:9478-9494)
 _UNIMPLEMENTED_GENMODELS = {
     'FIXMAG': "every epoch gets one fixed magnitude",
     'RANMAG': "each observation gets a magnitude drawn flat in a range",
@@ -2760,7 +2755,7 @@ def build(raw: Dict[str, Any], *, settings=None) -> SimulationConfig:
             f"{model_cls.__name__} does not implement the SimulatedModel role.",
             function_name="build")
 
-    # GENPOP_ASYMGAUSS overrides the SALT2 x1/c population (snlc_sim.c:6437)
+    # GENPOP_ASYMGAUSS overrides the SALT2 x1/c population (snlc_sim.c:6449)
     _apply_genpop_asymgauss(raw)
 
     # general sections first, so known_keys records them before a model error
@@ -2906,7 +2901,7 @@ def _check_subpop_simlib_conflict(cfg: SimulationConfig) -> None:
 
 def _check_batch_split(cfg: SimulationConfig) -> None:
     """SIMLIB_IDLOCK pins one LIBID, so it cannot also be sliced across batch
-    jobs (SIMLIB_findStart, snlc_sim.c:19150). IDSTART + JOBID is allowed."""
+    jobs (SIMLIB_findStart, snlc_sim.c:19169). IDSTART + JOBID is allowed."""
     if cfg.run.njobtot > 0 and cfg.survey.simlib_idlock > 0:
         raise SNANAError(
             f"SIMLIB_IDLOCK {cfg.survey.simlib_idlock} cannot combine with batch mode "
@@ -2935,7 +2930,7 @@ def _check_host_spectra(cfg: SimulationConfig) -> None:
             f"TAKE_SPECTRUM_HOSTSNFRAC ({hostsnfrac}). Pick one.",
             function_name="_check_host_spectra")
 
-    # IMJD_HOST stays -9 without a HOST epoch (snlc_sim.c:9749)
+    # IMJD_HOST stays -9 without a HOST epoch (snlc_sim.c:9763)
     if (max(hostfrac, hostsnfrac) > HOST_CONTAM_MIN
             and not any(e['epoch_frame'] == 'HOST' for e in cfg.spectra.take_spectrum)):
         raise SNANAError(
@@ -2956,8 +2951,8 @@ def _check_redshift_range(cfg: SimulationConfig) -> None:
 
 def _check_genranges(cfg: SimulationConfig) -> None:
     """SNANA inits GENRANGE_TREST and GENRANGE_PEAKMJD to (0, 0)
-    (snlc_sim.c:841-842, 862-863). A degenerate TREST range is fatal at
-    init (:7310-7316); a degenerate PEAKMJD range matches no SIMLIB epoch
+    (snlc_sim.c:843-844, 864-865). A degenerate TREST range is fatal at
+    init (:7322-7328); a degenerate PEAKMJD range matches no SIMLIB epoch
     and aborts ("GENRANGE_PEAKMJD and SIMLIB probably don't overlap",
     :567-569); both are rejected here with the missing key named."""
     trest_lo, trest_hi = cfg.rates.trest_range
@@ -2976,8 +2971,8 @@ def _check_genranges(cfg: SimulationConfig) -> None:
 
 def _gentypes(raw: dict) -> Dict[str, int]:
     """GENTYPES gives the spec/phot pair; GENTYPE gives spec alone and implies
-    spec+100 (snlc_sim.c:1918-1926). GENTYPE_SPEC inits to -9 and only
-    overrides when > 0 (snlc_sim.c:814)."""
+    spec+100 (snlc_sim.c:1924-1932). GENTYPE_SPEC inits to -9 and only
+    overrides when > 0 (snlc_sim.c:816)."""
     gentypes = raw.get('GENTYPES')
     if gentypes is not None:
         return {'gentype': int(gentypes[0]), 'gentype_phot': int(gentypes[1])}
@@ -2986,7 +2981,7 @@ def _gentypes(raw: dict) -> Dict[str, int]:
 
 def _sntypes(raw: dict) -> Dict[str, int]:
     """SNTYPE_Ia sets both types from one value; SNTYPES_Ia gives them
-    separately (snlc_sim.c:1909-1917). OFFSET_TYPE_PHOT = 100."""
+    separately (snlc_sim.c:1915-1923). OFFSET_TYPE_PHOT = 100."""
     pair = raw.get('SNTYPES_Ia')
     if pair is not None:
         return {'sntype_spec': int(pair[0]), 'sntype_phot': int(pair[1])}
@@ -3118,7 +3113,7 @@ def apply_overrides(raw: UsedTrackingDict,
 
 
 def _apply_hostlib_mskopt_add(raw: UsedTrackingDict) -> None:
-    """OR HOSTLIB_MSKOPT_ADD into HOSTLIB_MSKOPT (snlc_sim.c:3947-3961)."""
+    """OR HOSTLIB_MSKOPT_ADD into HOSTLIB_MSKOPT (snlc_sim.c:3959-3973)."""
     if 'HOSTLIB_MSKOPT_ADD' not in raw:
         return
     default = field_default(Host, 'mskopt')
@@ -3212,7 +3207,7 @@ def parse_snana_input_file(input_file: Union[str, Path],
     cfg.run._input_lines = raw.lines()
 
     # a command-line-only key nothing consumed is fatal, as in SNANA's
-    # check_argv (sntools.c:11358-11383)
+    # check_argv (sntools.c:11053-11078)
     for key in _ARGV_ONLY_KEYS:
         if key in raw.keys() and key not in raw.used:
             raise SNANAError(
@@ -3229,7 +3224,7 @@ def parse_genpoly(raw):
     """Parse a SNANA GENPOLY into terms, each a float or a (lo, hi) range
     (SNANA 'lo:hi', drawn per SN). Returns [] if unset.
 
-    read_genpoly (sntools.c:11586) accepts 'a0,a1,a2' and the older
+    read_genpoly (sntools.c:11279) accepts 'a0,a1,a2' and the older
     space-separated 'a0 a1 a2'; the latter reaches here already split into a
     list, so commas and whitespace are both treated as separators.
     """

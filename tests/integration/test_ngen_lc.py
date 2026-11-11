@@ -92,7 +92,7 @@ def test_ngen_lc_budget_brake_fires(tmp_path):
 
 
 def test_ngen_lc_scaled_by_ngen_scale(tmp_path):
-    """SNANA scales the NGEN_LC accept-target by NGEN_SCALE (snlc_sim.c:7146)."""
+    """SNANA scales the NGEN_LC accept-target by NGEN_SCALE (snlc_sim.c:7158)."""
     inp = tmp_path / "input.input"
     _write_input(inp, extra="NGEN_LC: 30\nNGEN_SCALE: 2.0\n")
     cfg = parse_snana_input_file(str(inp))

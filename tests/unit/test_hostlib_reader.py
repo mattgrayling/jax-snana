@@ -35,7 +35,7 @@ def test_build_sersic_profiles_none_when_no_morphology():
 
 
 def test_build_sersic_profiles_partial_ab_pair_is_fatal():
-    """a without b (or vice versa) aborts (sntools_host.c:5020-5030)."""
+    """a without b (or vice versa) aborts (sntools_host.c:5317-5327)."""
     data, varnames = _sersic_columns(a0_Sersic=1.5, n0_Sersic=2.0, a_rot=0.0)
     with pytest.raises(SNANAError, match="b0_Sersic"):
         build_sersic_profiles(data, varnames, {})
@@ -43,7 +43,7 @@ def test_build_sersic_profiles_partial_ab_pair_is_fatal():
 
 def test_build_sersic_profiles_missing_index_is_fatal():
     """A component without an n column or fixed header value aborts
-    (sntools_host.c:5086-5110)."""
+    (sntools_host.c:5383-5407)."""
     data, varnames = _sersic_columns(a0_Sersic=1.5, b0_Sersic=1.0, a_rot=0.0)
     with pytest.raises(SNANAError, match="n0_Sersic"):
         build_sersic_profiles(data, varnames, {})
@@ -51,18 +51,18 @@ def test_build_sersic_profiles_missing_index_is_fatal():
 
 def test_build_sersic_profiles_fixed_header_index():
     """n{j}_Sersic given as a fixed header value fills the component index
-    (parse_Sersic_n_fixed, sntools_host.c:3064-3093)."""
+    (parse_Sersic_n_fixed, sntools_host.c:3082-3111)."""
     data, varnames = _sersic_columns(a0_Sersic=1.5, b0_Sersic=1.0, a_rot=10.0)
     prof = build_sersic_profiles(data, varnames, {0: 4.0})
     assert prof['n_prof'] == 1
     np.testing.assert_allclose(prof['n'][:, 0], 4.0)
-    # Single profile with no weight column gets w = 1 (sntools_host.c:5364)
+    # Single profile with no weight column gets w = 1 (sntools_host.c:5661)
     np.testing.assert_allclose(prof['w'][:, 0], 1.0)
 
 
 def test_build_sersic_profiles_infers_missing_weight():
     """With NPROF-1 weights declared, the last is 1 - sum(others)
-    (sntools_host.c:5362-5364); too few weights abort."""
+    (sntools_host.c:5659-5661); too few weights abort."""
     data, varnames = _sersic_columns(
         a0_Sersic=1.5, b0_Sersic=1.0, n0_Sersic=1.0, w0_Sersic=0.3,
         a1_Sersic=0.5, b1_Sersic=0.4, n1_Sersic=4.0,
@@ -83,7 +83,7 @@ def test_build_sersic_profiles_infers_missing_weight():
 
 def test_build_sersic_profiles_bad_weight_sum_is_fatal():
     """All-declared weights summing off unity beyond 1e-3 abort; small
-    truncation slop is renormalised (sntools_host.c:5413-5434)."""
+    truncation slop is renormalised (sntools_host.c:5710-5731)."""
     data, varnames = _sersic_columns(
         a0_Sersic=1.5, b0_Sersic=1.0, n0_Sersic=1.0, w0_Sersic=0.4,
         a1_Sersic=0.5, b1_Sersic=0.4, n1_Sersic=4.0, w1_Sersic=0.4,
@@ -107,7 +107,7 @@ def test_discovery_of_output_columns_and_quantiles():
                 'LOGMASS', 'OBJID2']
     assert zphot_quantile_columns(varnames) == [
         ('ZPHOT_Q5', 5.0), ('ZPHOT_Q050', 50.0), ('ZPHOT_Q95', 95.0)]
-    with pytest.raises(SNANAError, match="21 photo-z quantile columns .* exceed MXBIN_HOSTGALz_QUANTILE = 20"):
+    with pytest.raises(SNANAError, match="21 photo-z quantile columns .* exceed the 20 that SNANA reads"):
         zphot_quantile_columns([f'QZPHOT{i:02d}' for i in range(21)])
     cols = discover_output_only_columns(varnames)
     assert set(cols) == {'ZPHOT', 'ZPHOT_ERR', 'ZPHOT_Q5', 'ZPHOT_Q050',
@@ -116,7 +116,7 @@ def test_discovery_of_output_columns_and_quantiles():
 
 def test_zphot_error_column_found_under_every_spelling_snana_maps():
     """ZPHOT_ERR is the column HOSTLIB_VARNAME_ZPHOT names with ERR or _ERR
-    appended, or ZPHOTERR (sntools_host.c:2988-2996)."""
+    appended, or ZPHOTERR (sntools_host.c:3006-3014)."""
     assert zphot_columns('ZPHOT', ['GALID', 'ZPHOT', 'ZPHOTERR']) == ('ZPHOT', 'ZPHOTERR')
     assert zphot_columns('ZPHOT', ['ZPHOT', 'ZPHOT_ERR']) == ('ZPHOT', 'ZPHOT_ERR')
     assert zphot_columns('PZ', ['PZ', 'PZ_ERR']) == ('PZ', 'PZ_ERR')
@@ -166,7 +166,7 @@ def test_remap_nbr_array_translates_indices_when_sorted():
 
 def test_fixsersic_applies_on_both_cold_and_warm_cache(tmp_path, jax_test_hostlib_path):
     """HOSTLIB_FIXSERSIC writes into the catalogue columns (VALUE_ZSORTED,
-    sntools_host.c:5303-5330). The first read parses the source and reloads
+    sntools_host.c:5600-5627). The first read parses the source and reloads
     through the freshly written cache, so the override has to survive that
     round trip as well as a later warm read."""
     fix = (1.0, 0.5, 4.0, 30.0)
@@ -185,7 +185,7 @@ def test_fixsersic_applies_on_both_cold_and_warm_cache(tmp_path, jax_test_hostli
 def test_scale_sersic_size_reaches_the_catalogue_profiles(tmp_path,
                                                           jax_test_hostlib_path):
     """SNANA scales SERSIC->a/b on the same struct the position, DDLR and
-    GALMAG paths all read (sntools_host.c:5328-5329), so the scale has to
+    GALMAG paths all read (sntools_host.c:5625-5626), so the scale has to
     live on the catalogue profiles rather than on one consumer's copy."""
     plain = read_hostlib(str(jax_test_hostlib_path), essential_columns(),
                          cache_dir=str(tmp_path / "a"))
@@ -199,7 +199,7 @@ def test_scale_sersic_size_reaches_the_catalogue_profiles(tmp_path,
 def test_scale_sersic_size_multiplies_a_fixsersic_value(tmp_path,
                                                         jax_test_hostlib_path):
     """FIXSERSIC resolves the size first and the scale multiplies it, in
-    SNANA's order (sntools_host.c:5303-5329)."""
+    SNANA's order (sntools_host.c:5600-5626)."""
     cat = read_hostlib(str(jax_test_hostlib_path), essential_columns(),
                        cache_dir=str(tmp_path),
                        fixsersic=(1.0, 0.5, 4.0, 30.0), scale_sersic_size=3.0)
@@ -210,7 +210,7 @@ def test_scale_sersic_size_multiplies_a_fixsersic_value(tmp_path,
 
 
 def test_a_property_column_is_kept_under_its_bare_name():
-    """LOGSFR_TRUE in a HOSTLIB is the LOGSFR column (sntools_host.c:2481);
+    """LOGSFR_TRUE in a HOSTLIB is the LOGSFR column (sntools_host.c:2492);
     a file spelling one property both ways is refused."""
     columns = _canonical_properties(
         {"GALID": np.arange(3), "LOGSFR_TRUE": np.ones(3), "LOGMASS": np.zeros(3),
@@ -246,7 +246,7 @@ def _hostlib_without(path, *columns):
 def test_swapzphot_without_its_columns_aborts_by_name(
         jax_test_hostlib_path, tmp_path, dropped):
     """SNANA refuses HOSTLIB_MSKOPT bit 128 without ZPHOT and ZPHOT_ERR
-    (prep_head_HOSTLIB, sntools_host.c:2830-2836). The reader drops a
+    (prep_head_HOSTLIB, sntools_host.c:2848-2854). The reader drops a
     requested column the file lacks, so the abort has to be here, at the
     substitution, rather than a bare KeyError."""
     stripped = tmp_path / "NOZPHOT.HOSTLIB"
@@ -258,10 +258,10 @@ def test_swapzphot_without_its_columns_aborts_by_name(
 
 def test_swapzphot_sorts_the_catalogue_on_the_swapped_column(
         jax_test_hostlib_path, tmp_path):
-    """SNANA swaps while reading and sorts afterwards (sntools_host.c:3228,
+    """SNANA swaps while reading and sorts afterwards (sntools_host.c:3247,
     :193), so the array the redshift window searches is ascending. The
     HOSTLIB z range stays the file's own ZTRUE, which the read loop
-    accumulates before the swap (:3201-3204)."""
+    accumulates before the swap (:3220-3223)."""
     columns = essential_columns() + ["ZPHOT", "ZPHOT_ERR"]
     plain = read_hostlib(str(jax_test_hostlib_path), columns,
                          cache_dir=str(tmp_path))
@@ -277,7 +277,7 @@ def test_swapzphot_sorts_the_catalogue_on_the_swapped_column(
 
 def test_host_coordinates_are_read_under_any_of_their_three_names():
     """RA, RA_HOST and RA_GAL name the host RA, and likewise for DEC
-    (sntools_host.c:2740-2750); each is kept as RA_GAL/DEC_GAL."""
+    (sntools_host.c:2758-2768); each is kept as RA_GAL/DEC_GAL."""
     for ra, dec in (("RA", "DEC"), ("RA_HOST", "DEC_HOST"), ("RA_GAL", "DEC_GAL")):
         columns = _canonical_properties(
             {"GALID": np.arange(2), ra: np.ones(2), dec: np.zeros(2)}, "H.HOSTLIB")
@@ -288,8 +288,8 @@ def test_host_coordinates_are_read_under_any_of_their_three_names():
 
 def test_the_read_time_redshift_window_drops_unreachable_galaxies():
     """A galaxy outside GENRANGE_REDSHIFT widened by 0.01 and three log-z
-    bins is never stored (passCuts_HOSTLIB, sntools_host.c:3147-3156,
-    :3369-3370); a lower edge at or below 0.01 cuts nothing below, as
+    bins is never stored (passCuts_HOSTLIB, sntools_host.c:3165-3174,
+    :3395-3396); a lower edge at or below 0.01 cuts nothing below, as
     SNANA's log10 of a non-positive number compares false."""
     ztrue = np.array([0.003, 0.02, 0.10, 0.1177, 0.1179, 0.5])
     columns = {"ZTRUE": ztrue, "GALID": np.arange(6)}
@@ -312,9 +312,17 @@ def test_the_read_time_redshift_window_drops_unreachable_galaxies():
     assert len(order) == 6
 
 
+def test_a_hostlib_with_no_galaxy_inside_the_cuts_is_refused(tmp_path, jax_test_hostlib_path):
+    """No galaxy left after the read cuts is an error (read_gal_HOSTLIB,
+    sntools_host.c:3269-3274)."""
+    with pytest.raises(SNANAError, match="no galaxy passes the HOSTLIB cuts"):
+        read_hostlib(str(jax_test_hostlib_path), essential_columns(),
+                     cache_dir=str(tmp_path), genrange_redshift=(5.0, 6.0))
+
+
 def test_the_redshift_window_reads_the_file_ztrue_under_swapzphot():
-    """SNANA applies the window to the row as read (sntools_host.c:3179),
-    before SWAPZPHOT overwrites ZTRUE with ZPHOT (:3228), so a galaxy is kept
+    """SNANA applies the window to the row as read (sntools_host.c:3197),
+    before SWAPZPHOT overwrites ZTRUE with ZPHOT (:3247), so a galaxy is kept
     or dropped on its true redshift whatever it is later sorted on."""
     ztrue_file = np.array([0.05, 0.30, 0.60])
     zphot = np.array([0.60, 0.30, 0.05])
@@ -330,10 +338,10 @@ def test_the_redshift_window_reads_the_file_ztrue_under_swapzphot():
 def test_snr_store_keeps_galaxies_whose_brightest_bands_reach_the_ladder():
     """HOSTLIB_SNR_STORE ranks each galaxy's bands by signal-to-noise and
     holds the i-th best to the i-th threshold (passCuts_snr_HOSTLIB,
-    sntools_host.c:8290) over the GENFILTERS bands carrying both a mag and
+    sntools_host.c:8687) over the GENFILTERS bands carrying both a mag and
     an error column; the ratio is (2.5/ln 10)/err with an error below 0 or
     above 9 read as 9 and an error of 0 giving no signal (snr_store_HOSTLIB,
-    :8226). A ladder longer than the bands present aborts (:8310)."""
+    :8623). A ladder longer than the bands present aborts (:8707)."""
     snr = 2.5 / np.log(10.0)
     columns = {
         "ZTRUE": np.full(5, 0.1), "GALID": np.arange(5),

@@ -107,7 +107,7 @@ def _gammadm_setup(bbc_biascor_variants, tmp_path, values, float_gamma0=True, **
 
 def test_gammadm_offset_is_the_biascor_axis_midpoint(bbc_biascor_variants, tmp_path):
     """GAMMADM_OFFSET is (VAL_MIN + VAL_MAX)/2 of the SIM_gammaDM biasCor axis
-    (setup_CELLINFO_biasCor, SALT2mu.c:16225-16228), where VAL_MIN/VAL_MAX are the
+    (setup_CELLINFO_biasCor, SALT2mu.c:16238-16241), where VAL_MIN/VAL_MAX are the
     distinct values widened by half a bin either side (get_BININFO_biasCor_abg,
     :16406-16410). SIM_gammaDM in {0, 0.1} gives a bin of 0.1, a range of -0.05 to
     0.15, and a midpoint of 0.05.
@@ -138,8 +138,8 @@ def test_gammadm_offset_is_the_biascor_axis_midpoint(bbc_biascor_variants, tmp_p
 
 
 def test_gammadm_offset_shifts_every_mu(bbc_biascor_variants, tmp_path):
-    """get_gammadm_host subtracts the offset from the step (SALT2mu.c:16782) and
-    muresid_biasCor adds the step to muFit (:13676), so every biasCor event's mu
+    """get_gammadm_host subtracts the offset from the step (SALT2mu.c:16795) and
+    muresid_biasCor adds the step to muFit (:13689), so every biasCor event's mu
     moves by exactly -GAMMADM_OFFSET. The one-sided sim above puts -0.05 mag on
     all of them.
     """
@@ -154,11 +154,11 @@ def test_gammadm_offset_shifts_every_mu(bbc_biascor_variants, tmp_path):
 
 
 def test_mu_at_sim_reproduces_muresid_biascor(bbc_biascor_variants, tmp_path):
-    """muresid_biasCor's muFit (SALT2mu.c:13596-13676) differs from the fit's mu on
+    """muresid_biasCor's muFit (SALT2mu.c:13609-13689) differs from the fit's mu on
     four counts, each pinned here.
 
     The event's own SIM_alpha and SIM_beta standardise the LC parameters
-    (get_abg_biasCor, :13665), but the host mass step comes from the input parval,
+    (get_abg_biasCor, :13678), but the host mass step comes from the input parval,
     not from the event's SIM_gammaDM: the per-event line is commented out at
     :13622 and the hostPar block at :13628-13634 replaced it in 2019. The step is
     absent unless USE_GAMMA0 (:16776), and muFit adds it where fcn subtracts it
@@ -228,7 +228,7 @@ def test_a_dust_model_biascor_takes_the_input_alpha_and_beta(caplog):
     """A biasCor whose first 20 rows hold a Ia with SIM_AV > 0 is a BS21
     dust model, whose per-event SIM_alpha and SIM_beta are intrinsic draws:
     SNANA overwrites every event's with the input's p1 and p2 before the
-    maps are built (set_DUST_FLAG_biasCor, SALT2mu.c:11930-11997), and the
+    maps are built (set_DUST_FLAG_biasCor, SALT2mu.c:11940-12007), and the
     fit says so. The same sample with SIM_AV = 0 keeps its own values."""
     import logging
 

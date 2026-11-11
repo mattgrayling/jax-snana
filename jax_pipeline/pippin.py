@@ -67,7 +67,7 @@ _DEFAULT_FORMAT_MASK = 48
 #: (biascor.py:84-86, 144, 315); and a SIM task's GENVERSION, which Pippin
 #: replaces with its own (snana_sim.py:90, 647-648)
 _IGNORED_KEYS = {"BATCH_INFO", "BATCH_FILE", "BATCH_REPLACE", "BATCH_MEM", "BATCH_WALLTIME",
-                 "NUM_JOBS", "RESET_CIDOFF", "GPU", "CLEAN", "INI_DIR", "COSMOMC", "CFG_PATH",
+                 "NUM_JOBS", "GPU", "CLEAN", "INI_DIR", "COSMOMC", "CFG_PATH",
                  "APPEND_TABLE_VARLIST", "MASK_FIT", "MAKE_ALL_HUBBLE", "CONSISTENT_SAMPLE",
                  "GENVERSION"}
 #: BIASCOR OPTS that apply to the whole task, read here rather than by SALT2mu
@@ -394,6 +394,10 @@ class _Graph:
         ngen_unit = None
         if "NGEN_UNIT" in global_keys:
             ngen_unit = float(global_keys.pop("NGEN_UNIT"))
+        # and RESET_CIDOFF, 2 meaning 1 when each job is a version (submit_prog_sim.py:976-977)
+        reset_cidoff = int(global_keys.pop("RESET_CIDOFF", 0))
+        if changing and reset_cidoff == 2:
+            reset_cidoff = 1
         # SNANA's batch layer gives each job its own seed unless CIDs are
         # random and the jobs make one version (submit_prog_sim.py:524-533)
         if not changing and format_mask & FORMAT_MASK_CIDRAN:
@@ -437,17 +441,19 @@ class _Graph:
         inputs = ia_inputs + other_inputs
         simulations = []
         for version, version_jobs in versions.items():
-            files, overrides = [], []
+            files, overrides, positions = [], [], []
             for base, tokens, systematics_seed in inputs:
                 for job in version_jobs:
                     files.append(base)
+                    positions.append((job, jobs))
                     # a RANSEED or FORMAT_MASK of the task's own wins
                     override = {"RANSEED": seeds[job], "FORMAT_MASK": format_mask}
                     override.update(tokens)
                     if systematics_seed is not None:
                         override["RANSYSTPAR_RANSEED_SYST"] = systematics_seed * 7 + 41 * (job + 1)
                     overrides.append(override)
-            simulations.append(Sim(version, files, overrides=overrides, ngen_unit=ngen_unit))
+            simulations.append(Sim(version, files, overrides=overrides, ngen_unit=ngen_unit,
+                                   jobs=positions, reset_cidoff=reset_cidoff))
         return simulations, dict(sorted(types.items()))
 
     def read_lcfit(self):
@@ -455,7 +461,7 @@ class _Graph:
             task = _settings("LCFIT", name, task, {"BASE", "MASK", "OPTS", "EXTERNAL_DIRS", "FITOPTS",
                                                    "SNLCINP", "FITINP"})
             # LCFIT OPTS hold settings for Pippin's batch layer, and the
-            # same-events keys submit_batch reads (submit_prog_lcfit.py:733-745)
+            # same-events keys submit_batch reads (submit_prog_lcfit.py:765-777)
             opts = _settings("LCFIT OPTS", name, task.get("OPTS"),
                              {"FLAG_USE_SAME_EVENTS", "OPT_SNCID_LIST"})
             if "BASE" not in task:
@@ -508,7 +514,7 @@ class _Graph:
             self.fitopts_files[name] = loaded
             # submit_batch takes OPT_SNCID_LIST when both keys are given, and
             # uses it when positive; Pippin writes a FITOPTS file's positive
-            # flag over both (snana_fit.py:190; submit_prog_lcfit.py:733-745)
+            # flag over both (snana_fit.py:190; submit_prog_lcfit.py:765-777)
             flag = 0
             for key in ("FLAG_USE_SAME_EVENTS", "OPT_SNCID_LIST"):
                 if key in batch_config:
@@ -1155,7 +1161,7 @@ class _Graph:
                     mode = "unbinned"
             extra = []
             # SNANA reads a label, a scale and a file, the first three words
-            # (create_covariance.py:2712-2715)
+            # (create_covariance.py:2853-2856)
             for entry in opts.get("EXTRA_COVS", []):
                 words = str(entry).split()
                 if len(words) < 3:
@@ -1170,7 +1176,7 @@ class _Graph:
                     raise SNANAError(f"CREATE_COV {name}: invalid EXTRA_COVS scale {words[1]!r}",
                                      function_name="pippin")
                 # SNANA expands variables and reads the file from a job folder of its
-                # own (create_covariance.py:1456, submit_prog_covmat.py:332), so only
+                # own (create_covariance.py:1471, submit_prog_covmat.py:332), so only
                 # absolute paths work
                 path = Path(os.path.expandvars(words[2]))
                 if not path.is_absolute():
@@ -1211,7 +1217,7 @@ class _Graph:
 
     def _cov_scales(self, name, opts, bbc_tasks) -> dict[str, dict[str, float]]:
         """Each BBC fit's systematic scales, by fit name, as Pippin and SNANA
-        take them (create_cov.py:234-283, create_covariance.py:1083). Later
+        take them (create_cov.py:234-283, create_covariance.py:1098). Later
         sources override earlier ones: the BIASCOR task's MUOPT SCALEs; a
         FITOPTS file's scales, SYS_SCALE's or else that of the first task
         whose DATA was fitted with one; FITOPT_SCALES; MUOPT_SCALES. A label
@@ -1268,12 +1274,13 @@ class _Graph:
         for name, task in wfit.items():
             task = _settings("COSMOFIT WFIT", name, task, {"MASK", "OPTS"})
             opts = _settings("COSMOFIT WFIT OPTS", name, task.get("OPTS"),
-                             {"WFITOPTS", "WFITOPT_GLOBAL", "BLIND_DATA", "BLIND_SIM", "COVOPT", "COVOPTS"})
+                             {"WFITOPTS", "WFITOPT_GLOBAL", "BLIND_DATA", "BLIND_SIM", "COVOPT", "COVOPTS",
+                              "USE_COVTOT_FACTORIZED", "USE_COVSYS_INV"})
             if not opts.get("WFITOPTS"):
                 raise SNANAError(f"COSMOFIT {name}: WFITOPTS must name at least one fit",
                                  function_name="pippin")
             # SNANA blinds data, and not simulations, unless told otherwise
-            # (submit_prog_cosmofit.py:698-750); wfit tells them apart itself
+            # (submit_prog_cosmofit.py:732-784); wfit tells them apart itself
             blind_data = opts.get("BLIND_DATA", True)
             blind_sim = opts.get("BLIND_SIM", False)
             if blind_data and blind_sim:
@@ -1286,7 +1293,7 @@ class _Graph:
             else:
                 blind_mode = "none"
             # COVOPTS, else COVOPT, picks the covariances fitted, by label
-            # (submit_prog_cosmofit.py:103, 272-275)
+            # (submit_prog_cosmofit.py:103, 274-277)
             selected = None
             for key in ("COVOPT", "COVOPTS"):
                 if key in opts:
@@ -1333,7 +1340,7 @@ class _Graph:
                                          f"/label/", function_name="pippin")
                     label = label.strip()
                 flags = f"{flags} {global_flags}"
-                # SNANA refuses -blind in any WFITOPT (submit_prog_cosmofit.py:719-732)
+                # SNANA refuses -blind in any WFITOPT (submit_prog_cosmofit.py:753-766)
                 if "-blind" in flags:
                     raise SNANAError(f"COSMOFIT {name}: -blind cannot be a WFITOPT; set BLIND_DATA "
                                      f"and BLIND_SIM", function_name="pippin")
@@ -1341,14 +1348,18 @@ class _Graph:
                 overrides["blind_mode"] = blind_mode
                 for covariance in matched:
                     # SNANA makes no fit of a covariance none of whose labels
-                    # is selected (submit_prog_cosmofit.py:581-599)
+                    # is selected (submit_prog_cosmofit.py:608-628)
                     if not covopts_of[covariance.name]:
                         continue
                     stage_name = f"WFIT_{name}_{label}"
                     if len(matched) > 1:
                         stage_name = f"{stage_name}_{covariance.name}"
-                    cosmology = Cosmology(stage_name, covariance=covariance, overrides=overrides,
-                                          covopts=covopts_of[covariance.name])
+                    # the covariance form wfit reads (submit_prog_cosmofit.py:533-543)
+                    cosmology = Cosmology(
+                        stage_name, covariance=covariance, overrides=overrides,
+                        covopts=covopts_of[covariance.name],
+                        use_covtot_factorized=opts.get("USE_COVTOT_FACTORIZED", True),
+                        use_covsys_inv=opts.get("USE_COVSYS_INV", True))
                     self.cosmologies.append(cosmology)
 
 

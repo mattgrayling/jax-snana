@@ -23,13 +23,14 @@ import numpy as np
 
 from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import open_text
+from jax_snlc_core.snana_files import leading_values, line_words, open_text, skip_docana
 from jax_snlc_core.utils import eval_genpoly
 
 logger = logging.getLogger(__name__)
 
 
 DZTRUEMAX = 0.01  # DZTRUEMAX_WRONGHOST, sntools_wronghost.h
+ORDER_PROB_WRONGHOST_POLY = 4  # the older space-separated cubic, sntools_wronghost.h:3
 
 
 class WrongHostTable(NamedTuple):
@@ -42,55 +43,53 @@ class WrongHostTable(NamedTuple):
 
 
 def read_wronghost_file(path: str, zmin: float, zmax: float) -> WrongHostTable:
-    """Parse a WRONGHOST_FILE.
+    """Parse a WRONGHOST_FILE (init_WRONGHOST, sntools_wronghost.c:85-145).
 
     Format:
-        PROB_WRONGHOST_POLY: c0, c1, c2, ...    # P(z) = c0 + c1*z + c2*z^2 + ...
-        ZTRUE  ZMATCH
+        # PROB_WRONGHOST_POLY: c0,c1,c2,...    P(z) = c0 + c1*z + c2*z^2 + ...
+        # ZTRUE  ZMATCH
         0.05   0.08
         0.10   0.12
         ...
 
-    ``path`` is the wrong-host file; ``zmin``/``zmax`` are the SN redshift
-    range (from GENRANGE_REDSHIFT). Returns the :class:`WrongHostTable`.
+    The key is read wherever it stands, even on a comment line, where
+    SNANA's own files keep it; its value is one comma-separated list, or
+    SNANA's older four space-separated cubic coefficients, and words after
+    it are passed over (sntools_wronghost.c:87-101). Every other line
+    outside comments is a ZTRUE ZMATCH pair. ``path`` is the wrong-host
+    file; ``zmin``/``zmax`` are the SN redshift range (from
+    GENRANGE_REDSHIFT). Returns the :class:`WrongHostTable`.
     """
     poly_coeffs = None
-    ztrue_list = []
-    zmatch_list = []
-
+    rows = []
     key = 'PROB_WRONGHOST_POLY:'
     with open_text(path) as f:
-        for line in f:
-            parts = line.split()
-            if not parts:
-                continue
-
-            # no comment syntax: the key counts on a '#' line (sntools_wronghost.c:85-90)
-            if key in parts:
-                coeffs = parts[parts.index(key) + 1:]
-                joined = ''.join(coeffs) if ',' in ''.join(coeffs) else None
-                if joined:
-                    poly_coeffs = np.array(
-                        [float(x) for x in joined.split(',') if x])
-                else:
-                    poly_coeffs = np.array([float(x) for x in coeffs])
-                continue
-
-            # a row that is not two numbers is header or comment text
-            if len(parts) >= 2:
+        for line in skip_docana(f):
+            words = line.split()
+            if key in words:
+                if poly_coeffs is not None:
+                    raise SNANAError(f"{path} has more than one {key}",
+                                     function_name="read_wronghost_file")
+                values = line_words(' '.join(words[words.index(key) + 1:]))
+                first = leading_values(path, key, values, 1)[0]
+                coeffs = (first.split(',') if ',' in first
+                          else leading_values(path, key, values, ORDER_PROB_WRONGHOST_POLY))
                 try:
-                    zt = float(parts[0])
-                    zm = float(parts[1])
+                    poly_coeffs = np.array([float(c) for c in coeffs])
                 except ValueError:
-                    continue
-                ztrue_list.append(zt)
-                zmatch_list.append(zm)
+                    raise SNANAError(f"{path}: {key} {' '.join(values)} is not a list of "
+                                     f"numbers", function_name="read_wronghost_file") from None
+            elif words := line_words(line):
+                try:
+                    rows.append([float(z) for z in leading_values(path, 'ZTRUE ZMATCH', words, 2)])
+                except ValueError:
+                    raise SNANAError(f"{path}: '{line.strip()}' is not a ZTRUE ZMATCH pair",
+                                     function_name="read_wronghost_file") from None
 
     if poly_coeffs is None:
         raise SNANAError(f"PROB_WRONGHOST_POLY not found in {path}")
 
-    ztrue = np.array(ztrue_list)
-    zmatch = np.array(zmatch_list)
+    ztrue, zmatch = np.array(rows, dtype=np.float64).reshape(-1, 2).T
 
     sort_idx = np.argsort(ztrue)
     ztrue = ztrue[sort_idx]

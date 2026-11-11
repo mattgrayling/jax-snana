@@ -4,7 +4,7 @@ SNANA defines three APPLY_CUTWIN_OPT modes:
   * 0: track CUTMASK but do not gate selection on it.
   * 1: gate selection on all CUTWIN cuts (default in production).
   * 3: gate selection as mode 1, and additionally route CUTWIN-rejected
-       events into the SIMGEN dump (snlc_sim.c:16925-16926).
+       events into the SIMGEN dump (snlc_sim.c:16945-16946).
 """
 
 from pathlib import Path
@@ -96,7 +96,7 @@ def test_apply_cutwin_opt3_gates_exactly_as_opt1(
         snana_fixture, tmp_path, cutwin_opt_results):
     """OPT=3 accepts the same events as OPT=1; only the dump differs.
 
-    `doReject_SIMGEN_DUMP` (snlc_sim.c:16925-16926) turns OPT=3 into a dump
+    `doReject_SIMGEN_DUMP` (snlc_sim.c:16945-16946) turns OPT=3 into a dump
     flag on the CUTWIN reject stage, so the accepted set is untouched.
     `test_opt3_dump_rows_carry_snrmax` covers the dump side.
     """
@@ -113,7 +113,7 @@ def test_apply_cutwin_opt3_gates_exactly_as_opt1(
         err_msg="OPT=3 accepted a different set of events from OPT=1")
 
 
-# --- CUTWIN_TGAPMAX / T0GAPMAX / PEAKMAG (snlc_sim.c:24379-24417, :24558-24637) ---
+# --- CUTWIN_TGAPMAX / T0GAPMAX / PEAKMAG (snlc_sim.c:24431-24469, :24610-24689) ---
 #
 # Each cut must change the accept count: before these were implemented every one
 # of them parsed, applied nothing, and warned nothing.
@@ -145,7 +145,7 @@ def test_new_cutwin_keys_actually_cut(gap_baseline, tmp_path, key, window):
 
 def test_tgapmax_sentinel_fails_a_bounded_window(gap_baseline, tmp_path):
     """SNANA leaves TGAPMAX at -99999 when under two epochs qualify
-    (snlc_sim.c:9563), so such events fail any window with a finite lower
+    (snlc_sim.c:9574), so such events fail any window with a finite lower
     bound. EPCUTWIN_LAMREST starves the epoch list to force that state.
     """
     fx, _, _ = gap_baseline
@@ -157,7 +157,7 @@ def test_tgapmax_sentinel_fails_a_bounded_window(gap_baseline, tmp_path):
 
 def test_opt3_dump_rows_carry_snrmax(snana_fixture, tmp_path):
     """CUTWIN-rejected dump rows keep their real SNRMAX: gen_cutwin fills
-    SNRMAX_SORTED before the CUTWIN decision (snlc_sim.c:24300-24329), so
+    SNRMAX_SORTED before the CUTWIN decision (snlc_sim.c:24352-24381), so
     only events rejected before gen_cutwin keep the -9 init (:9615)."""
     import re
     fx = snana_fixture("cutwin_parity")

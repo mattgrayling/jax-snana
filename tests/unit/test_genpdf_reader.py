@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_sim.genpdf import (load_all_genpdf, parse_genpdf_file, sample_genpdf,
                                         sample_genpdf_conditional)
 
@@ -88,6 +89,28 @@ PDF: 0.0 1.0
     maps, _ = parse_genpdf_file(path)
     assert "x" in maps
     assert "should_be_ignored" not in maps
+
+
+def test_parse_genpdf_rows_take_comments_and_comma_names(tmp_path):
+    """A map row may end in a comment (read_GRIDMAP ignores comments on
+    valid rows, sntools_gridmap.c:76-79) and VARNAMES may be
+    comma-separated (store_PARSE_WORDS); a blank line ends the map, so a
+    row after it is not read, but a comment line does not
+    (sntools_gridmap.c:116-123)."""
+    path = _write(tmp_path, "PDF: 9.0 1.0\nVARNAMES: x,PROB\nPDF: 0.0 1.0  # peak\n"
+                            "# a note\nPDF: 1.0 0.5 ! tail\n\nPDF: 2.0 0.2\n")
+    maps, _ = parse_genpdf_file(path)
+    assert maps["x"]["varnames"] == ["x", "PROB"]
+    np.testing.assert_array_equal(maps["x"]["data"], [[0.0, 1.0], [1.0, 0.5]])
+
+
+@pytest.mark.parametrize("content, message", [
+    ("VARNAMES: x PROB\nPDF: 0.0\n", "takes 2 value"),
+    ("VARNAMES: x PROB\n", "has no PDF rows"),
+])
+def test_parse_genpdf_rejects_unreadable_maps(tmp_path, content, message):
+    with pytest.raises(SNANAError, match=message):
+        parse_genpdf_file(_write(tmp_path, content))
 
 
 # ----------------------------------------------------------------------------

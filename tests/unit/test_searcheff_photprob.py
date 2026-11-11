@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import MAG_UNDEFINED
 from jax_snlc_sim.detection import (
     IVARABS_SNR, PhotoprobMap, evaluate_photprob, prepare_photprob,
@@ -79,8 +80,8 @@ def test_reader(photprob_file):
     assert len(m.cdf_bins) == 5
     assert np.allclose(m.cdf_bins, [0, 0.25, 0.5, 0.75, 1.0])
     assert np.allclose(m.grid_cdf[:, -1], 1.0)
-    assert m.valmin[0] == 0.0
-    assert m.valmax[0] == 50.0
+    assert m.grid_axes[0][0] == 0.0
+    assert m.grid_axes[0][-1] == 50.0
 
 
 def test_cdf_normalization(photprob_file):
@@ -103,7 +104,6 @@ def _flat_map():
         grid_cdf=np.array([[0.25, 0.5, 0.75, 1.0],
                            [0.25, 0.5, 0.75, 1.0]]),
         cdf_bins=np.array([0.0, 0.25, 0.5, 0.75, 1.0]),
-        valmin=np.array([5.0]), valmax=np.array([10.0]),
     )
 
 
@@ -115,7 +115,6 @@ def _skewed_map():
         grid_cdf=np.array([[0.8, 0.9, 0.95, 1.0],
                            [0.8, 0.9, 0.95, 1.0]]),
         cdf_bins=np.array([0.0, 0.25, 0.5, 0.75, 1.0]),
-        valmin=np.array([5.0]), valmax=np.array([10.0]),
     )
 
 
@@ -198,7 +197,6 @@ def test_cutval():
                            [0.25, 0.5, 0.75, 1.0]]),
         cdf_bins=np.array([0.0, 0.25, 0.5, 0.75, 1.0]),
         cutval=0.5,
-        valmin=np.array([1.0]), valmax=np.array([50.0]),
     )
     n = 10000
     pp, pp_pass = _eval_photprob(
@@ -223,7 +221,6 @@ def test_filter_restriction():
         grid_cdf=np.array([[0.5, 1.0], [0.5, 1.0]]),
         cdf_bins=np.array([0.0, 0.5, 1.0]),
         filterlist="ri",
-        valmin=np.array([1.0]), valmax=np.array([50.0]),
     )
     snr = np.full((1, 6), 10.0)
     filt = np.array([[0, 1, 2, 3, 4, 5]])
@@ -250,7 +247,6 @@ def test_require_detection():
         grid_cdf=np.array([[0.5, 1.0], [0.5, 1.0]]),
         cdf_bins=np.array([0.0, 0.5, 1.0]),
         require_detection=True,
-        valmin=np.array([1.0]), valmax=np.array([50.0]),
     )
     snr = np.full((1, 4), 10.0)
     det = np.array([[True, False, True, False]])
@@ -287,7 +283,6 @@ def test_reduced_corr():
             grid_cdf=np.tile(np.linspace(0.01, 1.0, 100), (2, 1)),
             cdf_bins=np.linspace(0.0, 1.0, 101),
             reduced_corr=rho,
-            valmin=np.array([1.0]), valmax=np.array([50.0]),
         )
 
     pp, _ = _eval_photprob([_build(0.9)], snr, filt, ["r"], det, valid, z)
@@ -362,15 +357,13 @@ def test_no_maps():
 
 
 # =============================================================================
-# Reader validation + map-overlap fatal (SNANA sntools_trigger.c:2589-2594)
+# Reader validation + map-overlap fatal (SNANA sntools_trigger.c:2591-2596)
 # =============================================================================
 
 
 def test_overlapping_maps_fatal():
     """Two maps matching the same (field, filter) abort, as SNANA does on
-    NMATCH>1 in setObs_for_PHOTPROB (sntools_trigger.c:2589-2594)."""
-    from jax_snlc_core.logging import SNANAError
-
+    NMATCH>1 in setObs_for_PHOTPROB (sntools_trigger.c:2591-2596)."""
     def _map(filterlist):
         return PhotoprobMap(
             name=f"TEST_{filterlist}", varnames=["SNR"], ivarabs=[IVARABS_SNR],
@@ -379,7 +372,6 @@ def test_overlapping_maps_fatal():
             grid_cdf=np.array([[0.5, 1.0], [0.5, 1.0]]),
             cdf_bins=np.array([0.0, 0.5, 1.0]),
             filterlist=filterlist,
-            valmin=np.array([1.0]), valmax=np.array([50.0]),
         )
 
     with pytest.raises(SNANAError, match="PHOTPROB maps match"):
@@ -392,8 +384,6 @@ def test_overlapping_maps_fatal():
 def test_reader_rejects_zero_mass_and_duplicate_rows(tmp_path):
     """A ROW whose weights sum to zero, or a repeated grid coordinate, is
     malformed input and fatal."""
-    from jax_snlc_core.logging import SNANAError
-
     header = (
         "DOCUMENTATION:\n    PURPOSE: test\nDOCUMENTATION_END:\n"
         "MAPNAME_PHOTPROB: TEST_BAD\nNVAR: 3\n"
@@ -409,8 +399,27 @@ def test_reader_rejects_zero_mass_and_duplicate_rows(tmp_path):
                     "ROW: 50.0 0.5 0.5\nENDMAP:\n")
     path2 = tmp_path / "dup_rows.DAT"
     path2.write_text(dup)
-    with pytest.raises(SNANAError, match="more than once"):
+    with pytest.raises(SNANAError, match="exactly one row"):
         read_pipeline_eff_file(str(path2), 0, 0).photprob_maps
+
+
+@pytest.mark.parametrize("block, message", [
+    ("VARNAMES: SNR PHOTPROB_WGTLIST\nROW: 1.0 1.0\nENDMAP:\n", "needs NVAR before"),
+    ("NVAR: 2\nVARNAMES: SNR\nROW: 1.0 1.0\nENDMAP:\n", "ending in PHOTPROB_WGTLIST"),
+    ("NVAR: 2\nVARNAMES: SNR PHOTPROB_WGTLIST\nROW: 1.0\nENDMAP:\n", "takes 2 value"),
+    ("NVAR: 2\nVARNAMES: SNR PHOTPROB_WGTLIST\nROW: 1.0 1.0\n", "has no ENDMAP"),
+    ("NVAR: 2\nVARNAMES: SNR PHOTPROB_WGTLIST\nENDMAP:\n", "has no rows"),
+])
+def test_reader_requires_what_snana_reads_from_a_photprob_map(tmp_path, block, message):
+    """readMap_SEARCHEFF_PHOTPROB (sntools_trigger.c:537-660) sizes each row
+    by NVAR and reads VARNAMES up to PHOTPROB_WGTLIST; a map without them,
+    a short row, an unclosed map or a map with no rows is an error rather
+    than misread."""
+    path = tmp_path / "photprob.DAT"
+    path.write_text("DOCUMENTATION:\n    PURPOSE: test\nDOCUMENTATION_END:\n"
+                    "MAPNAME_PHOTPROB: TEST\n" + block)
+    with pytest.raises(SNANAError, match=message):
+        read_pipeline_eff_file(str(path), 0, 0)
 
 
 def test_reduced_corr_spans_maps():
@@ -433,7 +442,6 @@ def test_reduced_corr_spans_maps():
             cdf_bins=np.linspace(0.0, 1.0, 101),
             filterlist=filterlist,
             reduced_corr=rho,
-            valmin=np.array([1.0]), valmax=np.array([50.0]),
         )
 
     pp, _ = _eval_photprob(
@@ -461,8 +469,7 @@ def test_fieldlist_matches_substrings_across_simlib_entries():
         name="TEST", varnames=["SNR"], ivarabs=[IVARABS_SNR], nvar_map=1,
         nfun_cdf=100, grid_axes=[np.array([1.0, 50.0])],
         grid_cdf=np.tile(np.linspace(0.01, 1.0, 100), (2, 1)),
-        cdf_bins=np.linspace(0.0, 1.0, 101), fieldlist="C3+X1+UNUSED",
-        valmin=np.array([1.0]), valmax=np.array([50.0]))
+        cdf_bins=np.linspace(0.0, 1.0, 101), fieldlist="C3+X1+UNUSED")
     resolve_fieldlist_indices([m], ["C3", "X1", "E2", "C3", "X"])
     np.testing.assert_array_equal(m.fieldlist_mask,
                                   [True, True, False, True, True])

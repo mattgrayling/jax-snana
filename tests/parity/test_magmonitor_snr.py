@@ -2,8 +2,8 @@
 
 The monitor SNR is what a fixed-magnitude source would reach under each epoch's
 observing conditions: SNANA swaps the SN's own shot noise for the monitor's
-(snlc_sim.c:27887) and then rescales by whatever factor the reported error was
-fudged by (:28193). Because it reuses the epoch's real sky, CCD, template and
+(snlc_sim.c:27945) and then rescales by whatever factor the reported error was
+fudged by (:28251). Because it reuses the epoch's real sky, CCD, template and
 zero-point terms, it is a direct check that jax's noise bookkeeping matches
 SNANA component by component, independent of the SN flux itself.
 

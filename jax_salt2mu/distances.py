@@ -21,7 +21,7 @@ BIAS_ON_MU = ("mu",)
 def mu_at(zref, config, *, n_pad=None):
     """Reference distance modulus, or muref_zpoly standing in for the cosmology.
 
-    cosmodl's polynomial branch (SALT2mu.c:25755) returns dl = 10^(0.2*muref - 5)
+    cosmodl's polynomial branch (SALT2mu.c:25789) returns dl = 10^(0.2*muref - 5)
     and leaves before the (1+zhel) factor at :25784, so mu = 5log10(dl) + 25 is the
     polynomial itself and zhel never enters.
     """
@@ -40,14 +40,14 @@ def mu_at(zref, config, *, n_pad=None):
 
 
 def mu_at_sim(model, tv, sim, coeffs, config, gammadm_offset):
-    """muFit of muresid_biasCor (SALT2mu.c:13596-13676) for a biasCor event.
+    """muFit of muresid_biasCor (SALT2mu.c:13609-13689) for a biasCor event.
 
     The LC parameters standardised at the event's own SIM coefficients, plus the
     host mass step. SNANA builds that step from the input parval, not from the
-    event's SIM_gammaDM (:13628-13634; the per-event line is commented out at
-    :13622), leaves it out entirely unless USE_GAMMA0 (:16776), and adds it where
-    fcn subtracts it (:13676 against :5477). With the bias on mu every
-    coefficient keeps the input parval too (:13658-13661).
+    event's SIM_gammaDM (:13641-13647; the per-event line is commented out at
+    :13635), leaves it out entirely unless USE_GAMMA0 (:16789), and adds it where
+    fcn subtracts it (:13689 against :5487). With the bias on mu every
+    coefficient keeps the input parval too (:13671-13674).
     """
     gate = use_gamma0(model, config)
     nuis = {n: parval(config, n) for n in model.nuisance_spec}
@@ -70,7 +70,7 @@ def mu_at_sim(model, tv, sim, coeffs, config, gammadm_offset):
 
 def bias_parameters(model, config) -> tuple:
     """The parameters the biasCor corrects: the LC parameters, or mu alone under
-    opt_biascor bit MASK_BIASCOR_MU (ILCPAR_MIN/MAX, SALT2mu.c:11315). A model
+    opt_biascor bit MASK_BIASCOR_MU (ILCPAR_MIN/MAX, SALT2mu.c:11325). A model
     whose one LC parameter is the distance corrects it either way."""
     if config.opt_biascor & MASK_BIASCOR_MU and len(model.lcpar_names) > 1:
         return BIAS_ON_MU
@@ -81,7 +81,7 @@ def bias_values(model, biascor_tv, config):
     """Each biasCor event's fitted and true bias parameters, ``{name: array}``
     each. For the bias on mu the fitted value is mu at the event's own SIM
     coefficients less M0 and its SIM mass step, the true one SIM_MUz
-    (compute_more_TABLEVAR, SALT2mu.c:9149-9161)."""
+    (compute_more_TABLEVAR, SALT2mu.c:9159-9171)."""
     if bias_parameters(model, config) != BIAS_ON_MU:
         return dict(biascor_tv.lcpar), model.sim_lcpar(biascor_tv)
     sim = biascor_tv.sim_truth
@@ -131,8 +131,8 @@ def mu_lcpar_coef(model, names, nuis, z, logmass, u_flags):
 
 
 def mu_variance_scaled(v, cov, zhd, lensing_zpar, sigint_sq=0.0, xp=np):
-    """The part of fcn_muerrsq (SALT2mu.c:6134) that muCOVscale multiplies: LC fit +
-    intrinsic + lensing. The vpec term is the part it leaves alone (:5468), so that
+    """The part of fcn_muerrsq (SALT2mu.c:6144) that muCOVscale multiplies: LC fit +
+    intrinsic + lensing. The vpec term is the part it leaves alone (:5478), so that
     stays separate: add ``muerr_vpec_sq`` for the whole mu-variance.
 
     ``v`` is ``d(mu)/d(lcpar)`` as ``[n, k]`` from ``mu_lcpar_coef`` or

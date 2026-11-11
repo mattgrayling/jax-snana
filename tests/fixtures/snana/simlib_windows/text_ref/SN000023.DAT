@@ -4,12 +4,14 @@ ZP_FLUXCAL:  31.40  # mag = ZP_FLUXCAL - 2.5*log10(FLUXCAL)
 SNTYPE:   1    # integer type; e.g. spec or phot classification
 RA:       180.000000  # deg (avg among obs)
 DEC:      -45.000000  # deg (avg among obs)
+FIELD:    TOY_B 
 FILTERS:  ugrizY
 PIXSIZE:  0.2000  # arcsec 
 FAKE:     2  # simulated with snlc_sim.exe 
 MWEBV:    0.0000 +- 0.0000  # MW E(B-V) 
 MWXT_MAG:  0.000 0.000 0.000 0.000 0.000 0.000  # MW mag-XT per band
 PEAKMJD:  61020.297     # estimate for LC fit codes
+SEASON_INDEX:     -9 
 MJD_TRIGGER:       61009.387  
 MJD_DETECT_FIRST:  61009.387  
 MJD_DETECT_LAST:   61065.715  
@@ -20,8 +22,8 @@ MASK_REDSHIFT_SOURCE:   2 # grep MASK_REDSHIFT_SOURCE sndata.h
 VPEC:                 0.00 +- 0.00      # v_pec correction
 LENSDMU:             0.000 +- 0.000      # DMU from lensing
 
-HOSTGAL_NMATCH:      0  
-HOSTGAL_NMATCH2:     0  
+HOSTGAL_NMATCH:      -9  
+HOSTGAL_NMATCH2:     -9  
 
 # SIM-truth values
 SIM_MODEL_NAME:      SALT3.K21  

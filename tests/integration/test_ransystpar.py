@@ -1,4 +1,4 @@
-"""RANSYSTPAR draw semantics (SNANA prep_RANSYSTPAR, snlc_sim.c:8135-8349).
+"""RANSYSTPAR draw semantics (SNANA prep_RANSYSTPAR, snlc_sim.c:8150-8364).
 
 Draws are random per job, so there is no SNANA reference to replay; the knob
 EFFECTS are covered by the knobs' own parity fixtures. Here: drawn values
@@ -205,7 +205,7 @@ def test_shifts_land_before_the_counts_are_resolved(tmp_path):
 
 def test_sigshift_zp_multi_group_reads_one_value_per_group(tmp_path):
     """SNANA reads one value per comma-separated filter group
-    (parse_input_RANSYSTPAR, snlc_sim.c:4706-4738)."""
+    (parse_input_RANSYSTPAR, snlc_sim.c:4718-4750)."""
     from jax_snlc_sim.systematics import _filter_groups
     sig = _filter_groups({'SIGSHIFT_ZP(gr,iz)': ['0.01', '0.02']},
                          'SIGSHIFT_ZP', 'griz')
@@ -215,7 +215,7 @@ def test_sigshift_zp_multi_group_reads_one_value_per_group(tmp_path):
 
 def test_sigshift_zp_bare_key_takes_one_value_per_filter(tmp_path):
     """The bare key expands to one group per GENFILTERS filter, so it takes
-    NFILT values; a wrong count is fatal (snlc_sim.c:4706-4728)."""
+    NFILT values; a wrong count is fatal (snlc_sim.c:4718-4740)."""
     from jax_snlc_sim.systematics import _filter_groups
     sig = _filter_groups({'SIGSHIFT_ZP': ['0.01', '0.02', '0.03']},
                          'SIGSHIFT_ZP', 'gri')
@@ -225,7 +225,7 @@ def test_sigshift_zp_bare_key_takes_one_value_per_filter(tmp_path):
 
 
 def test_sigshift_zphot_host_keeps_higher_order_bias(tmp_path):
-    """SNANA assigns only HOSTLIB_GENZPHOT_BIAS[0] (snlc_sim.c:8199-8205)."""
+    """SNANA assigns only HOSTLIB_GENZPHOT_BIAS[0] (snlc_sim.c:8214-8220)."""
     from jax_snlc_sim.systematics import prep_ransystpar
     cfg = _config_with(tmp_path, None, "zphot")
     cfg.host.genzphot_bias = [0.0, 0.5, -0.2]
@@ -238,7 +238,7 @@ def test_sigshift_zphot_host_keeps_higher_order_bias(tmp_path):
 
 def test_ranseed_gen_overrides_the_generation_seed(tmp_path):
     """RANSYSTPAR_RANSEED_GEN re-seeds generation after the systematic draws
-    (prep_RANSYSTPAR, snlc_sim.c:8335-8341), so the run generates with it
+    (prep_RANSYSTPAR, snlc_sim.c:8350-8356), so the run generates with it
     while the systematics keep whichever seed drew them. It reaches
     Run.random_seed, which every draw in the run now reads, with or without
     RANSEED_SYST beside it."""

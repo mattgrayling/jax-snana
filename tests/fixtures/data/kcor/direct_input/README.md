@@ -1,7 +1,7 @@
 # Direct calibration input fixture
 
-The recorded FITS files were generated with the local SNANA `kcor.exe` on 9 October
-2026, using `kcor.exe <input> SKIPKCOR`. The input and all of its
+The recorded FITS files were generated with SNANA v12_02f `kcor.exe`, using
+`kcor.exe <input> SKIPKCOR`, with the `CWD` card set to `.`. The input and all of its
 spectra and transmission curves are included, so the regression tests need
 neither SNANA nor its data tree.
 

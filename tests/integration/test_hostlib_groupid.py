@@ -88,7 +88,7 @@ def _write_groupid_simlib(out: Path, src_simlib: Path,
 
 @pytest.mark.parametrize("key", ["GROUPID_HOSTLIB", "HOSTLIB_GROUPID"])
 def test_groupid_key_spellings(tmp_path, lsst_simlib_path, key):
-    """Both spellings SNANA accepts (snlc_sim.c:22249) reach the entry."""
+    """Both spellings SNANA accepts (snlc_sim.c:22290) reach the entry."""
     simlib = tmp_path / "groupid.SIMLIB"
     _write_groupid_simlib(simlib, lsst_simlib_path, key=key)
     data = read_simlib(str(simlib), cache_dir=tmp_path / "cache")
@@ -218,7 +218,7 @@ def test_groupid_selection_restricts_hosts_to_field_set(groupid_fixture):
 
 def test_groupid_headers_inert_without_the_key(groupid_fixture_no_key):
     """SNANA reads the SIMLIB's GROUPID header only when USE_SIMLIB_GROUPID is
-    set (RDFLAG_GROUPID, snlc_sim.c:22115); without it the header is inert and
+    set (RDFLAG_GROUPID, snlc_sim.c:22154); without it the header is inert and
     hosts are drawn from the whole catalogue.
 
     jax previously applied GROUPID matching whenever the header was present.
@@ -237,7 +237,7 @@ def test_groupid_headers_inert_without_the_key(groupid_fixture_no_key):
 def test_groupid_without_hostlib_column_aborts(tmp_path, lsst_simlib_path,
                                                 jax_test_hostlib_path):
     """SIMLIB demands a GROUPID the HOSTLIB has no column for -> fatal, as in
-    MATCH_GROUPID_HOSTLIB (sntools_host.c:6718)."""
+    MATCH_GROUPID_HOSTLIB (sntools_host.c:7156)."""
     from jax_snlc_core.logging import SNANAError
 
     simlib = tmp_path / "JAX_TEST_GROUPID.SIMLIB"

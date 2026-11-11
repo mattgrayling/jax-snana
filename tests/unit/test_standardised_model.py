@@ -77,7 +77,7 @@ def test_compute_mu_salt_and_bayesn():
     np.testing.assert_array_equal(np.asarray(zero_on), np.asarray(zero_off))
 
     # GAMMADM_OFFSET, the midpoint of the biasCor SIM_gammaDM range, is
-    # subtracted from the step (SALT2mu.c:16782), so mu gains it back.
+    # subtracted from the step (SALT2mu.c:16795), so mu gains it back.
     offset_host = {**host, "gammadm_offset": 0.02}
     shifted = SALTModel.compute_mu(lcpar, {**_NUIS, "gamma0": 0.06},
                                    offset_host, {})
@@ -91,7 +91,7 @@ def test_compute_mu_salt_and_bayesn():
 
 def test_use_gamma0_shuts_the_mass_step_before_it_divides():
     """get_gammadm_host returns zero before reading dgamma_dz or logmass_tau when
-    USE_GAMMA0 is off (SALT2mu.c:16776). SNANA's parval holds logmass_tau at 0
+    USE_GAMMA0 is off (SALT2mu.c:16789). SNANA's parval holds logmass_tau at 0
     unless p8 is given, so an ungated step divides by zero there."""
     lcpar = {"mB": jnp.array([15.0]), "x1": jnp.array([1.0]), "c": jnp.array([0.1])}
     nuis = {**_NUIS, "gamma0": 0.0, "dgamma_dz": 0.05, "logmass_tau": 0.0}
@@ -138,7 +138,7 @@ def test_model_declarations():
     # the nuisance slots are SNANA's p<N> numbers
     assert SALTModel.nuisance_spec["alpha0"][3] == 1
     assert SALTModel.nuisance_spec["dbeta_dlogm"][3] == 16
-    # and the bounds are set_fitPar's (SALT2mu.c:22354-22369)
+    # and the bounds are set_fitPar's (SALT2mu.c:22368-22383)
     assert {name: spec[1:3] for name, spec in SALTModel.nuisance_spec.items()} == {
         "alpha0": (0.02, 0.30), "beta0": (1.0, 6.0),
         "dalpha_dz": (-0.5, 0.5), "dbeta_dz": (-3.0, 3.0),
@@ -168,7 +168,7 @@ def test_read_lcpar_and_covariance():
     assert cov.shape == (2, 3, 3)
     np.testing.assert_allclose(cov, np.transpose(cov, (0, 2, 1)))   # symmetric
     np.testing.assert_allclose(cov[:, 1, 1], [0.04, 0.09])          # x1,x1 = x1err^2
-    # an error at or below its threshold is bad (SALT2mu.c:18885)
+    # an error at or below its threshold is bad (SALT2mu.c:18899)
     np.testing.assert_array_equal(np.asarray(bad), [True, False])
 
     # read_lcpar returns the distance MU plus the THETA/AV biasCor cell dimensions.
@@ -187,7 +187,7 @@ def test_compute_mu_refuses_a_host_without_the_mass_step_settings():
     """BBC supplies GAMMADM_OFFSET and USE_GAMMA0 with the host properties, so
     a caller that has not been updated for them aborts here rather than
     reaching the mass step with the wrong zero point or an unwanted step
-    (SALT2mu.c:16228, :16776, :16782)."""
+    (SALT2mu.c:16241, :16789, :16795)."""
     lcpar = {"mB": jnp.array([15.0]), "x1": jnp.array([1.0]), "c": jnp.array([0.1])}
     host = {"z": jnp.array([0.1]), "gamma_var": jnp.array([11.0])}
     for call in (lambda: SALTModel.compute_mu(lcpar, dict(_NUIS), host, {}),

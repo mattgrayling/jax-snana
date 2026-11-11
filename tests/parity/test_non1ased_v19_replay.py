@@ -110,7 +110,7 @@ def test_non1ased_template_budgets_match_snana(tmp_path):
     """Templates get integer event budgets and contiguous index blocks.
 
     prep_NON1ASED (genmag_NON1ASED.c:352-418) converts NON1A weights into whole
-    event counts, and pick_NON1ASED (snlc_sim.c:14378) then assigns a template
+    event counts, and pick_NON1ASED (snlc_sim.c:14398) then assigns a template
     by generation index -- not by a random draw against the weights.
 
     Live stock SNANA with weights 3:1 and NGENTOT_LC=100 reports
@@ -269,8 +269,8 @@ def test_ngen_lc_fills_a_class_whose_share_rounds_to_zero(tmp_path):
 
 def test_non1ased_sim_av_rv_are_the_drawn_dust(snana_fixture, tmp_path):
     """SNANA writes SIM_AV and SIM_RV for every model once host dust is drawn
-    (gen_modelPar_dust runs whenever DOGEN_AV is set, snlc_sim.c:14325, and
-    wr_snfitsio always writes SNDATA.SIM_AV, sntools_dataformat_fits.c:2152).
+    (gen_modelPar_dust runs whenever DOGEN_AV is set, snlc_sim.c:14343, and
+    wr_snfitsio always writes SNDATA.SIM_AV, sntools_dataformat_fits.c:2162).
     The fixture dumps AV and RV, so the replay carries SNANA's own draws and
     the HEAD columns compare exactly, per event."""
     fx = snana_fixture("non1ased_hostdust")

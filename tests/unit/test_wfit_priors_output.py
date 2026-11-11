@@ -95,7 +95,7 @@ def test_bao_planck_covariance_term(tmp_path):
     config.bao = "DESI_2024"
     data = load_bao_data(config, _bao_files(tmp_path))
     # SNANA tacks the Planck H0 and r_d errors onto the BAO covariance rather
-    # than floating them (init_bao_prior, wfit.c:2628-2631 and :2738), using
+    # than floating them (init_bao_prior, wfit.c:2894-2897 and :3004), using
     # H0 = 67.4 +- 0.5 and r_d = 147.05 +- 0.30 (sntools.h:61-64). For this
     # two-row file that gives (0.5/67.4)^2 + (0.30/147.05)^2 = 5.919472e-5
     # times the outer product of the means [10, 20].
@@ -158,11 +158,11 @@ def test_simulation_centred_bao_prior_is_zero_at_truth(tmp_path, repo_root, radi
 
 def test_prior_perturbations_share_one_draw_and_reproduce():
     """The omm and Rcmb shifts come from the same per-realisation gaussian
-    draw (SNANA re-seeds per call, get_prior_ranshift wfit.c:2548), differ
+    draw (SNANA re-seeds per call, get_prior_ranshift wfit.c:2814), differ
     across realisations, and repeat.
 
     cmb_sim is set because that is the only mode SNANA perturbs Rcmb in
-    (wfit.c:2489); without it the Rcmb draw would not be exercised at all.
+    (wfit.c:2755); without it the Rcmb draw would not be exercised at all.
     """
     truths = [{"omega_m": 0.3, "w0": -1.0, "wa": 0.0}] * 3
 
@@ -244,7 +244,7 @@ def test_all_optional_outputs(tmp_path, repo_root):
     assert payload["fit"]["ndof_hd"] == 8
     assert "VARNAMES:" in (tmp_path / "residuals.fitres").read_text()
     cospar = (tmp_path / "result.cospar").read_text()
-    # the wfit.c column set (write_output_cospar, wfit.c:5162-5277)
+    # the wfit.c column set (write_output_cospar, wfit.c:5442-5557)
     for column in ("rho_wom", "FoM", "Ndof", "sigint", "omran", "label"):
         assert column in cospar
     assert "weight" in (tmp_path / "grid.fitres").read_text()
@@ -257,7 +257,7 @@ def test_all_optional_outputs(tmp_path, repo_root):
 def test_cospar_fixed_param_columns_follow_the_marg_mode(tmp_path, repo_root):
     """The fixed w under lcdm gets wsig_lo/wsig_up in minchi2 mode and
     wsig_marg in marg mode, like any floated parameter (write_output_cospar,
-    wfit.c:5168-5180); omm alone always writes sig_marg (:5214-5219)."""
+    wfit.c:5448-5460); omm alone always writes sig_marg (:5494-5499)."""
     columns = {}
     for marg in (False, True):
         config = WFITConfig()
@@ -279,9 +279,9 @@ def test_cospar_fixed_param_columns_follow_the_marg_mode(tmp_path, repo_root):
 
 def test_cospar_written_by_default_with_cpu_minutes(tmp_path, repo_root):
     """wfit writes the cospar unconditionally, named from the HD input when
-    no -outfile_cospar is given (write_output_cospar, wfit.c:5151-5153), and
+    no -outfile_cospar is given (write_output_cospar, wfit.c:5431-5433), and
     the YAML summary carries CPU_MINUTES for the batch aggregator
-    (wfit.c:5314)."""
+    (wfit.c:5594)."""
     hd = tmp_path / "HD.M0DIF"
     hd.write_text(Path(_fixture(repo_root)).read_text())
     config = WFITConfig()
@@ -502,7 +502,7 @@ def test_blinding_refuses_a_parameter_without_an_offset():
 
 
 def test_prior_perturbation_only_moves_an_informative_prior():
-    """SNANA perturbs the Omega_m prior only when dompri < 1 (wfit.c:2408)."""
+    """SNANA perturbs the Omega_m prior only when dompri < 1 (wfit.c:2674)."""
 
     def centre(dompri, **kwargs):
         config = WFITConfig()
@@ -517,7 +517,7 @@ def test_prior_perturbation_only_moves_an_informative_prior():
 
 
 def test_rcmb_perturbation_requires_a_simulation_centred_prior():
-    """SNANA shifts Rcmb only in the use_cmb == 2 branch (wfit.c:2489)."""
+    """SNANA shifts Rcmb only in the use_cmb == 2 branch (wfit.c:2755)."""
 
     truth = {"omega_m": 0.3, "w0": -1.0, "wa": 0.0}
 
@@ -690,7 +690,7 @@ def test_the_residual_file_reports_snana_s_simulated_cosmology(
     repo_root, tmp_path,
 ):
     """mu_sim and its header line come from COSPAR_SIM, which defaults to
-    OMEGA_MATTER_DEFAULT = 0.315 (wfit.c:773, :1272; sntools.h:53).
+    OMEGA_MATTER_DEFAULT = 0.315 (wfit.c:815, :1325; sntools.h:53).
 
     The reference is the wfit.exe residual file recorded in
     tests/fixtures/wfit/hdibc/README.md, run with no -om_sim.
@@ -718,8 +718,8 @@ def test_a_blinded_residual_file_does_not_show_the_unblinded_model(
     """SNANA writes the residual file at the blinded cosmology.
 
     write_output_resid builds its cpar from WORKSPACE.omm_final
-    (wfit.c:5345-5348), which wfit_final has already offset by sin(ran)
-    (wfit.c:3922-3935), so mu_model must not be the model at the fitted point.
+    (wfit.c:5625-5628), which wfit_final has already offset by sin(ran)
+    (wfit.c:4188-4201), so mu_model must not be the model at the fitted point.
     """
     from jax_wfit.output import write_residuals
 
@@ -750,7 +750,7 @@ def test_a_blinded_residual_file_does_not_show_the_unblinded_model(
 
     # both files are internally consistent: get_chi2_fit is rerun at the
     # cosmology written, so its muresid_avg leaves the weighted mean residual
-    # at zero (wfit.c:3952-3956). The tolerance is the 1e-4 the file prints:
+    # at zero (wfit.c:4218-4222). The tolerance is the 1e-4 the file prints:
     # Csum also carries the Gaussian H0-prior term (wfit.c:4390), so the offset
     # is not exactly the inverse-variance weighted mean and about 1e-5 is left.
     # Subtracting the unblinded offset from the blinded model leaves 0.47 mag.
@@ -777,7 +777,7 @@ def test_a_blinded_residual_file_does_not_show_the_unblinded_model(
 
 def test_supplied_diagrams_take_the_redshift_window(repo_root):
     """A diagram handed over in memory is cut as the file route cuts one it
-    reads (wfit.c:1539), so zmin and zmax mean the same on both routes."""
+    reads (wfit.c:1592), so zmin and zmax mean the same on both routes."""
     config = WFITConfig()
     config.hubble_diagram = _fixture(repo_root)
     config.model = "lcdm"
@@ -815,7 +815,7 @@ def test_supplied_diagrams_refuse_the_options_that_read_a_file_column(
 
 def test_a_bao_prior_replaces_the_gaussian_omega_m_term(tmp_path, repo_root):
     """get_chi2_priors takes the BAO branch or the Omega_m branch, never both
-    (wfit.c:4446-4460); the YAML route used to add the second."""
+    (wfit.c:4726-4740); the YAML route used to add the second."""
     root = _bao_files(tmp_path)
     config = WFITConfig()
     config.hubble_diagram = _fixture(repo_root)
@@ -835,7 +835,7 @@ def test_a_bao_prior_replaces_the_gaussian_omega_m_term(tmp_path, repo_root):
 
 def test_isdata_real_minus_one_means_simulated(tmp_path, repo_root):
     """create_covariance writes -1 where the BBC header carried no key;
-    SNANA reads ISDATA_REAL = (ITMP > 0), so it unblinds (wfit.c:1791)."""
+    SNANA reads ISDATA_REAL = (ITMP > 0), so it unblinds (wfit.c:1844)."""
     fixture = Path(_fixture(repo_root)).read_text()
     unknown = tmp_path / "UNKNOWN.M0DIF"
     unknown.write_text("# ISDATA_REAL: -1\n" + fixture)
@@ -854,7 +854,7 @@ def test_isdata_real_minus_one_means_simulated(tmp_path, repo_root):
 def test_an_impossible_correlation_aborts_rather_than_clamping(
     repo_root, tmp_path,
 ):
-    """wfit_FoM aborts on |rho| > 1 (wfit.c:4011-4015). Clamping the root's
+    """wfit_FoM aborts on |rho| > 1 (wfit.c:4277-4281). Clamping the root's
     argument at zero would report a finite FoM for a broken covariance."""
     from jax_wfit.output import write_cospar
 

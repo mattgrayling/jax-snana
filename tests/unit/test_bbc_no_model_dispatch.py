@@ -12,7 +12,7 @@ import re
 import jax_salt2mu
 
 # config.py may spell "SALT2": it is BBCConfig's default MODEL_LCFIT
-# (SALT2mu.c:6477), a value the registry resolves, not a branch on it.
+# (SALT2mu.c:6487), a value the registry resolves, not a branch on it.
 _EXEMPT = {"config.py"}
 
 _PATTERNS = [

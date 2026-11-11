@@ -220,7 +220,7 @@ working grid. The model-development guide explains interpolation and
 extrapolation choices.
 
 ```{eval-rst}
-.. autofunction:: jax_snlc_core.models.sed_model.read_sed_file
+.. autofunction:: jax_snlc_core.snana_files.read_sed_file
 
 .. autofunction:: jax_snlc_core.models.simsed.read_sed_info
 

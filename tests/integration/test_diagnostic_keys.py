@@ -184,7 +184,7 @@ def test_dashboard(tmp_path, caplog):
     assert "observation sequences" in out
     assert "NMAP_SPECEFF" in out
     # SNANA prints TIME_SINGLE_DETECT (= NEWMJD_DIF) on the logic line
-    # (snlc_sim.c:31691-31692, :7523)
+    # (snlc_sim.c:31751-31752, :7535)
     assert "epoch-sep >" in out
     # unset file keys are named, not silently dropped
     assert "(none)" in out
@@ -243,7 +243,7 @@ def test_simgen_dump_noise(tmp_path):
 
 def test_wrflag_yaml_file(tmp_path):
     """WRFLAG_YAML_FILE: .YAML carries the job counts; NGENLC_WRITE == n_passed.
-    SNANA writes it to the run cwd (bare GENVERSION name, snlc_sim.c:30917), so
+    SNANA writes it to the run cwd (bare GENVERSION name, snlc_sim.c:30981), so
     run from tmp_path and read it there."""
     salt3_abs = os.path.abspath(_SALT3_INPUT)
     cwd = os.getcwd()
@@ -265,7 +265,7 @@ def test_wrflag_yaml_file(tmp_path):
 
 def test_smearflag_flux_zero_leaves_the_flux_unsmeared(tmp_path):
     """SMEARFLAG_FLUX bit 1 gates whether the drawn noise is applied: at 0
-    SNANA zeroes GAURAN_SZ/T/F so fluxObs == fluxTrue (snlc_sim.c:28466),
+    SNANA zeroes GAURAN_SZ/T/F so fluxObs == fluxTrue (snlc_sim.c:28524),
     confirmed against snlc_sim.exe, whose FLUXCAL then reproduces SIM_MAGOBS
     to float32 precision. jax used to add noise regardless."""
     base = Path(_SALT3_INPUT).read_text().splitlines()

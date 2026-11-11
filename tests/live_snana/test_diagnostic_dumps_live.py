@@ -149,8 +149,8 @@ def test_trest_statistics_live(tmp_path):
     """TRESTMIN/TRESTMAX/TGAPMAX against snlc_sim.exe with Trest cut windows
     narrower than GENRANGE_TREST, so epochs exist outside the windows.
     SNANA fills TRESTMIN/TRESTMAX over every generated epoch, in the CMB
-    frame (snlc_sim.c:20499, :20770), then widens them over the filtered
-    set in the heliocentric frame (:24239); TGAPMAX is over the filtered
+    frame (snlc_sim.c:20539, :20810), then widens them over the filtered
+    set in the heliocentric frame (:24291); TGAPMAX is over the filtered
     set alone. jax keeps the heliocentric frame throughout, and with
     these windows the generated-epoch extreme sets the value, so the two
     part by |zHEL - zCMB|/(1+z) of the phase: up to 0.0013 of 60 days. TGAPMAX

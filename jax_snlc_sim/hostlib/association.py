@@ -62,7 +62,7 @@ DZ_SAFE_HOSTLIB = 0.002
 
 
 def hostlib_snpar_columns(spellings, columns):
-    """HOSTLIB columns USESNPAR may override (sntools_host.c:671-686): those
+    """HOSTLIB columns USESNPAR may override (sntools_host.c:679-694): those
     of ``columns`` that spell one of the model's population parameters,
     whatever their case, and the host dust columns."""
     return tuple(column for column in columns
@@ -93,7 +93,7 @@ class Hostlib:
         """The catalogue GALID of each row a batch recorded, as int64; an
         unmatched neighbour slot (row -1) keeps the event's initial OBJID of
         0, as SNANA copies the sorted list only up to NMATCH2
-        (snlc_sim.c:26066, sntools.c:9163)."""
+        (snlc_sim.c:26122, sntools.c:8855)."""
         rows = np.asarray(rows)
         return np.where(rows >= 0, self.galids[rows], np.int64(0))
 
@@ -120,7 +120,7 @@ jax.tree_util.register_dataclass(
 
 def _check_hostlib_redshift_coverage(table, redshift_range) -> None:
     """Abort unless the HOSTLIB spans GENRANGE_REDSHIFT (check_redshift_HOSTLIB,
-    sntools_host.c:3322). dz_safe converts the zCMB range to heliocentric."""
+    sntools_host.c:3347). dz_safe converts the zCMB range to heliocentric."""
     ztrue = table.columns['ZTRUE']
     zmin_lib, zmax_lib = float(np.min(ztrue)), float(np.max(ztrue))
     zmin_gen = redshift_range[0] - DZ_SAFE_HOSTLIB
@@ -191,6 +191,8 @@ def load_hostlib(config, simlib, sed_model, spec_zhost,
         snr_store=(host.snr_store, config.survey.genfilters),
         varname_zphot=host.varname_zphot,
         swap_zphot=bool(host.mskopt & 128),
+        vel_cmbapex=config.cosmology.vel_cmbapex,
+        use_vpec=bool(host.mskopt & 512),
         fixsersic=host.fixsersic,
         scale_sersic_size=host.scale_sersic_size,
     )
@@ -200,7 +202,7 @@ def load_hostlib(config, simlib, sed_model, spec_zhost,
         hz_map, frac_pec1a)
     quantiles = zphot_quantile_columns(declared)
     if host.mskopt & HOSTLIB_MSKOPT_ZPHOT_QGAUSS and not quantiles:
-        # the forced 11-decade set (sntools_host.c:4583-4585)
+        # the forced 11-decade set (sntools_host.c:4771-4773)
         quantiles = DECADE_QUANTILES
     return Hostlib(
         selector=selector,
@@ -245,7 +247,7 @@ def _hostlib_columns(config, simlib, sed_model, declared, wgtmap_file,
         stacked.extend(['VPEC', 'VPEC_ERR'])
     if mskopt & 2:
         # GALMAG: host photometry for whatever [band]_obs columns exist
-        # (sntools_host.c:2757-2766)
+        # (sntools_host.c:2775-2784)
         stacked.extend(v for v in declared if v.endswith('_obs'))
     if (config.survey.use_simlib_groupid
             and any(f.groupid_hostlib for f in simlib.fields)):
@@ -263,13 +265,13 @@ def _hostlib_columns(config, simlib, sed_model, declared, wgtmap_file,
     if wgtmap_file:
         stacked.extend(read_wgtmap_varnames(Path(wgtmap_file)))
     stacked.extend(host.storepar)
-    # host properties a population depends on (sntools_host.c:951-969)
+    # host properties a population depends on (sntools_host.c:962-980)
     generated = {name for name, _ in sed_model.configured_population} | {REDSHIFT}
     stacked.extend(name for name in config.model.quantities_depended_on()
                    if name not in generated)
     if mskopt & 64:
         # USESNPAR: the model's SN-parameter columns and SNMAGSHIFT
-        # (sntools_host.c:671-686)
+        # (sntools_host.c:679-694)
         stacked.extend([*hostlib_snpar_columns(model_spellings(sed_model),
                                                declared), 'SNMAGSHIFT'])
     extra = (['ZPHOT', 'ZPHOT_ERR']
@@ -288,7 +290,7 @@ def _check_hostlib(config, sed_model, table, declared) -> None:
         _check_hostlib_redshift_coverage(table, config.rates.redshift_range)
     if mskopt & 64:
         _check_snpar_conflict(config, sed_model, declared)
-        # USESNPAR with no SN-param column is fatal (sntools_host.c:2616-2624)
+        # USESNPAR with no SN-param column is fatal (sntools_host.c:2630-2638)
         snpar = (*hostlib_snpar_columns(model_spellings(sed_model),
                                         table.columns), 'SNMAGSHIFT')
         if not any(name in table.columns for name in snpar):
@@ -310,6 +312,17 @@ def _check_hostlib(config, sed_model, table, declared) -> None:
                 "Found VPEC column, but VPEC_ERR not defined. Add VPEC_ERR "
                 "column, or define VPEC_ERR in header",
                 function_name="_check_hostlib")
+    # ZTRUE_CMB and VPEC option checks (sntools_host.c:3033-3043, :4141-4145)
+    if table.ztrue_cmb and mskopt & 512 and not mskopt & 8:
+        raise SNANAError(
+            "ZTRUE_CMB column found in HOSTLIB and HOSTLIB_MSKOPT 512 is set "
+            "(VPEC), but the required HOSTLIB_MSKOPT bit 8 (SN2GAL_RADEC) is "
+            "not set", function_name="_check_hostlib")
+    if table.ztrue_cmb and config.cosmology.gensigma_vpec > 0.0 and not mskopt & 512:
+        raise SNANAError(
+            "GENSIGMA_VPEC is not allowed with ZTRUE_CMB in the HOSTLIB; add a "
+            "VPEC column to the HOSTLIB and set HOSTLIB_MSKOPT bit 512",
+            function_name="_check_hostlib")
     # Morphology-dependent MSKOPT bits are fatal without a Sersic profile
     if table.sersic_profiles is None:
         if mskopt & 2:
@@ -331,7 +344,7 @@ def _check_hostlib(config, sed_model, table, declared) -> None:
             f"HOSTLIB_MSKOPT bit {HOSTLIB_MSKOPT_ZPHOT_QGAUSS} (ZPHOT_QGAUSS) "
             "needs ZPHOT and ZPHOT_ERR columns in the HOSTLIB.",
             function_name="_check_hostlib")
-    # init_HOSTLIB_ZPHOTEFF (sntools_host.c:4687-4692)
+    # init_HOSTLIB_ZPHOTEFF (sntools_host.c:4859-4864)
     if not is_ignorefile(host.zphoteff_file) and zphot_col not in declared:
         raise SNANAError(
             "Cannot implement HOSTLIB_ZPHOTEFF_FILE because ZPHOT is not "
@@ -353,7 +366,7 @@ def _host_key_indices(simulator, params, n_sne: int, global_start_idx: int):
 
     Under HOSTLIB_NREPEAT_GALID_SNPOS every SN in a block keys off its block
     leader, so the galaxy, its Sersic offset and its smeared properties all
-    repeat (sntools_host.c:5990). Without the key this is the SN's own index,
+    repeat (sntools_host.c:6288). Without the key this is the SN's own index,
     matching a per-event stream key.
     """
     if _repeats(simulator):
@@ -364,7 +377,7 @@ def _host_key_indices(simulator, params, n_sne: int, global_start_idx: int):
 def wgtmap_sn_variables(simulator, params):
     """The WGTMAP's SN variables, which the reader names as the simulation
     does: a population parameter by name, or the host dust the SN draws
-    (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2868)."""
+    (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2886)."""
     if simulator.hostlib is None or not simulator.hostlib.selector.has_snvars:
         return {}
     selector = simulator.hostlib.selector
@@ -389,7 +402,7 @@ def _apply_nrepeat_raw_photoz(simulator, catalogue, host_properties, params,
     """Under the repeat, non-leader events report the raw catalogue ZPHOT.
 
     SORT_SNHOST_byDDLR reloads ZPHOT from the catalogue unconditionally
-    (sntools_host.c:8892), then the gated GEN_SNHOST_ZPHOT applies the
+    (sntools_host.c:9289), then the gated GEN_SNHOST_ZPHOT applies the
     ZGEN-ZTRUE shift, the bias and any GENZPHOT formula, but only for block
     leaders. So followers keep the catalogue value whether or not
     HOSTLIB_GENZPHOT is in use.
@@ -439,14 +452,14 @@ def _smear_host_properties(host, host_properties: dict,
                            stream: str = 'HOSTPROP_SMEAR', *, key) -> None:
     """Apply measured-vs-true smearing to host galaxy properties, in place.
 
-    Algorithm (GEN_SNHOST_PROPERTY, sntools_host.c:7495-7542): for each of
+    Algorithm (GEN_SNHOST_PROPERTY, sntools_host.c:7933-7980): for each of
     the SNANA property basenames LOGMASS / LOGSFR / LOGsSFR / COLOR
-    (sndata.h:85-88):
+    (sndata.h:87-90):
         1. If _OBS column is already populated, use as-is (still scale ERR)
         2. Else if bare/TRUE + _ERR exist → OBS = TRUE + G * ERR * SCALE,
            with G a truncated normal on [-3, 3]: SNANA's getRan_GaussClip
            redraws until the Gaussian lies inside the range
-           (sntools.c:7870-7878), so there are no atoms at the bounds
+           (sntools.c:7565-7573), so there are no atoms at the bounds
         3. Else if only bare/TRUE → OBS = TRUE
 
     Each property comes from its own HOSTLIB columns (bare name or _TRUE
@@ -454,7 +467,7 @@ def _smear_host_properties(host, host_properties: dict,
     """
     scale_map = _parse_property_err_scales(host)
 
-    # getRan_GaussClip(1, -3, 3) redraws, so a truncated normal (sntools.c:7870-7878)
+    # getRan_GaussClip(1, -3, 3) redraws, so a truncated normal (sntools.c:7565-7573)
     all_gauss = jax.vmap(
         lambda k: jax.random.truncated_normal(
             k, -3.0, 3.0, shape=(len(HOSTGAL_PROPERTY_BASENAMES),)))(
@@ -504,7 +517,7 @@ def _generate_zphot_quantiles_gaussian(quantiles, catalogue,
 
     SNANA computes zq = ZPHOT + ZPHOT_ERR*InverseNormal from the HOSTLIB
     catalogue values and rescales every quantile by ZRATIO = zSN/zGAL
-    (GEN_SNHOST_ZPHOT_QUANTILE, sntools_host.c:9030-9052); the required
+    (GEN_SNHOST_ZPHOT_QUANTILE, sntools_host.c:9427-9449); the required
     columns are validated at build. ``quantiles`` are the (column,
     percentile) pairs, the HOSTLIB's declared set or the forced decades.
     Adds them to ``host_properties``."""
@@ -526,7 +539,7 @@ def compute_host_dmucor(simulator, params, host_properties):
     """DMUCOR = mu(zSN) - mu(z_host), added to the reported host mags to
     account for the SN-vs-host redshift offset. SORT_SNHOST_byDDLR takes the
     SN's distance before the host moves its redshift, and the host's at
-    vpec=0 and the SN's position (sntools_host.c:8795-8805). Returns 0 where
+    vpec=0 and the SN's position (sntools_host.c:9192-9202). Returns 0 where
     there is no host."""
     host_zhel = host_properties['ZTRUE']
     valid = host_zhel > 1e-8
@@ -548,8 +561,8 @@ def load_hostlib_zphot_quantiles(quantiles, catalogue, host_properties, zgen,
     """Catalogue photo-z quantiles (``quantiles``, (column, percentile)
     pairs) of the reported host and of each stored neighbour, every one
     rescaled by the lookup redshift ``zgen`` over the drawn host's ZTRUE, or
-    by one under SN2GAL_Z (SNHOSTGAL.ZRATIO, sntools_host.c:6486;
-    GEN_SNHOST_QUANTILE_ZPHOT, :9050)."""
+    by one under SN2GAL_Z (SNHOSTGAL.ZRATIO, sntools_host.c:6915;
+    GEN_SNHOST_QUANTILE_ZPHOT, :9447)."""
     present = [name for name, _ in quantiles
                if name in catalogue.extra_columns]
     if not present:
@@ -592,10 +605,10 @@ def _apply_wronghost(simulator, params, batch_n_sne,
     uses and, per event, whether a wrong host found no table row nearby,
     which SNANA aborts on (sntools_wronghost.c:324-329).
 
-    gen_zHOST runs before GEN_SNHOST_DRIVER (snlc_sim.c:12885-12899), so the
+    gen_zHOST runs before GEN_SNHOST_DRIVER (snlc_sim.c:12903-12917), so the
     wrong-host draw stays per event under HOSTLIB_NREPEAT and only the galaxy
     lookup follows the block leader. SIM_REDSHIFT_HOST starts as that
-    per-event value (GENLC.REDSHIFT_HOST, snlc_sim.c:12886): zSN for a
+    per-event value (GENLC.REDSHIFT_HOST, snlc_sim.c:12904): zSN for a
     correct match, shifted otherwise.
     """
     def _zhost(zhelio, indices):
@@ -624,14 +637,14 @@ def _apply_neighbour_hosts(simulator, catalogue, params,
     NBR_LIST the only candidate is the true host, which still has to pass the
     DDLR cuts: a SN too far from its galaxy is reported unmatched even though
     the host still drives generation (SORT_SNHOSTGAL_byDDLR,
-    sntools_host.c:8830).
+    sntools_host.c:9227).
     """
     if simulator.hostlib.selector.has_neighbours:
         if hostlib_mskopt & 8:
             field_ra_arr = None
             field_dec_arr = None
         else:
-            # hosts are reported at the SN's sky position (sntools_host.c:8882)
+            # hosts are reported at the SN's sky position (sntools_host.c:9279)
             field_ra_arr, field_dec_arr = params['ra'], params['dec']
         hostgal_sorted, neighbours, nmatch, nmatch2 =\
             simulator.hostlib.selector.compute_neighbor_info(
@@ -652,7 +665,7 @@ def _apply_neighbour_hosts(simulator, catalogue, params,
     host_properties['NMATCH2'] = (ddlr < hostlib_cfg.maxddlr2).astype(jnp.int32)
     host_properties['DDLR_TRUE'] = host_properties['DDLR']
     host_properties['SNSEP_TRUE'] = host_properties['SNSEP']
-    # Host at SN sky position (GEN_SNHOST_POS, sntools_host.c:7796).
+    # Host at SN sky position (GEN_SNHOST_POS, sntools_host.c:8234).
     if not hostlib_mskopt & 8:
         field_ra, field_dec = params['ra'], params['dec']
         ra_gal, dec_gal = host_properties['RA_GAL'], host_properties['DEC_GAL']
@@ -672,7 +685,7 @@ def _apply_host_photoz(simulator, catalogue, params,
     Runs after the DDLR sort as SNANA does, skipping when NNBR_DDLRCUT2 is
     zero, meaning no host within MAXDDLR2. The HOSTLIB path shifts the stored
     ZPHOT by (ZGEN - host ZTRUE) (GEN_SNHOST_ZPHOT_from_HOSTLIB,
-    sntools_host.c:7179-7192) instead of synthesising one; with a neighbour
+    sntools_host.c:7617-7630) instead of synthesising one; with a neighbour
     list the DDLR sort has already done so for every slot.
     """
     hostlib = simulator.hostlib
@@ -735,13 +748,13 @@ def _apply_zphoteff(efficiency, host_properties, n_sne: int,
     SNANA carries two photo-z values and masks only one of them. ZPHOT_EVENT
     here is SNHOSTGAL.ZPHOT: the reported host's photo-z, set to -9 when the
     ZPHOTEFF draw fails, read at the host's own true redshift
-    (GEN_SNHOST_ZPHOT, sntools_host.c:6825-6833). CUTWIN_HOST_ZPHOT
-    (snlc_sim.c:24172), gen_zsmear's use-the-host-photo-z branch (:17374), the
-    GENSIGMA_REDSHIFT < 0 redshift source (sntools_host.c:6837),
-    setz_unconfirmed (snlc_sim.c:24922) and the SIMGEN_DUMP GALZPHOT column
-    (:16162) all read that masked scalar. ZPHOT stays the DDLR-sorted host's
+    (GEN_SNHOST_ZPHOT, sntools_host.c:7263-7271). CUTWIN_HOST_ZPHOT
+    (snlc_sim.c:24172), gen_zsmear's use-the-host-photo-z branch (:17392), the
+    GENSIGMA_REDSHIFT < 0 redshift source (sntools_host.c:7275),
+    setz_unconfirmed (snlc_sim.c:24974) and the SIMGEN_DUMP GALZPHOT column
+    (:16180) all read that masked scalar. ZPHOT stays the DDLR-sorted host's
     own value, which the mask never touches and which the data file reports
-    as HOSTGAL_PHOTOZ (:26068).
+    as HOSTGAL_PHOTOZ (:26125).
     """
     if 'ZPHOT' not in host_properties:
         return
@@ -764,7 +777,7 @@ def _apply_zphoteff(efficiency, host_properties, n_sne: int,
 
 def _apply_galid_unique(host, key, host_properties, batch_n_sne,
                         global_start_idx):
-    """HOSTLIB_GALID_UNIQUE (set_GALID_UNIQUE, sntools_host.c:9060): each
+    """HOSTLIB_GALID_UNIQUE (set_GALID_UNIQUE, sntools_host.c:9457): each
     reported host slot draws an offset in [0, 57), distinct from the earlier
     slots', stored as ``galid_unique_offset`` (-1 on an empty slot). The
     label, CID * 57 + offset, is formed from the written CID at output."""
@@ -801,12 +814,12 @@ def select_hosts(simulator, catalogue,
     """GEN_SNHOST_GALID for the batch: each event's galaxy from
     ``catalogue`` (:class:`HostCatalogue`), drawn from the weight map at its
     heliocentric redshift, or the WRONGHOST_FILE redshift
-    (gen_zHOST, snlc_sim.c:12884), within its SIMLIB entry's GROUPID set
+    (gen_zHOST, snlc_sim.c:12902), within its SIMLIB entry's GROUPID set
     (the block leader's entry under HOSTLIB_NREPEAT) and under the reuse
     constraints. Of the lanes only the first ``n_events`` are events.
 
     Returns ``(host_properties, galaxy_indices, zgen, reuse, report)``:
-    ``zgen`` is the lookup redshift (SNHOSTGAL.ZGEN, sntools_host.c:6016),
+    ``zgen`` is the lookup redshift (SNHOSTGAL.ZGEN, sntools_host.c:6314),
     ``reuse`` the run's reuse record after this batch and ``report`` what
     the draw reports beside the hosts (:meth:`HostSelector.select`), with
     ``wronghost_uncovered`` under WRONGHOST_FILE. An event MINDAYSEP leaves
@@ -843,7 +856,7 @@ def select_hosts(simulator, catalogue,
             simulator, params, batch_n_sne, global_start_idx,
             zgen, host_idx, key=key)
 
-    # repeat followers and padding never register for reuse (sntools_host.c:6138)
+    # repeat followers and padding never register for reuse (sntools_host.c:6505)
     leads = host_idx == jnp.arange(batch_n_sne) + global_start_idx
     galaxy_indices, host_properties, reuse, report = selector.select(
         catalogue, zgen, random_uniforms, position_uniforms, sn_properties,
@@ -853,7 +866,7 @@ def select_hosts(simulator, catalogue,
         reuse_lanes=leads & (jnp.arange(batch_n_sne) < n_events))
     report.update(wronghost_report)
     if selector.uses_mindaysep:
-        # SNHOSTGAL.PEAKMJD (sntools_host.c:6018)
+        # SNHOSTGAL.PEAKMJD (sntools_host.c:6316)
         report['peak_day'] = selector.peak_day(params['peakmjd'])
 
     drawn = leads
@@ -873,7 +886,7 @@ def add_host_associations(simulator, catalogue,
                           params: Dict[str, jnp.ndarray],
                           global_start_idx: int, *, key, reuse, n_events,
                           template_budget):
-    """GEN_SNHOST_DRIVER for the batch (sntools_host.c:5962-6080) over
+    """GEN_SNHOST_DRIVER for the batch (sntools_host.c:6259-6382) over
     ``catalogue`` (:class:`HostCatalogue`), in its order: the galaxy, the
     SN placed on it under SN2GAL_RADEC with MWEBV at the new position, the
     DDLR sort with the host-mag distance correction, the photo-z and the
@@ -893,7 +906,7 @@ def add_host_associations(simulator, catalogue,
 
     hostlib_mskopt = simulator.host_settings.mskopt
     if hostlib_mskopt & 8:
-        # load_SNHOST_GENLC_COORDS (sntools_host.c:7867)
+        # load_SNHOST_GENLC_COORDS (sntools_host.c:8305)
         params['ra'], params['dec'] = sn_sky_position(host_properties)
         params.update(draw_mwebv(simulator, params, key=key))
     if not hostlib_mskopt & 16:
@@ -912,10 +925,10 @@ def transfer_host_redshift(simulator, params, host_properties,
                            *, key) -> None:
     """The host's say over the SN's velocity, lensing and redshift:
     GEN_SNHOST_VPEC, GEN_SNHOST_WEAKLENS_DMU and TRANSFER_SNHOST_REDSHIFT
-    (sntools_host.c:7464, :7450, :9113).
+    (sntools_host.c:7902, :7888, :9510).
 
     USEVPEC takes the true VPEC from the HOSTLIB and smears the measured one
-    with its error (gen_zsmear, snlc_sim.c:17441-17460). Under SN2GAL_Z the
+    with its error (gen_zsmear, snlc_sim.c:17459-17478). Under SN2GAL_Z the
     SN takes the host's heliocentric ZTRUE, which already holds the host's
     velocity, and zCMB follows with that velocity removed; under
     SN2GAL_RADEC alone zCMB stays and zHEL is recomputed at the new
@@ -928,7 +941,7 @@ def transfer_host_redshift(simulator, params, host_properties,
     hostlib_mskopt = simulator.host_settings.mskopt
     if hostlib_mskopt & 512:
         vpec = host_properties['VPEC']
-        # the VPEC_ERR column, else the header's (sntools_host.c:7480-7483)
+        # the VPEC_ERR column, else the header's (sntools_host.c:7918-7921)
         vpec_err = (host_properties['VPEC_ERR']
                     if 'VPEC_ERR' in host_properties
                     else jnp.full_like(
@@ -967,7 +980,7 @@ def transfer_host_redshift(simulator, params, host_properties,
 
 def apply_host_snpar_overrides(simulator, params,
                                host_properties):
-    """override_modelPar_from_SNHOST (snlc_sim.c:13034), once the population
+    """override_modelPar_from_SNHOST (snlc_sim.c:13052), once the population
     is drawn: SNMAGSHIFT under bit 4 or bit 64, and under USESNPAR the
     model's parameters, PEAKMJD and host dust from the drawn host's columns.
     Returns the updated parameters; without a host, ``params`` unchanged."""
@@ -991,8 +1004,8 @@ def apply_host_snpar_overrides(simulator, params,
 def _apply_host_general_snpar(simulator, params, host_properties):
     """PEAKMJD/RV/AV/EBV host columns override the drawn values under
     USESNPAR, for columns that are deliberately stored (modelPar_from_SNHOST
-    looks parameters up among the stored variables; snlc_sim.c:13068-13082,
-    sntools_host.c:9801). An EBV column sets AV = RV * EBV, per event and
+    looks parameters up among the stored variables; snlc_sim.c:13086-13100,
+    sntools_host.c:10284). An EBV column sets AV = RV * EBV, per event and
     only where RV > 0.001. The SIM_AV/SIM_RV truth follows the final values,
     as GENLC does."""
     stored = {p.hostlib_column for p in HOST_DUST_PARAMETERS}
@@ -1075,7 +1088,7 @@ def random_coord_shift(host, key, n_sne: int, global_start_idx: int, dec):
     """Per-SN MXRADIUS_RANDOM_SHIFT offset, or None when the key is unset.
 
     r is drawn as MXRADIUS*sqrt(u) so it is uniform in area
-    (snlc_sim.c:13145-13153).
+    (snlc_sim.c:13163-13171).
     """
     mxradius = host.mxradius_random_shift
     if mxradius <= 1.0e-12:
@@ -1089,7 +1102,7 @@ def random_coord_shift(host, key, n_sne: int, global_start_idx: int, dec):
 
 def apply_random_coord_shift(simulator, params, n_sne,
                              global_start_idx, *, key) -> None:
-    """MXRADIUS_RANDOM_SHIFT (gen_random_coord_shift, snlc_sim.c:13113): one
+    """MXRADIUS_RANDOM_SHIFT (gen_random_coord_shift, snlc_sim.c:13131): one
     random offset moves the SN and every host candidate, scaled by cos(DEC)
     at the SN's position. It follows the host's say over the SN, and MWEBV
     and the redshifts keep the unshifted position, an approximation SNANA
@@ -1104,7 +1117,7 @@ def apply_random_coord_shift(simulator, params, n_sne,
     ra_lo, ra_hi = simulator.survey.genrange_ra
 
     def shifted_ra(ra):
-        # apply_RA_convention (snlc_sim.c:13208)
+        # apply_RA_convention (snlc_sim.c:13226)
         ra = ra + shift['ra']
         return jnp.where(ra > ra_hi, ra - 360.0,
                          jnp.where(ra < ra_lo, ra + 360.0, ra))
@@ -1147,9 +1160,9 @@ def nrepeat_host_leaders(simulator, params, start_index, n_events,
     reuses, and the leader's host-selection inputs.
 
     SNANA's flag is `(NCALL_GEN_SNHOST_DRIVER % NREPEAT) > 0`
-    (sntools_host.c:5990), and the counter advances only for events that
+    (sntools_host.c:6288), and the counter advances only for events that
     reach GEN_SNHOST_DRIVER: those passing the NEPOCH gate at
-    snlc_sim.c:12864. So blocks are counted over `prefilter_pass`, not over
+    snlc_sim.c:12884. So blocks are counted over `prefilter_pass`, not over
     event number; events past ``n_events`` count for nothing. A block may open
     in an earlier batch, so ``carried`` holds the host-call count, the
     in-flight block's leader and its values. Returns the new columns and

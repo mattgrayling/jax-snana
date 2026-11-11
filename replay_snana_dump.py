@@ -43,7 +43,7 @@ def _align_to_dump(values, head_snid, dump_cids, fill):
     """A HEAD column joined by SNID onto the dump's CID order, `fill` where
     absent. Always a join: the HEAD holds accepted events only, so equal
     lengths do not imply equal order."""
-    vals = np.asarray(values, dtype=np.float32)
+    vals = np.asarray(values)
     snids = np.asarray(head_snid)
     if snids.dtype.kind not in 'iu':
         snids = np.char.strip(snids.astype(str)).astype(np.int64)
@@ -51,8 +51,7 @@ def _align_to_dump(values, head_snid, dump_cids, fill):
     order = np.argsort(snids)
     pos = np.clip(np.searchsorted(snids, cids, sorter=order), 0, len(snids) - 1)
     idx = order[pos]
-    return np.where(snids[idx] == cids, vals[idx],
-                    np.float32(fill)).astype(np.float32)
+    return np.where(snids[idx] == cids, vals[idx], np.asarray(fill, dtype=vals.dtype))
 
 
 def build_override_parameters(dump_columns: Dict[str, np.ndarray],
@@ -119,7 +118,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
                                 dump_columns['CID'], np.nan)
         redshift_helio = np.where(np.isnan(joined), redshift_helio, joined)
 
-    # the drawn galaxy's redshift (GENLC.REDSHIFT_HOST, sntools_host.c:6481),
+    # the drawn galaxy's redshift (GENLC.REDSHIFT_HOST, sntools_host.c:6910),
     # the SN's own where the HEAD does not record it
     redshift_host = redshift_helio
     if head_snid is not None and 'SIM_REDSHIFT_HOST' in head_columns:
@@ -146,7 +145,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
     mwebv_err_values = np.zeros_like(mwebv_values, dtype=np.float32)
 
     # The generated distance modulus, GENLC.DLMU: the dump's MU column
-    # (snlc_sim.c:16090) or the HEAD's SIM_DLMU (snlc_sim.c:25471).
+    # (snlc_sim.c:16108) or the HEAD's SIM_DLMU (snlc_sim.c:25524).
     if 'MU' in dump_columns:
         mu = dump_columns['MU'].astype(np.float64)
     elif 'SIM_DLMU' in head_columns:
@@ -335,32 +334,19 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
                 head_columns[name], head_snid, dump_columns['CID'], np.nan)
             sn_ra, sn_dec = al('RA'), al('DEC')
             gal_ra, gal_dec = al('HOSTGAL_RA'), al('HOSTGAL_DEC')
-            cosdec = np.cos(np.radians(sn_dec))
+            # direction from the header, size from SIM_SNHOST_SEP (sntools_host.c:8223-8224)
+            cosdec = np.cos(np.radians(gal_dec))
             ra_off = np.where(has_position, (sn_ra - gal_ra) * cosdec * 3600.0, -9.0)
             dec_off = np.where(has_position, (sn_dec - gal_dec) * 3600.0, -9.0)
-            # Differencing two ~10-30 degree float32 coordinates to recover a
-            # ~1 arcsec offset loses most of the precision: the storage step
-            # scales with the coordinate, not the separation, leaving ~0.01
-            # arcsec. SIM_SNHOST_SEP stores the separation itself, so its step
-            # is ~1e-7 arcsec. Take the direction from the coordinates and the
-            # magnitude from that column.
-            if 'SIM_SNHOST_SEP' in head_columns:
-                sep_exact = _align_to_dump(
-                    head_columns['SIM_SNHOST_SEP'], head_snid,
-                    dump_columns['CID'], -9.0)
-                norm = np.hypot(ra_off, dec_off)
-                scale = np.where((norm > 0) & (sep_exact > 0),
-                                 sep_exact / np.where(norm > 0, norm, 1.0), 1.0)
-                ra_off = ra_off * scale
-                dec_off = dec_off * scale
+            sep = (_align_to_dump(head_columns['SIM_SNHOST_SEP'], head_snid,
+                                  dump_columns['CID'], -9.0)
+                   if 'SIM_SNHOST_SEP' in head_columns else np.hypot(ra_off, dec_off))
+            norm = np.hypot(ra_off, dec_off)
+            scale = np.where((norm > 0) & (sep > 0), sep / np.where(norm > 0, norm, 1.0), 1.0)
+            ra_off, dec_off = ra_off * scale, dec_off * scale
             params.setdefault('host_RA_OFFSET', ra_off)
             params.setdefault('host_DEC_OFFSET', dec_off)
-            # use the stored separation directly; recomputing it from the
-            # rescaled components just adds rounding back in
-            params.setdefault('host_SNSEP', np.where(
-                has_position, sep_exact, -9.0)
-                if 'SIM_SNHOST_SEP' in head_columns
-                else np.where(has_position, np.hypot(ra_off, dec_off), -9.0))
+            params.setdefault('host_SNSEP', np.where(has_position, sep, -9.0))
             # GALFRAC is evaluated at the SN's position in the galaxy's own
             # frame; without it the SN sits at the centre and the surface
             # brightness peaks. Invert the sky-offset rotation from
@@ -373,7 +359,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
             params.setdefault('host_b_SNGALSEP', np.where(
                 has_position, ra_off * sin_r + dec_off * cos_r, 0.0))
 
-        # Reported host mags are shifted to the SN distance (sntools_host.c:8805).
+        # Reported host mags are shifted to the SN distance (sntools_host.c:9202).
         params.setdefault('host_dmucor', np.asarray(
             compute_host_dmucor(resources, params, host_props)))
 
@@ -408,7 +394,7 @@ def build_override_parameters(dump_columns: Dict[str, np.ndarray],
 
     # SIM_MAGSMEAR_COH: per-SN coherent smear, SNID-aligned; NON1ASED
     # overrides it below. Under GENMAG_SMEAR_MODELNAME the column instead holds
-    # the smear model's own coherent term (snlc_sim.c:30007): inject that only
+    # the smear model's own coherent term (snlc_sim.c:30065): inject that only
     # when the model's randoms are zeroed, or it would be counted twice.
     head_magsmear = head_columns.get('SIM_MAGSMEAR_COH')
     if head_magsmear is not None and (

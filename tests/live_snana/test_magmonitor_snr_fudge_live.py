@@ -2,8 +2,8 @@
 
 This is the case the bundled magmonitor_snr fixture cannot reach. SNANA builds
 the monitor SNR from the variance BEFORE any error fudge (sqsig_noZ,
-snlc_sim.c:27854, used at :27887) and only afterwards rescales it by
-SQSIG_FINAL_DATA/SQSIG_CALC_DATA (:28193). jax folds FUDGESCALE_FLUXERR and the
+snlc_sim.c:27912, used at :27945) and only afterwards rescales it by
+SQSIG_FINAL_DATA/SQSIG_CALC_DATA (:28251). jax folds FUDGESCALE_FLUXERR and the
 SIMLIB FLUXERR_ADD into its own sqsig_no_z earlier than SNANA does
 (engine.py:322-342), so the monitor has to be built from snapshots taken before
 that block.

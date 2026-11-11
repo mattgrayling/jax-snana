@@ -58,7 +58,7 @@ def tablevar_from(table, event_type, config: BBCConfig, model,
         for name in output_varnames(table.varnames_by_file, config):
             tv.passthrough[name] = passthrough_column(text, name)
     tv = select_tablevar(tv, table, config, model)
-    # SNANA only checks duplicates for real data (SALT2mu.c:2270, !IS_SIM).
+    # SNANA only checks duplicates for real data (SALT2mu.c:2273, !IS_SIM).
     if event_type == EVENT_TYPE_DATA and not tv.sim_truth:
         duplicates = merge_duplicates(tv, config)
         if not config.cutwin_disable:

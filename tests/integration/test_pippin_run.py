@@ -72,15 +72,13 @@ def test_a_pippin_config_runs_to_a_cosmology_and_then_loads(config, tmp_path):
 @pytest.mark.parametrize("format_mask", [48, 32])
 def test_repeat_jobs_simulate_different_events(tmp_path, format_mask):
     """Two RANSEED_REPEAT jobs, with random CIDs (48) and without (32), draw
-    different events: no CID or truth value is shared between them. The
-    random-CID pool holds 124 CIDs and each job writes about 40 of its 60
-    events, so two independently drawn CID lists would share about 13 CIDs
-    and miss each other with probability below 1e-6."""
+    different events: no CID or truth value is shared between them. With
+    random CIDs the jobs share a seed and take disjoint slices of one CID
+    list, at the offsets SNANA's batch layer gives them."""
     config = tmp_path / "analysis.yml"
     config.write_text(yaml.safe_dump({"SIM": {"REP": {
         "IA": {"BASE": str(_DATA / "input.input"), "NGENTOT_LC": 60},
-        "GLOBAL": {"RANSEED_REPEAT": "2 11", "FORMAT_MASK": format_mask,
-                   "CIDRAN_MAX": 125}}}}))
+        "GLOBAL": {"RANSEED_REPEAT": "2 11", "FORMAT_MASK": format_mask}}}}))
 
     run_pippin(config, tmp_path / "run")
 

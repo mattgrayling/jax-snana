@@ -34,9 +34,9 @@ from .blinding import BLINDMASK_FIXPAR, BLINDPAR_DEFAULT
 
 logger = logging.getLogger(__name__)
 
-_OPT_CCPRIOR_DEFAULT = 5      # GAUSS+UPDATE, SALT2mu.c:489
+_OPT_CCPRIOR_DEFAULT = 5      # GAUSS+UPDATE, SALT2mu.c:491
 
-# slot -> name for the reference cosmology and sigint (FITPARNAMES_DEFAULT, SALT2mu.c:1446)
+# slot -> name for the reference cosmology and sigint (FITPARNAMES_DEFAULT, SALT2mu.c:1448)
 _SLOT_NAMES: Dict[int, str] = {
     9: "Omega_L", 10: "Omega_k", 11: "w0", 12: "wa", 14: "sigint",
 }
@@ -52,7 +52,7 @@ _ALIASES: Dict[str, str] = {
     "fieldList_biascor": "fieldlist_biascor",
     "surveyGroup_biascor": "surveygroup_biascor",
     "simfile_bias": "simfile_biascor",
-    # all set INPUTS.sigmB; SNANA's own sigint= is a dead key (SALT2mu.c:19972)
+    # all set INPUTS.sigmB; SNANA's own sigint= is a dead key (SALT2mu.c:19986)
     "sig1": "sigint", "sigmb": "sigint", "sigmB": "sigint",
     "sig1fit": "fitflag_sigmb", "sig1tol": "redchi2_tol",
     "prescale_sim1a": "prescale_simIa",
@@ -95,7 +95,7 @@ _U_SLOT = re.compile(r"^u(\d+)$")
 _S_SLOT = re.compile(r"^s(\d+)$")
 
 
-# opt_biascor bits, mirroring SALT2mu.c:463-476.
+# opt_biascor bits, mirroring SALT2mu.c:465-478.
 MASK_BIASCOR_1DZAVG = 1       # interp MUBIAS vs z (1D), WGT=1
 MASK_BIASCOR_1DZWGT = 2       # idem, WGT=1/muerr^2
 MASK_BIASCOR_1D5DCUT = 8      # 1DZWGT but with the 5D grid cut applied
@@ -111,7 +111,7 @@ MASK_BIASCOR_MUCOVADD = 4096  # per-cell additive sigint (forces MAD)
 MASK_BIASCOR_DEFAULT = (MASK_BIASCOR_CELLMAP | MASK_BIASCOR_MUCOVSCALE
                         | MASK_BIASCOR_SAMPLE)
 
-# opt_biascor bits SNANA acts on that jax does not (print_biascor_options, SALT2mu.c:11642)
+# opt_biascor bits SNANA acts on that jax does not (print_biascor_options, SALT2mu.c:11652)
 OPT_BIASCOR_REFUSED = {
     MASK_BIASCOR_1D5DCUT:
         "a 1D biasCor with the 5D grid cut applied, which SNANA itself labels "
@@ -128,15 +128,15 @@ OPT_BIASCOR_REFUSED = {
         "CUTBIT_BIASCOR for them",
 }
 
-# the CC-prior z binsize nzbin_ccprior=0 asks for (SALT2mu.c:17276)
+# the CC-prior z binsize nzbin_ccprior=0 asks for (SALT2mu.c:17290)
 CCPRIOR_ZBIN = 0.10
 
-# M0 bound half-width about M0_DEFAULT (SALT2mu.c:2627-2634)
+# M0 bound half-width about M0_DEFAULT (SALT2mu.c:2630-2637)
 M0_HALFWIDTH = 5.0
 M0_HALFWIDTH_ZPOLY = 10.0     # muref_zpoly stands in for the cosmology
 M0_HALFWIDTH_FIXED = 0.001    # uM0=0
 
-# uM0 options (SALT2mu.c:585-587)
+# uM0 options (SALT2mu.c:587-589)
 M0FITFLAG_CONSTANT = 0
 M0FITFLAG_ZBINS_FLAT = 1
 M0FITFLAG_ZBINS_INTERP = 2
@@ -154,12 +154,12 @@ BBC_NUISANCE_SPEC = {
 }
 
 # the six Hlozek-2011 polynomial coefficients, which SNANA names by slot rather
-# than by spelling (IPAR_H11, NPAR_H11_TOT, SALT2mu.c:6697)
+# than by spelling (IPAR_H11, NPAR_H11_TOT, SALT2mu.c:6707)
 IPAR_H11, NPAR_H11_TOT = 17, 6
 H11_PARAMS = tuple(n for n, spec in BBC_NUISANCE_SPEC.items()
                    if IPAR_H11 <= spec[3] < IPAR_H11 + NPAR_H11_TOT)
 
-# SNANA's INPUTS.parval[] starting values (SALT2mu.c:6701): 0 except these and BBC's own
+# SNANA's INPUTS.parval[] starting values (SALT2mu.c:6711): 0 except these and BBC's own
 SNANA_PARVAL_DEFAULTS = {"logmass_cen": 10.0, "sigint": 0.10,
                          **{n: spec[0] for n, spec in BBC_NUISANCE_SPEC.items()}}
 
@@ -170,7 +170,7 @@ def parval(config: "BBCConfig", name: str) -> float:
 
 
 def use_gamma0(model, config) -> bool:
-    """SNANA's USE_GAMMA0 flag (prep_input_gamma, SALT2mu.c:22820-22828).
+    """SNANA's USE_GAMMA0 flag (prep_input_gamma, SALT2mu.c:22834-22842).
 
     True when the mass-step coefficient is floated or its input value is
     non-zero. With it off, get_gammadm_host returns before computing either the
@@ -233,7 +233,9 @@ class BBCConfig:
     #: Maximum fitted redshift. Required unless zbinuser specifies the bin edges.
     zmax: float = 9.99
     min_per_zbin: int = 1  #: redshift bins holding fewer events than this are dropped from the fit.
-    varname_z: str = "zHD"  #: column holding the redshift each event is fitted at.
+    #: column holding the redshift each event is fitted at; unset, it is zHD,
+    #: or zSPEC in a table without zHD.
+    varname_z: str = ""
 
     # Event selection
     #: column holding the host variable the mass step is measured against.
@@ -474,7 +476,7 @@ class BBCConfig:
 def lcpar_windows(model, config: BBCConfig) -> Dict[str, Tuple[float, float]]:
     """The model's per-parameter windows: its default cuts overridden by its
     cut shorthands. One value serves the selection cut (:17940) and the map
-    axes (SALT2mu.c:6987, :17297), as SNANA's INPUTS do; a generic CUTWIN
+    axes (SALT2mu.c:6997, :17311), as SNANA's INPUTS do; a generic CUTWIN
     moves neither."""
     windows = dict(model.default_cuts)
     for var, (lo, hi) in config.lcpar_range.items():
@@ -529,7 +531,7 @@ def validate_coordinates(model, config):
 def resolve_input_settings(cfg: BBCConfig) -> None:
     """Validate input combinations and apply linked settings before fitting."""
     _check_one_zbin_form(cfg)
-    # keep_cutmask (SALT2mu.c:25659)
+    # keep_cutmask (SALT2mu.c:25693)
     if cfg.cutmask_write not in (0, -9):
         raise SNANAError(
             f"cutmask_write={cfg.cutmask_write} is not implemented; only 0 (fit "
@@ -543,10 +545,10 @@ def resolve_input_settings(cfg: BBCConfig) -> None:
         cfg.use_h11 = False
         cfg.nuisance_float.setdefault('scalePCC', False)
 
-    if [s.upper() for s in cfg.simfile_ccprior] == ["H11"]:   # SALT2mu.c:20234
+    if [s.upper() for s in cfg.simfile_ccprior] == ["H11"]:   # SALT2mu.c:20248
         cfg.use_h11, cfg.simfile_ccprior = True, []
 
-    # vpecerr (km/s) is the same knob as zpecerr (dz), just unit-converted (:20027).
+    # vpecerr (km/s) is the same knob as zpecerr (dz), just unit-converted (:20041).
     if cfg.vpecerr > 0.0:
         cfg.zpecerr = cfg.vpecerr / LIGHT_KM
 
@@ -556,7 +558,7 @@ def resolve_input_settings(cfg: BBCConfig) -> None:
                          function_name="parse_bbc_input")
 
     if cfg.muref_zpoly:
-        # prep_input (SALT2mu.c:22203): the polynomial replaces the cosmology, so M0
+        # prep_input (SALT2mu.c:22217): the polynomial replaces the cosmology, so M0
         # has to interpolate between bins and the chi2max cut is turned off.
         cfg.uM0 = M0FITFLAG_ZBINS_INTERP
         cfg.chi2max = 1.0e9
@@ -572,7 +574,7 @@ def resolve_input_settings(cfg: BBCConfig) -> None:
 
 
 def _check_one_zbin_form(z) -> None:
-    """Exactly one of nzbin / nlogzbin / zbinuser may be given (SALT2mu.c:21951).
+    """Exactly one of nzbin / nlogzbin / zbinuser may be given (SALT2mu.c:21965).
 
     A question about which keys the user typed, so it belongs here and not in
     ``config.resolve``, which sets nzbin from the other two forms, and so would see
@@ -630,11 +632,11 @@ def resolve(config: BBCConfig, model, *, biascor=None, ccprior=None) -> BBCConfi
 
 def ccprior_enabled(config: BBCConfig) -> bool:
     """A fixed scalePCC of zero turns the CC prior off (prep_input,
-    SALT2mu.c:22117).
+    SALT2mu.c:22131).
 
     That block clears INFO_CCPRIOR.USE, which is what fcn gates the whole BEAMS
-    term on (:5209), and it runs before the H11 block re-floats scalePCC
-    (:22143), so it silences an H11 prior as well as a sim-file one:
+    term on (:5217), and it runs before the H11 block re-floats scalePCC
+    (:22157), so it silences an H11 prior as well as a sim-file one:
     simfile_ccprior=H11 sets INFO_CCPRIOR.USE itself (:20233).
     """
     floated = config.nuisance_float.get("scalePCC", False)
@@ -643,7 +645,7 @@ def ccprior_enabled(config: BBCConfig) -> bool:
 
 def _validate_opt_biascor(opt: int) -> None:
     """Refuse an opt_biascor bit jax does not act on, and the combinations
-    prepare_biasCor rejects (SALT2mu.c:11403-11422)."""
+    prepare_biasCor rejects (SALT2mu.c:11413-11432)."""
     for bit, reason in OPT_BIASCOR_REFUSED.items():
         if opt & bit:
             raise SNANAError(
@@ -953,8 +955,8 @@ def _read_words(words: List[str]):
     """Stage 1: words -> (key=value dict, CUTWIN list, CUTWIN NONE flag, keys
     given more than once). No validation. ``CUTWIN var lo hi`` takes four words
     and a later CUTWIN on the same variable replaces the earlier
-    (parseLine_SELECT_VAR, SALT2mu.c:20983, :21128); ``CUTWIN NONE`` disables
-    the cuts (:21012). The qualified forms ``CUTWIN(...)``,
+    (parseLine_SELECT_VAR, SALT2mu.c:20997, :21142); ``CUTWIN NONE`` disables
+    the cuts (:21026). The qualified forms ``CUTWIN(...)``,
     ``CUTWIN_IDSAMPLE(...)`` and ``CUTWIN_SURVEY(...)`` are not implemented."""
     raw: Dict[str, str] = {}
     cutwins: List[Tuple[str, float, float]] = []
@@ -1034,7 +1036,7 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
             return default
         used_names.add(name)
         if cast is str:
-            # remove_quote (sntools.c:6590) drops every quote, not just a surrounding pair.
+            # remove_quote (sntools.c:6283) drops every quote, not just a surrounding pair.
             val = val.replace("'", "").replace('"', "")
         try:
             return cast(val)
@@ -1064,7 +1066,7 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
         # Each SNANA powzbin assignment replaces both components.
         cfg['znhalf'] = float(pz[1]) if len(pz) > 1 else BBCConfig.znhalf
     # blindpar is indexed per fit-parameter slot; SNANA accepts only 9 (OL) and 11
-    # (w0), and aborts on a bare blindpar= (parse_blindpar, SALT2mu.c:20556).
+    # (w0), and aborts on a bare blindpar= (parse_blindpar, SALT2mu.c:20570).
     for slot in (9, 11):
         amp_phase = _split_list(take(f"blindpar{slot}", str, ""))
         if amp_phase:
@@ -1074,7 +1076,7 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
         cfg['surveylist_nobiascor'] = [v for v in _split_list(
             take("surveylist_nobiascor", str, "")) if v.upper() != "NONE"]
 
-    # only GAUSS+UPDATE (SALT2mu.c:484-489)
+    # only GAUSS+UPDATE (SALT2mu.c:486-491)
     opt_ccprior = take("opt_ccprior", int, 0)
     if opt_ccprior not in (0, _OPT_CCPRIOR_DEFAULT):
         raise SNANAError(
@@ -1088,11 +1090,11 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
                 f"zwin_vpec_check takes zmin,zmax; got {len(zwin)} value(s)",
                 function_name="parse_bbc_input")
         cfg['zwin_vpec_check'] = (zwin[0], zwin[1])
-    if "force_pIa" in keyvals:                      # 'perfect' -> -1 (SALT2mu.c:19722)
+    if "force_pIa" in keyvals:                      # 'perfect' -> -1 (SALT2mu.c:19736)
         used_names.add("force_pIa")
         fp = keyvals["force_pIa"].strip()
         cfg['force_pia'] = -1.0 if fp.lower() == "perfect" else float(fp)
-    # force_probcc0: spec-confirmed SNe -> pIa=1 (SALT2mu.c:19731/19734/19736)
+    # force_probcc0: spec-confirmed SNe -> pIa=1 (SALT2mu.c:19745/19748/19750)
     if 'type_list_probcc0' in keyvals:
         cfg['type_list_probcc0'] = [int(t) for t in _split_list(take("type_list_probcc0", default=""))]
     ids = _split_list(take("idsurvey_list_probcc0", default=""))
@@ -1120,7 +1122,7 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
             raise SNANAError("prescale_biascor needs <subset>,<prescale>",
                              function_name="parse_bbc_input")
         subset, prescale = int(parts[0]), int(parts[1])
-        if subset >= prescale:                       # SALT2mu.c:20616
+        if subset >= prescale:                       # SALT2mu.c:20630
             raise SNANAError(
                 f"prescale_biascor subset={subset} must be < prescale={prescale}",
                 function_name="parse_bbc_input")
@@ -1147,7 +1149,7 @@ def _read_snana_settings(items, cutwins, cutwin_disable, repeated,
 def _resolve_chi2max_options(keyvals, cfg, used_names) -> None:
     """chi2max(FITWGT0)= deweights instead of rejecting; chi2max(SURVEYLIST)=
     sets per-survey thresholds, with unlisted surveys keeping the global value
-    (parse_chi2max, SALT2mu.c:20428-20536)."""
+    (parse_chi2max, SALT2mu.c:20442-20550)."""
     keys = list(keyvals)
     for key in keys:
         if not (key.startswith("chi2max(") and key.endswith(")")):
@@ -1197,7 +1199,7 @@ def _check_slot(key: str, name, settable) -> None:
                          function_name="parse_bbc_input")
 
 
-# the spellings SALT2mu still reads for the renamed slopes (SALT2mu.c:19960-19977)
+# the spellings SALT2mu still reads for the renamed slopes (SALT2mu.c:19974-19991)
 _NUISANCE_ALIASES = {"beta1": "dbeta_dz", "alphaHost": "dalpha_dlogm",
                      "betaHost": "dbeta_dlogm"}
 
@@ -1213,7 +1215,7 @@ def _resolve_nuisance(keyvals, cfg, nuis_names, slot_names, used_names) -> None:
             _check_slot(key, name, settable)
         elif key in settable or _NUISANCE_ALIASES.get(key) in settable:
             # SNANA also accepts the core params by name (scalePCC -> parval[13],
-            # SALT2mu.c:19970), not only through the p<N> slots.
+            # SALT2mu.c:19984), not only through the p<N> slots.
             name = _NUISANCE_ALIASES.get(key, key)
             used_names.add(key)
         if name is None:
@@ -1304,7 +1306,7 @@ _REJECTED_KEYS = {
     # opt_chi2max >= 2 is implemented, that pass must fit before selecting.
     **refused('reapplying chi2max selection with recalculated event chi-squares is not supported',
               "opt_chi2max"),
-    # ZPOLY_*: SALT2mu uses whichever row was read last (SALT2mu.c:9276)
+    # ZPOLY_*: SALT2mu uses whichever row was read last (SALT2mu.c:9286)
     **refused('redshift- and survey-dependent intrinsic-scatter covariance is not supported',
               "ZPOLY_sigmB", "ZPOLY_sigx1", "ZPOLY_sigc", "ZPOLY_xi01",
               "ZPOLY_xi0c", "ZPOLY_xi1c"),
@@ -1366,7 +1368,7 @@ def _split_list(value: str) -> List[str]:
 
 
 def _split_idlist(value: str) -> List[int]:
-    """parse_select_IDLIST (SALT2mu.c:20703): comma- or plus-separated integer IDs;
+    """parse_select_IDLIST (SALT2mu.c:20717): comma- or plus-separated integer IDs;
     mixing the two separators aborts. An empty list selects everything."""
     if not value:
         return []
@@ -1394,7 +1396,7 @@ _READ_AS = {
 
 
 def output_path(config, suffix: str) -> str:
-    """Path for an output file. SNANA leaves PREFIX unset ("NONE", SALT2mu.c:6492)
+    """Path for an output file. SNANA leaves PREFIX unset ("NONE", SALT2mu.c:6502)
     and has no default filename, so writing without prefix= is an error."""
     if config.prefix == "NONE":
         raise SNANAError("prefix= is required to write output files")

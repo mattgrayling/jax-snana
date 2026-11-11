@@ -110,8 +110,8 @@ _FORMAT_LITERALS = {
     # the SIMLIB header format carries SALT2 parameters (USE_SIMLIB_SALT2)
     'sampler.py': {'SALT2x1', 'SALT2c'},
     # the central command-line-only key table; the SALT2BETA_cPOLY key SNANA
-    # parses for every GENMODEL (snlc_sim.c:2368); the GENPOP_ASYMGAUSS file
-    # format, whose blocks carry SALT2 populations (snlc_sim.c:6437)
+    # parses for every GENMODEL (snlc_sim.c:2374); the GENPOP_ASYMGAUSS file
+    # format, whose blocks carry SALT2 populations (snlc_sim.c:6449)
     'inputs.py': {'NON1A_INDEX_FORCE', 'NONIA_INDEX_FORCE',
                          'SALT2BETA_cPOLY', 'SALT2x1', 'SALT2c'},
     # the GENPDF_FILE format's own VARNAMES spelling, in the examples of
@@ -119,7 +119,7 @@ _FORMAT_LITERALS = {
     'genpdf.py': {'SALT2c'},
     # the SEARCHEFF map-file format's own variable spellings
     'spectroscopic_efficiency.py': {'SALT2x1', 'SALT2c'},
-    # the SIMLIB header format carries SALT2 parameters (snlc_sim.c:22099)
+    # the SIMLIB header format carries SALT2 parameters (snlc_sim.c:22138)
     'simlib.py': {'SALT2x1', 'SALT2c'},
 }
 

@@ -4,7 +4,7 @@
     python refs.py [--check] [NAME ...]
 
 Rerun after build.py. Runs take ~1 s each. SALT2mu.exe runs from a short temp dir:
-a prefix of 116+ characters overruns `char PREFIX[100]` (SALT2mu.c:1390) onto
+a prefix of 116+ characters overruns `char PREFIX[100]` (SALT2mu.c:1392) onto
 `frac_warn_nobiasCor`.
 """
 
@@ -37,7 +37,7 @@ BASE = {
 
 # blindflag: CONTAM_* have no SIM columns, so SALT2mu blinds them by default.
 # typeIa_ccprior=999: the absent TYPE column reads -9 == the key's default, which
-# would force pIa=1 everywhere (SALT2mu.c:22789). p13 is scalePCC's value, 0 by
+# would force pIa=1 everywhere (SALT2mu.c:22803). p13 is scalePCC's value, 0 by
 # default, which turns the CC prior off.
 BEAMS = {**BASE, "datafile": "CONTAM_DATA.FITRES",
          "simfile_ccprior": "CCPRIOR.FITRES", "opt_ccprior": "5",
@@ -70,7 +70,7 @@ CONFIGS = {
     "SALT2mu_mad":        ({**BASE, "opt_biascor": "2160"}, ["M0DIF"]),
     # spec-z-only data with a half-photo-z biasCor: the photo-z rows match
     # the surveygroup but no data IDSAMPLE (get_IDSAMPLE returns -9,
-    # SALT2mu.c:11252) and fail the IDSAMPLE cut (:18957-18958), keeping
+    # SALT2mu.c:11252) and fail the IDSAMPLE cut (:18971-18972), keeping
     # them out of sigInt and zM0
     "SALT2mu_biascor_stray": ({**BASE,
                                "simfile_biascor": "BIASCOR_PHOTOZ.FITRES",
@@ -79,7 +79,7 @@ CONFIGS = {
                               ["M0DIF", "FITRES"]),
     "SALT2mu_covadd":     ({**BASE, "opt_biascor": "4208"}, ["M0DIF", "FITRES"]),
     # muCOVADD without the muCOVscale bit: only that bit builds the map
-    # (SALT2mu.c:11532), so neither correction is applied
+    # (SALT2mu.c:11542), so neither correction is applied
     "SALT2mu_covadd_nomucov": ({**BASE, "opt_biascor": "4176"},
                                ["M0DIF", "FITRES"]),
     "SALT2mu_sigmb":      ({**BASE, "fitflag_sigmb": "1"}, ["M0DIF"]),
@@ -90,23 +90,23 @@ CONFIGS = {
     "SALT2mu_1dzwgt":     ({**BASE, "opt_biascor": "2", "surveygroup_biascor": ""},
                            ["M0DIF"]),
     # a 1D biasCor rewrites fitflag_sigmb=2 down to 1, dropping the log(sigma) term
-    # the key asks for (SALT2mu.c:11445)
+    # the key asks for (SALT2mu.c:11455)
     "SALT2mu_1d_nolog":   ({**BASE, "opt_biascor": "1", "surveygroup_biascor": "",
                             "fitflag_sigmb": "2"}, ["M0DIF"]),
     # cmin/cmax/x1min/x1max set the biasCor cell ranges as well as the cut
-    # (SALT2mu.c:6987 muCOVscale colour axis, :17297 CC-prior axes), so narrowing
+    # (SALT2mu.c:6997 muCOVscale colour axis, :17297 CC-prior axes), so narrowing
     # one moves which cell an event lands in. The colour pair shows up without a CC
     # prior; the x1 pair only through the CC-prior shape axis, hence the last entry.
     "SALT2mu_cmin":       ({**BASE, "cmin": "-0.2"}, ["M0DIF"]),
     "SALT2mu_cmax":       ({**BASE, "cmax": "0.2"}, ["M0DIF"]),
     # windows wider than the biasCor grid (x1 +-4, c -0.3..0.5), so events
-    # between window and grid face outside_biasCor_grid (SALT2mu.c:19239)
+    # between window and grid face outside_biasCor_grid (SALT2mu.c:19253)
     "SALT2mu_gridcut":    ({**BASE, "x1min": "-6", "x1max": "6",
                             "cmin": "-1", "cmax": "1"}, ["M0DIF", "FITRES"]),
-    # u13=2 floats scalePIa as the H11 Eq. 4 Bayes factor (SALT2mu.c:5530)
+    # u13=2 floats scalePIa as the H11 Eq. 4 Bayes factor (SALT2mu.c:5540)
     "SALT2mu_u13_bayes":  ({**BEAMS, "u13": "2"}, ["M0DIF", "FITRES"]),
     # sim data with truth and a spec-typed subset: CONTAM_TRUE plus the
-    # NSNSPEC_IA subtraction from SUM_PROBIa (SALT2mu.c:24968-24986)
+    # NSNSPEC_IA subtraction from SUM_PROBIa (SALT2mu.c:25002-25020)
     "SALT2mu_contam_true": ({**BEAMS, "datafile": "CONTAM_SIMTYPE.FITRES",
                              "typeIa_ccprior": "1", "write_yaml": "1"},
                             ["M0DIF", "FITRES", "YAML"]),
@@ -117,11 +117,11 @@ CONFIGS = {
                                 "type_list_probcc0": "0,101,102",
                                 "write_yaml": "1"},
                                ["M0DIF", "FITRES", "YAML"]),
-    # deweight (MUERR -> 8888.8) instead of reject (SALT2mu.c:3491)
+    # deweight (MUERR -> 8888.8) instead of reject (SALT2mu.c:3494)
     "SALT2mu_chi2max_fitwgt0": ({**BASE, "chi2max(FITWGT0)": "8"},
                                 ["M0DIF", "FITRES"]),
     # per-survey threshold on the two-survey sample; the bare key before the
-    # survey form seeds the unlisted surveys (SALT2mu.c:20510)
+    # survey form seeds the unlisted surveys (SALT2mu.c:20524)
     "SALT2mu_chi2max_survey": (
         {**BASE, "datafile": "DATA_SDSS.FITRES",
          "simfile_biascor": "BIASCOR_SDSS.FITRES",
@@ -129,7 +129,7 @@ CONFIGS = {
          "chi2max": "16", "chi2max(SDSS)": "6"}, ["M0DIF"]),
     # field samples on the C3, X3, C3+X3, E2 cycle: exact field names, where the
     # overlap C3+X3 and E2 match no group and join the survey's first field
-    # sample (get_IDSAMPLE on SURVEYGROUP, SALT2mu.c:11215-11216); and the
+    # sample (get_IDSAMPLE on SURVEYGROUP, SALT2mu.c:11225-11226); and the
     # substring form with |C3| exact, where C3+X3 goes to X3
     "SALT2mu_fieldlist": (
         {**BASE, "datafile": "DATA_FIELD.FITRES",
@@ -153,28 +153,28 @@ CONFIGS = {
     "SALT2mu_lensing":  ({**BASE, "lensing_zpar": "0.055"}, ["M0DIF"]),
     "SALT2mu_chi2max16":  ({**BASE, "chi2max": "16"}, ["M0DIF"]),
     # bit 128: the bias on mu at each biasCor event's own SIM alpha/beta, one
-    # map entry per cell instead of three (SALT2mu.c:9149, :11339-11340)
+    # map entry per cell instead of three (SALT2mu.c:9149, :11349-11350)
     "SALT2mu_mu":         ({**BASE, "opt_biascor": "240"}, ["M0DIF", "FITRES"]),
     "SALT2mu_chi2max8":   ({**BASE, "chi2max": "8"}, ["M0DIF"]),
     # the only config here whose sigint secant lands away from zero, and the only one
     # where the chi2max cut reads the log(sigma) chi2 a 5D biasCor forces
-    # fitflag_sigmb=1 into (SALT2mu.c:11445, :5506, :3471)
+    # fitflag_sigmb=1 into (SALT2mu.c:11455, :5516, :3474)
     "SALT2mu_chi2max_sigmb": ({**BASE, "chi2max": "16", "fitflag_sigmb": "1"},
                               ["M0DIF", "FITRES"]),
     # the same log(sigma) chi2 at a ceiling events sit against: the reference the
-    # term divides by is the mu-variance of the pass before (:9468, refreshed
+    # term divides by is the mu-variance of the pass before (:9478, refreshed
     # under DO_H0marg, :5024), and reading the LC-fit mB variance in its place
     # moves eight events across this ceiling where it moves none across 16
     "SALT2mu_chi2max_sigmb12": ({**BASE, "chi2max": "12", "fitflag_sigmb": "1"},
                                 ["M0DIF"]),
     # MUERR_RAW and MUERR_VPEC are diagnostics carrying neither sigint nor
-    # muCOVscale (SALT2mu.c:5642). BASE leaves VPECERR at 0 and its secant lands on
+    # muCOVscale (SALT2mu.c:5652). BASE leaves VPECERR at 0 and its secant lands on
     # sigint=0, so this is the one config where both terms are non-zero at once.
     "SALT2mu_vpec_sigmb": ({**BASE, "vpecerr": "250", "fitflag_sigmb": "1",
                             "chi2max": "16"}, ["M0DIF", "FITRES"]),
     "SALT2mu_contam":     (BEAMS, ["M0DIF", "FITRES"]),
     # 1.5 does not divide the fixed 7-mag dmu span, so the axis stops at +3.0 and the
-    # CC events above it drop out of DMUAVG/DMURMS (SALT2mu.c:17290, :17449). The
+    # CC events above it drop out of DMUAVG/DMURMS (SALT2mu.c:17304, :17463). The
     # effect is small -- 3.6e-4 in MUDIF -- so the test tolerance has to sit under it.
     "SALT2mu_dmubin":     ({**BEAMS, "dmubin_ccprior": "1.5"}, ["M0DIF"]),
     # test_bbc_um0_interp
@@ -209,7 +209,7 @@ CONFIGS = {
     "SALT2mu_min_per_zbin":  (_sel(min_per_zbin="40"), ["M0DIF"]),
     "SALT2mu_vpecerr":       (_sel(vpecerr="250"), ["M0DIF"]),
     # a generic CUTWIN on a column BBC does not otherwise read; SALT2mu takes the
-    # four words from the command line (override_parFile, SALT2mu.c:19402)
+    # four words from the command line (override_parFile, SALT2mu.c:19416)
     "SALT2mu_cutwin_snrmax": (_sel(**{ARGV: ["CUTWIN", "SNRMAX1", "20", "1000"]}),
                               ["M0DIF"]),
     "SALT2mu_cutwin_probia": (_sel("CONTAM_DATA.FITRES",
@@ -222,7 +222,7 @@ CONFIGS = {
     "SALT2mu_zbinuser":      (_sel(drop_nzbin=True,
                                    zbinuser="0.1,0.3,0.6,1.0"), ["M0DIF"]),
     # edges inside the data's z span: setup_BININFO_userz overwrites zmin/zmax with
-    # them (SALT2mu.c:2897), so the cut follows the edges and NOT the zmin/zmax keys
+    # them (SALT2mu.c:2900), so the cut follows the edges and NOT the zmin/zmax keys
     "SALT2mu_zbinuser_narrow": (_sel(drop_nzbin=True,
                                      zbinuser="0.2,0.4,0.6"), ["M0DIF"]),
     "SALT2mu_dupl_ignore":   (_sel("DATA_DUP.FITRES", force_realdata="1",

@@ -16,8 +16,9 @@ import jax
 import numpy as np
 
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import (SIM_COSMOLOGY_KEYS, SNANA_NULLFLOAT, open_text,
-                                       read_fitres_multi)
+from jax_snlc_core.snana_files import (SIM_COSMOLOGY_KEYS, SNANA_NULLFLOAT, leading_values,
+                                       read_cid_list, read_fitres_multi, split_names,
+                                       text_lines)
 from jax_snlc_core.utils import LIGHT_KM, fix_covariance
 
 from .config import (MASK_BIASCOR_MUCOVSCALE, BBCConfig, lcpar_windows, map_bins)
@@ -45,12 +46,13 @@ _SIM_TRUTH = {
     "SIM_ZCMB": ("SIM_ZCMB",),
     "SIM_DLMAG": ("SIM_DLMAG",),
     "SIM_WGT_POP": ("SIM_WGT_POP",),
-    "SIM_TEMPLATE_INDEX": ("SIM_NONIA_INDEX", "SIM_TEMPLATE_INDEX"),   # 0 for Ia (SALT2mu.c:8822)
-    "SIM_AV": ("SIM_AV",),                           # a dust model's biasCor (:11930)
+    "SIM_TEMPLATE_INDEX": ("SIM_NONIA_INDEX", "SIM_TEMPLATE_INDEX"),   # 0 for Ia (SALT2mu.c:8832)
+    "SIM_AV": ("SIM_AV",),                           # a dust model's biasCor (:11940)
+    "SIM_gammaDM": ("SIM_gammaDM",),                 # the mass step's truth (:8920)
 }
 
 
-# SNANA CUTMASK bit numbering (SALT2mu.c:614-638).
+# SNANA CUTMASK bit numbering (SALT2mu.c:616-640).
 CUTBIT_z = 0
 CUTBIT_logmass = 3
 CUTBIT_sntype = 4
@@ -151,7 +153,7 @@ def _resolve(table, aliases) -> Dict[str, np.ndarray]:
 
 def isdata_real(table, config: BBCConfig) -> bool:
     """Whether the data table is real data: no template-index column
-    (SALT2mu.c:8822-8832), or force_realdata (:8825). What blinding is resolved
+    (SALT2mu.c:8832-8842), or force_realdata (:8835). What blinding is resolved
     against."""
     if config.force_realdata:
         return True
@@ -197,10 +199,14 @@ def sample_coordinates(table, config):
 
 
 def _read_redshift(table, config):
-    if not table.has(config.varname_z):
-        raise SNANAError(f"varname_z column '{config.varname_z}' is not in the input table",
-                         function_name="convert_table")
-    return _f32(table.get(config.varname_z))
+    """The redshift column varname_z names, or else zHD or zSPEC
+    (get_zString, SALT2mu.c:9824)."""
+    names = [config.varname_z] if config.varname_z else ["zHD", "zSPEC"]
+    for name in names:
+        if table.has(name):
+            return _f32(table.get(name))
+    raise SNANAError(f"the input table has no {' or '.join(names)} column",
+                     function_name="convert_table")
 
 
 def _required_lcpar(model, config, *, biascor=None, ccprior=None):
@@ -268,22 +274,22 @@ def convert_table(table, event_type, config, model, *, biascor=None, ccprior=Non
 
     zhd = _read_redshift(table, config)
     zhel = _f32(table.get("zHEL", zhd))
-    zhel = np.where(zhel < 0.0, zhd, zhel)   # zhel<0 -> zhd (SALT2mu.c:8989)
-    # muerr_z uses only the vpec component (restore_sigz=0 default, SALT2mu.c:9202),
+    zhel = np.where(zhel < 0.0, zhd, zhel)   # zhel<0 -> zhd (SALT2mu.c:8999)
+    # muerr_z uses only the vpec component (restore_sigz=0 default, SALT2mu.c:9212),
     # NOT zhderr.
-    # VPEC_ERR before VPECERR, SNANA's read order (SALT2mu.c:8651)
+    # VPEC_ERR before VPECERR, SNANA's read order (SALT2mu.c:8661)
     vpecerr = _f32(table.get("VPEC_ERR", table.get("VPECERR", np.zeros(table.size))))
-    if config.zpecerr > 1.0e-9:   # user value REPLACES the file's (:9012)
+    if config.zpecerr > 1.0e-9:   # user value REPLACES the file's (:9022)
         vpecerr = np.full(table.size, config.zpecerr * LIGHT_KM)
     zmuerr = vpecerr / LIGHT_KM
-    # check_vpec_sign needs the velocity itself and the CMB-frame z (SALT2mu.c:4192)
+    # check_vpec_sign needs the velocity itself and the CMB-frame z (SALT2mu.c:4195)
     vpec = _f32(table.get("VPEC", np.zeros(table.size)))
-    # absent zCMB stays at SNANA's -9 sentinel (SALT2mu.c:8547), which makes
+    # absent zCMB stays at SNANA's -9 sentinel (SALT2mu.c:8557), which makes
     # check_vpec_sign's "zHD < zCMB" test false, as it is there
     zcmb = _f32(table.get("zCMB", np.full(table.size, SNANA_NULLFLOAT)))
     logmass = _f32(table.get(config.varname_gamma,
                              np.full(table.size, SNANA_NULLFLOAT)))
-    # anything below -990 reads as "not measured" (SALT2mu.c:9307)
+    # anything below -990 reads as "not measured" (SALT2mu.c:9317)
     logmass = np.where(logmass < -990.0, SNANA_NULLFLOAT, logmass)
 
     sim_truth = {}
@@ -293,7 +299,7 @@ def convert_table(table, event_type, config, model, *, biascor=None, ccprior=Non
             sim_truth[raw] = _f32(table.get(col))
 
     # without a template index the input is real data and no SIM column is read
-    # (SALT2mu.c:8822-8832); force_realdata does the same for data (:8825)
+    # (SALT2mu.c:8832-8842); force_realdata does the same for data (:8835)
     if "SIM_TEMPLATE_INDEX" not in sim_truth and event_type == EVENT_TYPE_BIASCOR:
         raise SNANAError("biasCor input has no SIM_TEMPLATE_INDEX or SIM_NONIA_INDEX "
                          "column, so it is not a simulation", function_name="convert_table")
@@ -305,12 +311,26 @@ def convert_table(table, event_type, config, model, *, biascor=None, ccprior=Non
         if missing:
             raise SNANAError(f"simulated input lacks the required column(s) {missing}",
                              function_name="convert_table")
-    if sim_truth and "SIM_WGT_POP" not in sim_truth:
-        # every row starts at unit population weight (SALT2mu.c:8557)
-        sim_truth["SIM_WGT_POP"] = np.ones(table.size)
+    if sim_truth:
+        # every row starts at unit population weight and no mass step
+        # (SALT2mu.c:8567, :8570)
+        sim_truth.setdefault("SIM_WGT_POP", np.ones(table.size))
+        sim_truth.setdefault("SIM_gammaDM", np.zeros(table.size))
 
     if config.uzsim and "SIM_ZCMB" in sim_truth:
         zhd = sim_truth["SIM_ZCMB"]          # z-cheat, before mumodel (:9048)
+
+    # the event's name, under any of SALT2mu's spellings (SALT2mu.c:8594)
+    name_col = next((c for c in ("CID", "CCID", "GALID") if table.has(c)), None)
+    if name_col is None:
+        raise SNANAError("the input table has no CID, CCID or GALID column",
+                         function_name="convert_table")
+    names = np.asarray(table.get(name_col)).astype(str)
+    # a column varname_z names may hold negative values (SALT2mu.c:9224)
+    negative = zhd < 0.0
+    if not config.varname_z and negative.any():
+        raise SNANAError(f"Invalid redshift {zhd[negative][0]} for SNID '{names[negative][0]}'",
+                         function_name="convert_table")
 
     mumodel = _mumodel(zhd, zhel, config, event_type, sim_truth, n_pad=cosmology_width)
 
@@ -321,23 +341,25 @@ def convert_table(table, event_type, config, model, *, biascor=None, ccprior=Non
     if event_type == EVENT_TYPE_DATA and shift != 0.0:
         zhd = np.where(is_photoz, zhd + shift, zhd)
 
-    # absent IDSURVEY stays at SNANA's -9 (SALT2mu.c:8533)
+    # absent IDSURVEY stays at SNANA's -9 (SALT2mu.c:8543)
     idsurvey = np.asarray(table.get("IDSURVEY", np.full(table.size, -9)), dtype=np.int64)
     # one sample without a biasCor; with one, the map builder assigns IDSAMPLE
     idsample = np.zeros(table.size, dtype=np.int64)
-    # SNTYPE is read from the TYPE column (SALT2mu.c:8607 "TYPE:S"), -9 if absent
-    # (SALT2mu.c:8540), which equals typeIa_ccprior's default -9.
+    # SNTYPE is read from the TYPE column (SALT2mu.c:8617 "TYPE:S"), -9 if absent
+    # (SALT2mu.c:8550), which equals typeIa_ccprior's default -9.
     sntype = np.asarray(table.get("TYPE", np.full(table.size, -9)), dtype=np.int64)
 
     pIa = None
     if config.varname_pia and table.has(config.varname_pia):
         pIa = np.asarray(table.get(config.varname_pia), dtype=float)
 
-    snrmax = _f32(table.get("SNRMAX1")) if is_biascor and table.has("SNRMAX1") else None
+    # either spelling, as SALT2mu reads it (SALT2mu.c:8666)
+    snrmax_col = next((c for c in ("SNRMAX", "SNRMAX1") if table.has(c)), None)
+    snrmax = _f32(table.get(snrmax_col)) if is_biascor and snrmax_col else None
     fields = np.asarray(table.get("FIELD")).astype(str) if table.has("FIELD") else None
 
     tv = TableVar(
-        event_type=event_type, name=np.asarray(table.get("CID")).astype(str),
+        event_type=event_type, name=names,
         idsurvey=idsurvey, idsample=idsample, zhd=zhd, zmuerr=zmuerr,
         logmass=logmass, lcpar=lcpar, covmat_fit=covmat_fit, mumodel=mumodel,
         cutbits=np.zeros(table.size, dtype=np.int64), snrmax=snrmax, field=fields,
@@ -397,7 +419,7 @@ def output_varnames(varnames_by_file, config) -> List[str]:
 
 def force_probcc0(tv, config) -> np.ndarray:
     """Mask of spec-confirmed SNe forced to pIa=1: SNTYPE in {typeIa_ccprior} U
-    type_list_probcc0, or IDSURVEY in idsurvey_list_probcc0 (SALT2mu.c:22772)."""
+    type_list_probcc0, or IDSURVEY in idsurvey_list_probcc0 (SALT2mu.c:22786)."""
     sntype = np.asarray(tv.sntype)
     m = sntype == config.typeIa_ccprior
     for t in config.type_list_probcc0:
@@ -410,7 +432,7 @@ def force_probcc0(tv, config) -> np.ndarray:
 def _require_pia_column(tv, config) -> None:
     """A data table without the varname_pIa column is usable only when every
     event is forced to pIa=1, which store_input_varnames counts only under
-    an idsurvey_list_probcc0 (SALT2mu.c:9512, :9542-9579); the biasCor and
+    an idsurvey_list_probcc0 (SALT2mu.c:9522, :9552-9589); the biasCor and
     CC-prior tables need the column only for a CUTWIN on it."""
     forced = (force_probcc0(tv, config) if config.idsurvey_list_probcc0
               else np.zeros(tv.size, dtype=bool))
@@ -426,7 +448,7 @@ def _require_pia_column(tv, config) -> None:
 def passthrough_column(table, name) -> np.ndarray:
     """The column's original tokens, with SNANA's fill where a file lacked it.
 
-    write_fitres_line (SALT2mu.c:24501) re-emits the input words verbatim rather
+    write_fitres_line (SALT2mu.c:24515) re-emits the input words verbatim rather
     than reformatting them, so "0.00100" stays "0.00100" and a missing column is
     the literal "-9.0". Reading them as text is what preserves the input's stated
     precision; the fit uses the separately parsed numeric columns.
@@ -437,11 +459,11 @@ def passthrough_column(table, name) -> np.ndarray:
 
 
 def _is_photoz(table, config) -> np.ndarray:
-    """IS_SPECZ_TABLEVAR (SALT2mu.c:9384), negated.
+    """IS_SPECZ_TABLEVAR (SALT2mu.c:9394), negated.
 
     zPRIOR/zPRIORERR are read only when the key is set and both are present
-    (:8638, :8645); otherwise the comparison falls back to zHELERR, whose
-    absent-column default of -9.0 (:8550) classifies the whole table as spec-z.
+    (:8648, :8655); otherwise the comparison falls back to zHELERR, whose
+    absent-column default of -9.0 (:8560) classifies the whole table as spec-z.
     """
     errmax = config.zspec_errmax_idsample
     opt_photoz = np.asarray(table.get("OPT_PHOTOZ", np.zeros(table.size)), dtype=np.int64)
@@ -455,13 +477,13 @@ def _is_photoz(table, config) -> np.ndarray:
 def _mumodel(zhd, zhel, config, event_type, sim_truth, *, n_pad=None) -> np.ndarray:
     if event_type == EVENT_TYPE_CCPRIOR:
         # the CC map is built at the cosmology the user gave, not the blinded one
-        # (COSPAR_UNBLIND, SALT2mu.c:17843); the zhd approximation is kept (:17842,
+        # (COSPAR_UNBLIND, SALT2mu.c:17857); the zhd approximation is kept (:17856,
         # it averages out in the DMU-PDF).
         return mu_at(zhd, unblinded(config))
     dl_hd = mu_at(zhd, config, n_pad=n_pad)
     if event_type != EVENT_TYPE_BIASCOR:
         if not config.muref_zpoly:
-            # zhel flux-dimming prefactor (SALT2mu.c:9252)
+            # zhel flux-dimming prefactor (SALT2mu.c:9262)
             dl_hd = dl_hd + 5.0 * np.log10((1.0 + zhel) / (1.0 + zhd))
         return dl_hd
     # biasCor reference is anchored to sim truth by a dl-ratio (compute_more_TABLEVAR):
@@ -471,17 +493,21 @@ def _mumodel(zhd, zhel, config, event_type, sim_truth, *, n_pad=None) -> np.ndar
 
 
 def accept_zrate_scale(names, zhd, path) -> np.ndarray:
-    """Deterministic z-dependent downsampling (accept_zrate_scale, SALT2mu.c:22503):
+    """Deterministic z-dependent downsampling (accept_zrate_scale, SALT2mu.c:22517):
     the last three digits of the CID act as the draw, kept when <= the linearly
-    interpolated scale(z). Rows are "z scale"; blanks and comments are skipped."""
+    interpolated scale(z). Each row starts "z scale", separated by blanks or a
+    comma, and a scale above one aborts (prep_input_zrate_scale,
+    SALT2mu.c:22427)."""
     zs, scales = [], []
-    with open_text(path) as stream:
-        for line in stream:
-            w = line.split()
-            if not w or line.startswith((" ", "#")):
-                continue
-            zs.append(float(w[0]))
-            scales.append(float(w[1]))
+    for words in text_lines(path):
+        values = split_names(" ".join(words))
+        z, scale = leading_values(path, "z scale", values, 2)
+        z, scale = float(z), float(scale)
+        if scale > 1.00000001:
+            raise SNANAError(f"{path}: scale {scale} at z = {z} is above one; a rate "
+                             "can only be scaled down", function_name="accept_zrate_scale")
+        zs.append(z)
+        scales.append(scale)
     if not zs:
         return np.ones(len(names), dtype=bool)
     zhd = np.asarray(zhd)
@@ -503,24 +529,13 @@ def read_cid_selection(paths) -> dict:
     """
     selected = {}
     for path in paths:
-        columns = None
-        with open_text(path) as fh:
-            for line in fh:
-                words = line.split()
-                if not words or words[0].startswith("#"):
-                    continue
-                if words[0] == "VARNAMES:":
-                    columns = words[1:]
-                    if "CID" not in columns:
-                        raise SNANAError(f"{path} has a VARNAMES row without CID",
-                                         function_name="read_cid_selection")
-                elif columns is not None and words[0].endswith(":"):
-                    row = dict(zip(columns, words[1:]))
-                    identity = (row["CID"], int(float(row["IDSURVEY"])) if "IDSURVEY" in row else None,
-                                row.get("FIELD"))
-                    selected[identity] = int(float(row.get("IZBIN", -9)))
-                elif columns is None and not words[0].endswith(":"):
-                    selected[(words[0], None, None)] = -9
+        cids, table = read_cid_list(path)
+        columns = {} if table is None else {
+            name: table.get(name) for name in ("IDSURVEY", "FIELD", "IZBIN") if table.has(name)}
+        for i, cid in enumerate(cids):
+            survey = int(columns["IDSURVEY"][i]) if "IDSURVEY" in columns else None
+            field = str(columns["FIELD"][i]) if "FIELD" in columns else None
+            selected[(cid, survey, field)] = int(columns["IZBIN"][i]) if "IZBIN" in columns else -9
     return selected
 
 
@@ -581,14 +596,16 @@ def merge_duplicates(tv: TableVar, config: BBCConfig) -> np.ndarray:
 
 def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray:
     """Per-event bitmask of failed cuts: inclusive CUTWIN windows, the model's default
-    cuts, and the z range. Bit numbering is SNANA's CUTMASK (SALT2mu.c:614).
+    cuts, and the z range. Bit numbering is SNANA's CUTMASK (SALT2mu.c:616).
 
     The sample-defining cuts come first: the z range, the CID lists and the
     sim prescales, and covariance-quality cuts. CUTWIN NONE retains these
     and the subsequent bias-correction validity cuts for data
-    (setbit_CUTMASK, SALT2mu.c:19016)."""
+    (setbit_CUTMASK, SALT2mu.c:19030)."""
 
-    quantities = {config.varname_z: tv.zhd, "zHD": tv.zhd, "logmass": tv.logmass}
+    quantities = {"zHD": tv.zhd, "logmass": tv.logmass}
+    if config.varname_z:
+        quantities[config.varname_z] = tv.zhd
     for name, arr in tv.lcpar.items():
         quantities[name] = np.asarray(arr)
 
@@ -635,7 +652,7 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
         subset, prescale = config.prescale_biascor
         if prescale > 1:                                     # row index, not a counter
             fail(np.fmod(np.arange(tv.size), prescale) != subset, CUTBIT_SIMPS)
-        # only true SNIa enter the biasCor sample (SALT2mu.c:18954-18955)
+        # only true SNIa enter the biasCor sample (SALT2mu.c:18968-18969)
         tmpl = tv.sim_truth.get("SIM_TEMPLATE_INDEX")
         if tmpl is not None:
             fail(np.asarray(tmpl) != 0, CUTBIT_TRUESNIa)
@@ -646,7 +663,7 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
             if tmpl is not None:
                 fail((np.asarray(tmpl) == 0) & ~accept, CUTBIT_SIMPS)
     if tv.event_type == EVENT_TYPE_CCPRIOR:
-        # only true non-Ia enter the CC prior (SALT2mu.c:18983-18985)
+        # only true non-Ia enter the CC prior (SALT2mu.c:18997-18999)
         tmpl = tv.sim_truth.get("SIM_TEMPLATE_INDEX")
         if tmpl is not None:
             fail(np.asarray(tmpl) == 0, CUTBIT_TRUESNCC)
@@ -659,7 +676,7 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
     if tv.baderr is not None:
         fail(tv.baderr, CUTBIT_BADERR)
     if config.fieldlist and tv.field is not None:
-        # select_FIELD (SALT2mu.c:20797): substring match against any listed field
+        # select_FIELD (SALT2mu.c:20809): substring match against any listed field
         keep = np.array([any(f in str(v) for f in config.fieldlist) for v in tv.field])
         fail(~keep, CUTBIT_FIELD)
     fail(~((tv.logmass >= config.logmass_min)
@@ -671,8 +688,8 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
             logger.debug("BBC window %s [%g, %g]: %d rejected", var, lo, hi, bad.sum())
             fail(bad, bit_of.get(var, CUTBIT_CUTWIN))
     # A generic CUTWIN cuts on any column of the table; an absent column aborts
-    # (malloc_TABLEVAR_CUTVAL, SALT2mu.c:8359; set_DOFLAG_SELECT_VAR, :21380).
-    # The name varname_pIa stands for the probability column (:8352-8355).
+    # (malloc_TABLEVAR_CUTVAL, SALT2mu.c:8370; set_DOFLAG_SELECT_VAR, :21395).
+    # The name varname_pIa stands for the probability column (:8362-8365).
     for var, lo, hi in config.cutwin:
         if var == "varname_pIa":
             var = config.varname_pia
@@ -691,7 +708,7 @@ def compute_cutbits(tv: TableVar, config: BBCConfig, model, table) -> np.ndarray
         fail(~np.isin(tv.idsurvey, config.idsurvey_select), CUTBIT_IDSURVEY)
 
     # applyCut_nmax runs last, over events that survived every other cut: keep the
-    # first nmax in file order (SALT2mu.c:3206).
+    # first nmax in file order (SALT2mu.c:3209).
     if tv.event_type == EVENT_TYPE_DATA and config.nmax is not None:
         passing = np.where(bits == 0)[0]
         if passing.size > config.nmax:

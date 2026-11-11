@@ -133,7 +133,7 @@ def test_spec_file_with_no_map_confirms_every_event_but_cannot_be_required(
         snana_fixture, tmp_path):
     """A SPEC file whose rows have no VARNAMES line holds no map: every
     pipeline-found event is confirmed (gen_searcheff_map,
-    sntools_trigger.c:2898-2908), yet the file does not count as a map, so
+    sntools_trigger.c:2900-2910), yet the file does not count as a map, so
     APPLY_SEARCHEFF_OPT may not require confirmation
     (check_APPLYMASK_SEARCHEFF, :133-194)."""
     fx = snana_fixture("searcheff_snii_basic")

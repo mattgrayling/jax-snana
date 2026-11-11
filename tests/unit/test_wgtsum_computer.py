@@ -110,7 +110,7 @@ def _write_snvar_wgtmap(tmp_path, name="X1_LOGMASS.WGTMAP"):
 def test_snvar_wgtsum_enforces_opt_extrap_bounds(hostlib_data, tmp_path):
     """The SNVAR wgtsum path aborts on out-of-range galaxy properties with
     OPT_EXTRAP=0, exactly as the no-SNVAR path: interp_GRIDMAP failure is
-    fatal for every SNVAR bin (sntools_host.c:4330-4352)."""
+    fatal for every SNVAR bin (sntools_host.c:4417-4439)."""
     lm = np.asarray(hostlib_data.columns["LOGMASS"])
     assert (lm.min() < 9.5) or (lm.max() > 10.5), "fixture must have OOB rows"
     path = _write_snvar_wgtmap(tmp_path)
@@ -127,7 +127,7 @@ def test_snvar_wgtsum_enforces_opt_extrap_bounds(hostlib_data, tmp_path):
 
 def test_magobs_99_substituted_with_valmax(hostlib_data, tmp_path):
     """A [band]_obs value of MAG_ZEROFLUX=99 is replaced by VALMAX-0.001
-    before interpolation and the bounds check (sntools_host.c:4316-4322),
+    before interpolation and the bounds check (sntools_host.c:4404-4410),
     so it neither aborts nor keeps the raw 99."""
     r_obs = np.array(hostlib_data.columns["r_obs"], copy=True)
     lo, hi = float(r_obs.min()), 30.0

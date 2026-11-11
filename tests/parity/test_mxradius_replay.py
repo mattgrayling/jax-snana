@@ -31,10 +31,10 @@ def _load_dump(path):
 
 def test_mxradius_geometry_matches_snana(snana_fixture):
     """jax's shift formula reproduces SNANA's shift_RA/shift_DEC exactly when
-    fed SNANA's own drawn radius/phi (gen_random_coord_shift, snlc_sim.c:13152).
+    fed SNANA's own drawn radius/phi (gen_random_coord_shift, snlc_sim.c:13170).
 
     DEC in the dump is post-shift, so the original DEC -- the one SNANA took its
-    single COSDEC from (:13139) -- is recovered as DEC - shift_DEC.
+    single COSDEC from (:13157) -- is recovered as DEC - shift_DEC.
     """
     d = _load_dump(str(snana_fixture("mxradius_replay").dump))
     r, phi = d['shift_RADIUS'], d['shift_PHI']

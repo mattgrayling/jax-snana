@@ -24,19 +24,19 @@ from .config import lcpar_windows, map_bins, parval
 from .distances import bias_coef, mu_coef, mu_lcpar_coef, mu_variance_scaled
 from .tablevar import CUTBIT_BIASCOR, force_probcc0
 
-DMUMIN, DMUMAX = -3.0, 4.0        # SALT2mu.c:17288
-MINEVT_PER_CELL = 5               # SALT2mu.c:17377 (strict >, so needs >=6)
-PIFAC = 0.3989422804014327        # 1/sqrt(2*pi), SALT2mu.c:2222
-BEAMS_PROB_NORM = 0.15            # Prob_SUM scale before -2ln (SALT2mu.c:5611)
-CHI2_BEAMS_NOPROB = 1.0e8         # Prob_SUM <= 0 (SALT2mu.c:5616)
+DMUMIN, DMUMAX = -3.0, 4.0        # SALT2mu.c:17302
+MINEVT_PER_CELL = 5               # SALT2mu.c:17391 (strict >, so needs >=6)
+PIFAC = 0.3989422804014327        # 1/sqrt(2*pi), SALT2mu.c:2224
+BEAMS_PROB_NORM = 0.15            # Prob_SUM scale before -2ln (SALT2mu.c:5621)
+CHI2_BEAMS_NOPROB = 1.0e8         # Prob_SUM <= 0 (SALT2mu.c:5626)
 _BEAMS_ARG_FLOOR = 1.0e-140       # below this, -1/arg^2 overflows the Hessian
 
 
 def dmu_window_max(dmubin: float) -> float:
-    """Top of the dmu window actually covered by whole bins (SALT2mu.c:17290-17295).
+    """Top of the dmu window actually covered by whole bins (SALT2mu.c:17304-17309).
 
     SNANA sets nbin = int((DMUMAX-DMUMIN)/dmubin) and then keeps only events whose bin
-    index is in range (:17449), so a width that does not divide the 7-mag span leaves
+    index is in range (:17463), so a width that does not divide the 7-mag span leaves
     the remainder uncovered and those events out of DMUAVG/DMURMS. At the default 0.5
     this is exactly DMUMAX.
     """
@@ -63,9 +63,9 @@ class CCPriorInputs(NamedTuple):
 
 class H11PriorInputs(NamedTuple):
     """Fixed inputs for the analytic Hlozek-2011 polynomial CC prior
-    (prob_CCprior_H11, SALT2mu.c:18311). ``muerrsq_raw`` is the CC mu-variance at the
+    (prob_CCprior_H11, SALT2mu.c:18325). ``muerrsq_raw`` is the CC mu-variance at the
     fixed config-start alpha/beta (INPUTS.parval, deliberately not the fit values,
-    SALT2mu.c:18357); the poly params float."""
+    SALT2mu.c:18371); the poly params float."""
     z: np.ndarray              # [n] data zHD
     muerrsq_raw: np.ndarray    # [n] fcn_muerrsq at start alpha/beta, no sigint
     pIa: np.ndarray            # [n] per-event P(Ia)
@@ -115,7 +115,7 @@ def cell_index(bins, values) -> np.ndarray:
 
 def _cells_per_sample(bins) -> int:
     """SNANA keeps one DMU Gaussian per (IDSAMPLE, cell): DMUAVG[IDSAMPLE][i3d]
-    (SALT2mu.c:17502), filled per sample and skipping foreign events (:17438)."""
+    (SALT2mu.c:17516), filled per sample and skipping foreign events (:17452)."""
     return int(np.prod([b.nbin for b in bins]))
 
 
@@ -204,23 +204,23 @@ def ccprior_data(prior, data_tv, data_accept, model, config) -> CCPriorInputs:
 
 def _pIa(data_tv, config) -> np.ndarray:
     """Per-event P(Ia): force_pIa='perfect' -> 1 for true SNIa else 0, else the
-    varname_pIa column (SALT2mu.c:9259). Spec-confirmed SNe (force_probcc0) are
+    varname_pIa column (SALT2mu.c:9269). Spec-confirmed SNe (force_probcc0) are
     forced to pIa=1 when a varname_pIa classifier is in use (REQUIRE_pIa)."""
     fp = config.force_pia
     if fp is not None and fp < 0:   # 'perfect' encoded as force_pia = -1
-        if not data_tv.sim_truth:                    # !IS_SIM (SALT2mu.c:9263)
+        if not data_tv.sim_truth:                    # !IS_SIM (SALT2mu.c:9273)
             raise SNANAError("force_pIa=perfect works only on simulated data",
                              function_name="build_ccprior")
         pia = (np.asarray(data_tv.sim_truth["SIM_TEMPLATE_INDEX"]) == 0).astype(float)
     elif fp is not None:
         pia = np.full(data_tv.size, float(fp))
-    elif data_tv.pIa is None:               # REQUIRE_pIa (SALT2mu.c:9301)
+    elif data_tv.pIa is None:               # REQUIRE_pIa (SALT2mu.c:9311)
         raise SNANAError(
             "CC prior needs force_pIa or a varname_pIa classifier column",
             function_name="build_ccprior")
     else:
         pia = np.asarray(data_tv.pIa, dtype=float)
-    if config.varname_pia:                       # EXIST_pIa -> REQUIRE_pIa (SALT2mu.c:22175)
+    if config.varname_pia:                       # EXIST_pIa -> REQUIRE_pIa (SALT2mu.c:22189)
         pia = np.where(force_probcc0(data_tv, config), 1.0, pia)
     return pia
 
@@ -269,7 +269,7 @@ def _ccprior_dPdmu(spec, cc, nuis, mures):
 
 def h11_dPdmu(h11, nuis, mures):
     """Per data event dPdmu_CC from the H11 polynomial prior (prob_CCprior_H11,
-    SALT2mu.c:18353): mu-offset and sigintCC are 2nd-order poly(z); the CC width is
+    SALT2mu.c:18367): mu-offset and sigintCC are 2nd-order poly(z); the CC width is
     muerrsq_raw + sigintCC^2 (always positive, so no sqrt guard)."""
     z = h11.z
     ccpoly = nuis["H11mucc0"] + nuis["H11mucc1"] * z + nuis["H11mucc2"] * z * z
@@ -281,11 +281,11 @@ def h11_dPdmu(h11, nuis, mures):
 
 def beams_probs(nuis, mures, muerrsq, dPdmu_CC, pIa, fitflag2, muerrsq_last,
                 bayes=False):
-    """BEAMS per-event ``(PROBCC_BEAMS, chi2)`` (MNCHI2FUN, SALT2mu.c:5518-5617).
+    """BEAMS per-event ``(PROBCC_BEAMS, chi2)`` (MNCHI2FUN, SALT2mu.c:5528-5627).
 
     The Ia term is a Gaussian in the fitted residual scaled by ``PIFAC/muerr_update``,
     where ``muerr_update`` is the current mu-error under fitflag_sigmb=2 and the frozen
-    ``muerrsq_last`` otherwise (:5537). ``bayes`` applies scalePCC as the H11
+    ``muerrsq_last`` otherwise (:5547). ``bayes`` applies scalePCC as the H11
     Eq. 4 Bayes factor instead of the class-weight rescale (u13=2,
     :5530-5535). ``chi2`` is ``-2ln`` of the class-weighted probability sum;
     SNANA substitutes a large penalty where that sum vanishes (:5616).

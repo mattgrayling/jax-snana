@@ -58,7 +58,7 @@ def _parse_dndz_multiplier(name_str: str) -> Tuple[float, str]:
     """Parse optional multiplier from DNDZ model name.
 
     Handles: '0.7*CC_S15', 'CC_S15*0.7', 'CC_S15' (scale=1.0).
-    Matches sntools.c:2999 parse_multiplier.
+    Matches sntools.c:2996 parse_multiplier.
     """
     if '*' in name_str:
         parts = name_str.split('*')
@@ -115,7 +115,7 @@ def _sfr_integral(z_grid: np.ndarray, cosmology) -> np.ndarray:
 
 
 # sntools.h:76. DNDZ_FILE declares the full SNANA redshift range
-# (snlc_sim.c:2915); the table itself bounds what can be evaluated.
+# (snlc_sim.c:2921); the table itself bounds what can be evaluated.
 ZMAX_SNANA = 10.0
 
 
@@ -130,7 +130,7 @@ def compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
     if model in ('POWERLAW', 'POWERLAW2'):
         return dndz_param['A'] * (1.0 + z_grid) ** dndz_param['B']
     if model == 'CC_S15':
-        # Strolger 2015: k * h^2 * SFR_MD14 (snlc_sim.c:18009-18020).
+        # Strolger 2015: k * h^2 * SFR_MD14 (snlc_sim.c:18027-18038).
         h = dndz_param['h0'] / 100.0
         return (dndz_param['scale'] * 0.0091 * h**2
                 * _SFRfun_MD14(z_grid, 0.015, 1.50, 5.00, 6.10))
@@ -144,7 +144,7 @@ def compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
     if model in ('HUBBLE', 'FLAT'):
         return np.full_like(z_grid, dndz_param['rate'], dtype=np.float64)
     if model == 'PISN_PLK12':
-        # Pair-instability SN rate in Gpc^-3 (snlc_sim.c:18030).
+        # Pair-instability SN rate in Gpc^-3 (snlc_sim.c:18048).
         z = z_grid
         rate = (1.98 + 6.38 * z + 6.558 * z**2
                 - 4.42 * z**3 + 0.8312 * z**4 - 0.0508 * z**5)
@@ -155,7 +155,7 @@ def compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
         return eval_genpoly(dndz_param['coeffs'], z_grid)
     if model == 'ABMODEL':
         cosmology = dndz_param['cosmology']
-        # SNANA swaps the prompt SFR's z/H0 arguments (snlc_sim.c:18051),
+        # SNANA swaps the prompt SFR's z/H0 arguments (snlc_sim.c:18069),
         # making B nearly inert. Here both terms use the physical redshift.
         return (dndz_param['A'] * _sfr_integral(z_grid, cosmology)
                 + dndz_param['B'] * _sfr_bg03(z_grid, cosmology.h0))
@@ -165,7 +165,7 @@ def compute_rate_on_grid(z_grid: np.ndarray, dndz_param: Dict) -> np.ndarray:
 
 def _parse_poly_coeffs(tokens: List[str]) -> List[float]:
     """ZPOLY coefficients, comma-separated or SNANA's legacy space-separated
-    form (read_genpoly, sntools.c:11586)."""
+    form (read_genpoly, sntools.c:11279)."""
     if len(tokens) == 1 and ',' in tokens[0]:
         tokens = tokens[0].split(',')
     try:
@@ -177,7 +177,7 @@ def _parse_poly_coeffs(tokens: List[str]) -> List[float]:
 
 
 def _check_powerlaw_bounds(A: float, B: float) -> None:
-    """Fatal A/B bounds shared by POWERLAW and POWERLAW2 (snlc_sim.c:18060-18066)."""
+    """Fatal A/B bounds shared by POWERLAW and POWERLAW2 (snlc_sim.c:18078-18084)."""
     if A > 10.0 or B > 10.0:
         raise SNANAError(
             f"Invalid parameters for powerlaw rate model: alpha={A} beta={B} "
@@ -363,7 +363,7 @@ def calculate_expected_sn_count(dndz_params: List[Dict],
                                 hz_map, rate_mods) -> float:
     """Expected number of SNe per season over SOLID_ANGLE. The season is
     the peak-MJD range less the excluded window (SNcount_model,
-    snlc_sim.c:17926)."""
+    snlc_sim.c:17944)."""
     if not dndz_params:
         return 0.0
 
@@ -425,22 +425,22 @@ def season_counts(config, hz_map) -> Tuple[float, float]:
 def resolve_counts(config, hz_map) -> Tuple[int, int, float, float]:
     """Resolve how many events to generate and the PEC1A share of them.
 
-    SNANA supports three modes (snlc_sim.c:7146-9221): NGENTOT_LC (fixed
+    SNANA supports three modes (snlc_sim.c:7158-9236): NGENTOT_LC (fixed
     total), NGEN_LC (generate until N pass cuts), or NGEN_SEASON (rate × time ×
     area). NGEN_SCALE multiplies whichever is in play. Exactly one of the three
     must be set. Returns ``(n_simulated, ngen_lc, frac_pec1a, season_count)``,
     with ``ngen_lc`` already NGEN_SCALE-scaled and ``season_count`` the rate
-    model's events per season (SEASON_COUNT, snlc_sim.c:9178-9179).
+    model's events per season (SEASON_COUNT, snlc_sim.c:9193-9194).
     """
     # NGEN_SCALE_NON1A scales the count for NON1A/SIMSED models only
-    # (snlc_sim.c:7124).
+    # (snlc_sim.c:7136).
     scale = config.run.ngen_scale
     if MODEL_REGISTRY[config.model.model_type].uses_nonia_rates:
         scale *= config.run.ngen_scale_non1a
     ngentot_lc, ngen_lc, ngen_season = (
         config.run.ngentot_lc, config.run.ngen_lc, config.run.ngen_season)
 
-    # prep_SIMLIB_DUMP forces NGENTOT_LC (snlc_sim.c:32558)
+    # prep_SIMLIB_DUMP forces NGENTOT_LC (snlc_sim.c:32618)
     if config.survey.simlib_dump >= 0:
         ngentot_lc, ngen_lc, ngen_season = 150000, 0, 0.0
 
@@ -455,7 +455,7 @@ def resolve_counts(config, hz_map) -> Tuple[int, int, float, float]:
             "Required: one of NGEN_LC, NGENTOT_LC or NGEN_SEASON must be set.",
             function_name="resolve_counts")
 
-    # (int)(NGEN_LC*NGEN_SCALE), snlc_sim.c:7146
+    # (int)(NGEN_LC*NGEN_SCALE), snlc_sim.c:7158
     ngen_lc = int(ngen_lc * scale)
 
     sn_sum, pec1a_sum = season_counts(config, hz_map)
@@ -486,11 +486,11 @@ def _cdf_on_grid(config, hz_map, z_grid, dndz_params, rate_mods) -> jnp.ndarray:
 def build_murewgt(config, hz_map):
     """The DNDZ reweight's CDF against distance modulus, from which a MUSHIFT
     range is drawn so that a shifted event keeps the reweighted redshift
-    distribution (prep_user_murewgt, snlc_sim.c:7662). The grid runs in
+    distribution (prep_user_murewgt, snlc_sim.c:7677). The grid runs in
     steps of 0.001 from the lowest generated redshift to 0.1 past the one
     whose distance is the highest generated distance plus the top of the
     MUSHIFT range. None unless there is both a MUSHIFT range and a
-    z-dependent DNDZ_ZPOLY_REWGT or DNDZ_Z1POLY_REWGT (snlc_sim.c:7650)."""
+    z-dependent DNDZ_ZPOLY_REWGT or DNDZ_Z1POLY_REWGT (snlc_sim.c:7665)."""
     lo, hi = config.model.mushift
     mods = config.rates.dndz_rate_mods
     zpoly, z1poly = mods['zpoly'], mods['z1poly']
@@ -524,8 +524,8 @@ def build_redshift_cdf(config, hz_map):
     """Numerical CDF for dN/dz including the comoving volume element.
 
     DNDZ_PEC1A gives the peculiar-Ia population its own rate, hence its own
-    CDF; set_RATEPAR (snlc_sim.c:14525) picks per event by template class,
-    taking none of the DNDZ_* reweights (snlc_sim.c:2722).
+    CDF; set_RATEPAR (snlc_sim.c:14543) picks per event by template class,
+    taking none of the DNDZ_* reweights (snlc_sim.c:2728).
     """
     z_min, z_max = config.rates.redshift_range
     z_grid = np.linspace(z_min, z_max, 2000)

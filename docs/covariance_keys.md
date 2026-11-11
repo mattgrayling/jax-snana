@@ -28,11 +28,10 @@ also supported, including
 | 4 | Total covariance, `covtot_000.npz`. |
 | 8 | Statistical variances and systematic shift vectors, `covtot_factorized_000.npz`. |
 
-The number in the filename identifies the covopt. Python and Pippin pipelines
-default to 8; the standalone command defaults to 2. Use 10 to write both.
-When a selected covopt includes an external dense covariance, requesting
-factorized output writes a dense inverse for that covopt instead. Dense
-systematic and total matrices can also be requested.
+The number in the filename identifies the covopt. The default is 8; use 10
+to write both the factorized and the inverse files. A covopt that includes an
+external dense covariance has no factorized form, so with 8 alone nothing is
+written for it, and a pipeline refuses it. Dense systematic and total matrices can also be requested.
 `write_format_cov` selects `npz` or `text` for dense matrices; factorized
 outputs use NumPy archives. {ref}`covariance-output-files` gives the schemas.
 

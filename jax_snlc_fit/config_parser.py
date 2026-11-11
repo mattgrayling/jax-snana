@@ -69,8 +69,8 @@ _OPEN_KEY_PREFIXES = ('CUTWIN_', 'INIVAL_', 'INISTP_', 'FITWIN_')
 _KEY_ALIAS_GROUPS = (
     ('FITWIN_MJD', 'MJD_REJECT'),                    # EQUIVALENCE
     ('FITWIN_TREST', 'TREST_REJECT'),                # EQUIVALENCE
-    ('OPT_COVAR_FLUX', 'OPT_COVAR'),                 # snlc_fit.F90:570
-    ('OPT_COVAR_MWXTERR', 'OPT_XTMW_ERR'),           # snlc_fit.F90:573
+    ('OPT_COVAR_FLUX', 'OPT_COVAR'),                 # snlc_fit.F90:579
+    ('OPT_COVAR_MWXTERR', 'OPT_XTMW_ERR'),           # snlc_fit.F90:582
     ('PRIOR_SHAPE_RANGE', 'PRIOR_LUMIPAR_RANGE'),
     ('PRIOR_SHAPE_SIGMA', 'PRIOR_LUMIPAR_SIGMA'),
     ('PRIOR_AV_EXP', 'PRIOR_AVEXP'),
@@ -383,7 +383,7 @@ def _opt_vmax(raw, into) -> None:
 
 def _opt_sncid_list(raw, into) -> None:
     """OPT_SNCID_LIST bits (snana.F90:6013), which FLAG_USE_SAME_EVENTS
-    overrides when positive (:6290); bit 2 needs per-SN Gaussian priors in
+    overrides when positive (:6334); bit 2 needs per-SN Gaussian priors in
     every model, so it is refused."""
     opt = int(float(raw.get("OPT_SNCID_LIST", 0)))
     if int(float(raw.get("FLAG_USE_SAME_EVENTS", 0))) > 0:
@@ -772,7 +772,7 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
         kw["photometry_columns"] = dict(
             toks[i:i + 2] for i in range(0, len(toks), 2))
 
-    # SNANA forces E(B-V) only above -0.001 (snana.F90:17209); its default,
+    # SNANA forces E(B-V) only above -0.001 (snana.F90:17298); its default,
     # -9, leaves it off
     if "MWEBV_FORCE" in raw:
         force = float(raw["MWEBV_FORCE"])
@@ -980,14 +980,14 @@ def build(raw: Dict[str, Any], *, settings=None) -> FitConfig:
     if "OPT_COVAR_FLUX" in raw:
         kw["use_offdiag_covariance"] = int(float(raw["OPT_COVAR_FLUX"])) != 0
 
-    # SNANA applies no prior for a scale of 9 or more (snlc_fit.F90:4910);
+    # SNANA applies no prior for a scale of 9 or more (snlc_fit.F90:4961);
     # namelists write 100 or 1000 to switch it off
     if "PRIOR_MUERRSCALE" in raw:
         scale = float(raw["PRIOR_MUERRSCALE"])
         kw["prior_muerrscale"] = scale if scale < 9.0 else None
     _pair(raw, "PHOTOZ_BOUND", kw)
     _pair(raw, "PHOTOZ_ITER1_LAMRANGE", kw)
-    # coarse-grid colour and shape axes (snlc_fit.F90:606-617)
+    # coarse-grid colour and shape axes (snlc_fit.F90:615-626)
     coarse_grid = {}
     for slot, range_key, nbin_key in (
             ('COLOR', 'RANGEC_COURSE_PHOTOZ', 'NBINC_COURSE_PHOTOZ'),
@@ -1066,7 +1066,7 @@ _FITWIN_REFUSED = {
 }
 
 # FITWIN arrays are initialised wide, so an input may set one edge alone
-# (CUTINI, snlc_fit.F90:6763-6764).
+# (CUTINI, snlc_fit.F90:6813-6814).
 _FITWIN_OPEN = 9.0e8
 
 
@@ -1079,7 +1079,7 @@ def _fitwin_pair(value) -> Tuple[float, float]:
 
 def _read_require_epochs(raw: UsedTrackingDict, kw: dict) -> None:
     """REQUIRE_EPOCHS_STRING, in its four-word and keyword forms
-    (PARSE_REQUIRE_EPOCHS, snana.F90:16466)."""
+    (PARSE_REQUIRE_EPOCHS, snana.F90:16555)."""
     if "REQUIRE_EPOCHS_STRING" not in raw:
         return
     toks = [str(t) for t in _as_list(raw["REQUIRE_EPOCHS_STRING"])]
@@ -1505,7 +1505,8 @@ def resolve_settings(config):
         photoz.dofit_photoz = True
     if photoz.opt_photoz & 8:
         photoz.opt_photoz |= 4
-    if photoz.opt_photoz & 2 and photoz.prior_zerrscale == PRIOR_ZERRSCALE_UNSET:
+    # a host photo-z or quantile prior defaults the scale to one (snlc_fit.F90:1823-1827)
+    if photoz.opt_photoz & (2 | 4) and photoz.prior_zerrscale == PRIOR_ZERRSCALE_UNSET:
         photoz.prior_zerrscale = 1.0
     gaussian_mu_prior = photoz.prior_muerrscale is not None
     flat_mu_prior = photoz.prior_dmu_range is not None

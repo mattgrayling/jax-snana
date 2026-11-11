@@ -25,7 +25,7 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.filters import filter_band, filter_values
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.noise import fluxcal_errcalc
-from jax_snlc_core.snana_files import SNANA_NULLFLOAT, read_fitres
+from jax_snlc_core.snana_files import SNANA_NULLFLOAT, read_cid_list
 from jax_snlc_core.utils import (CUTVAL_OPEN, apply_range_cuts, in_window, narrow,
                                  range_cut_masks)
 
@@ -58,8 +58,8 @@ def band_maxima(values, band_index, accepted, n_bands):
 
 def gap_maxima(times, accepted, t0_lo, t0_hi):
     """Largest gap between consecutive accepted epochs, and the largest one
-    touching the peak window (GET_TRESTVAR, snana.F90:21105-21106, :21167-21181;
-    gen_cutwin, snlc_sim.c:24390-24417).
+    touching the peak window (GET_TRESTVAR, snana.F90:21197-21198, :21167-21181;
+    gen_cutwin, snlc_sim.c:24442-24469).
 
     The window is bounded by where the TRESTMIN and TRESTMAX cuts meet, so
     left open it inverts and every gap qualifies. Both start at -999 and only
@@ -136,7 +136,7 @@ def apply_snana_selection(
     ladder: list,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Pre-fit SN selection mask, mirroring SNANA's SNLC cut evaluation
-    (snana.F90:21430-21460).
+    (snana.F90:21522-21552).
 
     ``windows`` maps cut names to inclusive (lo, hi) ranges, evaluated by
     the shared jax_snlc_core.utils machinery against per-SN derived
@@ -165,7 +165,7 @@ def apply_snana_selection(
                    - np.asarray(batch.peakmjd_offsets)[:, None])
              / trest_z1(batch.redshifts)[:, None])
 
-    # RDHEAD_DRIVER's CID/SNTYPE/model-type cuts (snana.F90:4114-4203)
+    # RDHEAD_DRIVER's CID/SNTYPE/model-type cuts (snana.F90:4130-4223)
     keep = narrow(np.ones(n, dtype=bool), 'CID/SNTYPE', _header_selection(
         batch, head_sntypes, sntype_list=sntype_list, sncid_list=sncid_list,
         snccid_names=snccid_names,
@@ -175,7 +175,7 @@ def apply_snana_selection(
     keep = narrow(keep, 'DUPLICATE_CID',
                   duplicate_cid_mask(batch, abort_on_duplcid), ladder)
     if sim_prescale > 1.000001:
-        # REJECT_PRESCALE (snana.F90:4083, :9990)
+        # REJECT_PRESCALE (snana.F90:4099, :10062)
         keep = narrow(keep, 'SIM_PRESCALE',
                       np.mod(np.arange(n, dtype=float), sim_prescale) == 0.0,
                       ladder)
@@ -303,18 +303,18 @@ def apply_snana_selection(
                        & (mjd < hi[:, None])).any(axis=1)
         keep = narrow(keep, 'REQUIRE_EPOCHS', ok, ladder)
 
+    # a cut names a PRIVATE(<name>) column by its name (snana.F90:5391)
     if private_windows:
         extras = batch.head_extras
-        missing = [n for n in private_windows if n not in extras]
+        missing = [n for n in private_windows if f'PRIVATE({n})' not in extras]
         if missing:
             raise SNANAError(
                 f"PRIVATE_CUTWIN_STRING names {', '.join(sorted(missing))}, "
-                f"which the HEAD file does not carry (or which "
-                f"PRIVATE_VARNAME_READLIST did not request). Available: "
-                f"{', '.join(sorted(k for k in extras if k.startswith('PRIVATE')))}")
+                f"which the HEAD file does not carry as PRIVATE(<name>) (or "
+                f"which PRIVATE_VARNAME_READLIST did not request).")
         keep = narrow(keep, 'PRIVATE', apply_range_cuts(
             private_windows,
-            {n: np.asarray(extras[n], dtype=float) for n in private_windows}),
+            {n: np.asarray(extras[f'PRIVATE({n})'], dtype=float) for n in private_windows}),
             ladder)
 
     if private_veto:
@@ -323,12 +323,12 @@ def apply_snana_selection(
         extras = batch.head_extras
         vetoed = np.ones(n, dtype=bool)
         for name, value in private_veto.items():
-            if name not in extras:
+            if f'PRIVATE({name})' not in extras:
                 raise SNANAError(
                     f"PRIVATE_CUTWIN_STRING vetoes on {name}, which the HEAD "
-                    f"file does not carry.",
+                    f"file does not carry as PRIVATE(<name>).",
                     function_name="PRIVATE_CUTWIN_STRING")
-            vetoed &= np.asarray(extras[name], dtype=float) != value
+            vetoed &= np.asarray(extras[f'PRIVATE({name})'], dtype=float) != value
         keep = narrow(keep, 'PRIVATE_VETO', vetoed, ladder)
 
     if simvar_windows:
@@ -495,22 +495,6 @@ def _header_selection(batch, head_sntypes, *, sntype_list, sncid_list,
     return keep
 
 
-def _read_cid_file(path):
-    """CIDs from a SNCID list file, plus its table when it is in FITRES format.
-
-    match_cidlist_init (sntools.c:259) takes either format; only the table one
-    carries the fit parameters OPT_SNCID_LIST bit 1 seeds from.
-    """
-    path = os.path.expandvars(path)
-    with open(path) as fh:
-        text = fh.read()
-    if 'VARNAMES:' not in text:
-        return [tok for line in text.splitlines()
-                for tok in line.split("#")[0].split()], None
-    table = read_fitres(path)
-    return [str(c) for c in table.df['CID']], table
-
-
 def _cid_list(numeric, strings, path):
     """One CID list from its numeric, string and file spellings, the names
     among the strings and the file, and the list-file table.
@@ -528,7 +512,8 @@ def _cid_list(numeric, strings, path):
     names = [str(c).strip() for c in (strings or [])[:blank]]
     table = None
     if path:
-        from_file, table = _read_cid_file(path)
+        # only a table carries the fit parameters OPT_SNCID_LIST bit 1 seeds from
+        from_file, table = read_cid_list(os.path.expandvars(path))
         names += from_file
     return cids + names, names, table
 
@@ -559,7 +544,7 @@ def drop_unfittable(batch, nepoch_window, *, abort_on_noepochs,
     badq = np.zeros(batch.n_sne, dtype=bool)
     needs_quantiles = epoch_ok & np.asarray(quantile_prior, dtype=bool)
     if needs_quantiles.any():
-        # FITINI_PHOTOZ, snlc_fit.F90:8468-8478, :8540-8543
+        # FITINI_PHOTOZ, snlc_fit.F90:8512-8522, :8540-8543
         missing = (needs_quantiles if batch.zpdf_quantiles is None else
                    needs_quantiles & (np.asarray(batch.zpdf_nbin) == 0))
         if missing.any() and abort_on_missing_qzphot:
@@ -634,13 +619,13 @@ def build_selection(config, cutwin, listed):
 
 
 # The Trest-family cuts a photo-z fit relaxes before fitting and re-applies
-# after (snlc_fit.F90:3289-3312). 'trest' is an epoch cut, the rest per-SN.
+# after (snlc_fit.F90:3321-3344). 'trest' is an epoch cut, the rest per-SN.
 PHOTOZ_TREST_CUTS = ('trest', 'trestmin', 'trestmax', 't0gapmax', 'tgapmax')
 
 
 def trest_zcut(edge: int, z: float, trest: float) -> float:
     """Loosen one edge of a rest-frame cut for a trial redshift: edge 1 goes
-    below ``trest``, edge 2 above (TRESTzCUT, snlc_fit.F90:3661)."""
+    below ``trest``, edge 2 above (TRESTzCUT, snlc_fit.F90:3693)."""
     z1 = 1.0 + z
     if edge == 1:
         return trest * (1.0 / z1 if trest >= 0.0 else z1)
@@ -650,7 +635,7 @@ def trest_zcut(edge: int, z: float, trest: float) -> float:
 def relax_photoz_trest_cuts(config, cutwin, epoch_cutwin):
     """``cutwin`` and ``epoch_cutwin`` with the Trest-family cuts widened for
     the fit, and the nominal ones, which are re-tested after it
-    (PHOTOZ_SAVECUT, snlc_fit.F90:3703)."""
+    (PHOTOZ_SAVECUT, snlc_fit.F90:3735)."""
     z = config.photoz.photoz_bound[1]
     nominal = {name: window for store in (cutwin, epoch_cutwin)
                for name, window in store.items() if name in PHOTOZ_TREST_CUTS}
@@ -666,8 +651,8 @@ def relax_photoz_trest_cuts(config, cutwin, epoch_cutwin):
 def cut_windows(config):
     """``(cutwin, epoch_cutwin, nominal)``: the ``CUTWIN_`` windows as the
     run applies them. A photo-z fit widens the Trest ones for the fit and
-    re-tests ``nominal``, the windows as given, after it (snlc_fit.F90:3289,
-    PHOTOZ_SAVECUT :3703)."""
+    re-tests ``nominal``, the windows as given, after it (snlc_fit.F90:3321,
+    PHOTOZ_SAVECUT :3735)."""
     selection = config.selection
     if not config.photoz.dofit_photoz:
         return selection.cutwin, selection.epoch_cutwin, {}
@@ -721,7 +706,7 @@ def _fitwin_mask(windows, model, results, redshifts, mu_ref, batch, config):
 
     named = {}
     for column, window in windows.items():
-        # SNANA keeps only the upper edge of _ERR windows (snlc_fit.F90:1403-1417)
+        # SNANA keeps only the upper edge of _ERR windows (snlc_fit.F90:1412-1426)
         lo, hi = window
         if column.endswith(('_ERR', '_ERRZ1')):
             lo = -CUTVAL_OPEN
@@ -785,7 +770,7 @@ def _bands_with_epochs(inside, filter_indices, n_filters):
 def _sncid_pegged_mask(config, model, results, fitwin_windows):
     """OPT_SNCID_LIST bit 0 keeps every event but those whose fit pegged against
     a flat-prior edge, and those whose FITPROB fell under a tenth of
-    FITWIN_PROB's lower bound (snlc_fit.F90:12700-12708).
+    FITWIN_PROB's lower bound (snlc_fit.F90:12855-12863).
 
     The margin is the parameter's own, because 0.05 is a width rather than a
     fraction: it means one thing on a shape running over units and quite
@@ -832,7 +817,7 @@ def _post_fit_trest_mask(config, saved_nominal, effective_cutwin, results,
     keep = np.ones(batch.n_sne, dtype=bool)
     fitted = {'trestmin': _extreme(np.min, trest, obs_ok, np.inf),
               'trestmax': _extreme(np.max, trest, obs_ok, -np.inf)}
-    # T0GAPWIN is built from the nominal edges (snana.F90:21105-21106)
+    # T0GAPWIN is built from the nominal edges (snana.F90:21197-21198)
     fitted['tgapmax'], fitted['t0gapmax'] = gap_maxima(
         trest, obs_ok,
         nominal.get('trestmin', (0.0, CUTVAL_OPEN))[1],
@@ -879,8 +864,8 @@ def _nfilt_snrmax_mask(windows, batch, fit_mask, filter_names, fiterr):
 
     The SNR is SNR_FIT, over the error carrying the MAXFRAC fudge, so a
     deweighted passband stops counting (snlc_fit.F90:4215, :13277). Unlike the
-    pre-fit count, SNANA starts each band's maximum at -99 (:2042) and counts
-    a band only strictly above the SNRMAX cut (:13219).
+    pre-fit count, SNANA starts each band's maximum at -99 (:2074) and counts
+    a band only strictly above the SNRMAX cut (:13374).
     """
     cuts = [(windows[w][0], windows.get(s, (-CUTVAL_OPEN,))[0])
             for w, s in (('nfilt_snrmax', 'snrmax'),
@@ -935,7 +920,7 @@ def post_fit_cuts(fitter, config, fitwins, batch, results):
             codes = np.where(iter1_keep, codes, iter1_codes)
             keep = narrow(keep, 'FITWIN_ITER1', iter1_keep, rows)
 
-        # LTEST_ZPHFILTER (snlc_fit.F90:3569-3572, :3616-3630)
+        # LTEST_ZPHFILTER (snlc_fit.F90:3601-3604, :3648-3662)
         if config.photoz.dofit_photoz and config.fit.n_fit_iterations > 1:
             z_min, z_max = map(np.asarray, photoz.band_z_ranges(
                 fitter.restlambda_usefit, lam))
@@ -1009,7 +994,7 @@ _POST_EPOCH_CUTS = {'tobs', 'trest', 'lamobs', 'lamrest'}
 
 
 # the CUTWIN epoch cuts applied as the light curve is read (PASS_EPOCH_CUTS,
-# snana.F90:13243); the rest wait for LSIG
+# snana.F90:13331); the rest wait for LSIG
 _READ_EPOCH_CUTS = {'mjd', 'mjd_exclude', 'zpadu', 'zpnpe', 'psf',
                     'snr_nodetect'}
 
@@ -1022,7 +1007,7 @@ def early_lightcurve_mask(cfg, sn_idx, n_sne, mjds, bands, fluxcal, fluxcalerr,
                           phot_data, phot_indices):
     """EARLYLC_STRING: keep epochs until MAXOBS obs or MAXNIGHT nights pass.
 
-    SELECT_EARLYLC (snana.F90:16050) walks each SN's epochs in file order,
+    SELECT_EARLYLC (snana.F90:16139) walks each SN's epochs in file order,
     carrying counters that no vectorised form reproduces, so this is a per-SN
     scan. It is called for every epoch regardless of earlier rejections, so the
     counters here run over the full epoch list too.
@@ -1089,7 +1074,7 @@ def epoch_quality_cuts(obs_keep_mask, epoch_windows, epoch_snrmin, head_data,
                         unique_bands, photflag_detect, fluxerrcalc_zpterr,
                         zp_fluxcal, *, at_read):
     """Epoch CUTWIN cuts and EPCUT_SNRMIN, ANDed into the keep mask: with
-    ``at_read`` those PASS_EPOCH_CUTS applies (snana.F90:13243), otherwise
+    ``at_read`` those PASS_EPOCH_CUTS applies (snana.F90:13331), otherwise
     the LSIG ones (:17421)."""
     if epoch_windows:
         mjds = phot_mjd[valid_phot_indices]
@@ -1320,7 +1305,7 @@ _READ_MARGIN_DAYS = 10.0
 
 def read_epoch_window(mjds, sn_idx_all, peakmjds, read_redshifts, trest, zmax):
     """The epochs SNANA reads: within ``trest`` of the file's PEAKMJD plus the
-    margin, where it has one (RDOBS_DRIVER, snana.F90:4878-4889), in its
+    margin, where it has one (RDOBS_DRIVER, snana.F90:4921-4932), in its
     single precision. ``zmax`` stands in for a missing redshift."""
     peak = peakmjds.astype(np.float32)
     z = read_redshifts.astype(np.float32)

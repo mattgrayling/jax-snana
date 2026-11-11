@@ -11,7 +11,8 @@ from astropy.io import fits
 
 from jax_snlc_core.dust import load_dust_law
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.spectrograph import _solve_calibration, get_snr, read_spectrograph
+from jax_snlc_core.spectrograph import (_solve_calibration, get_snr, read_spectrograph,
+                                        read_spectrograph_fits)
 from jax_snlc_sim.spectra import parse_take_spectrum_entry, prepare_spectrum_requests
 from jax_snlc_sim.simulation import Output, SimulationConfig
 
@@ -229,7 +230,7 @@ def test_config_parsing():
 
 
 def test_config_parsing_bare_snr_alias():
-    """Bare SNR(...) is an alias for SNR_ZPOLY(...) (snlc_sim.c:5831).
+    """Bare SNR(...) is an alias for SNR_ZPOLY(...) (snlc_sim.c:5843).
 
     Line taken verbatim from the SNANA manual's "Creating a SIMLIB from Data"
     section, where SIMLIB headers carry the measured SNR of each real spectrum.
@@ -270,7 +271,7 @@ def test_config_parsing_bare_snr_alias():
 
 
 def test_config_parsing_host_rejects_snr():
-    """HOST spectra allow only TEXPOSE_ZPOLY, not SNR (snlc_sim.c:5834)."""
+    """HOST spectra allow only TEXPOSE_ZPOLY, not SNR (snlc_sim.c:5846)."""
 
 
     def parse(value):
@@ -313,7 +314,7 @@ def test_solve_texpose(testdata):
     assert abs(snr_agg / 15.0 - 1.0) < 0.05
 
     # An iterated solve reports its own converged SNR as SNR_COMPUTE
-    # (snlc_sim.c:11968-11969), within the 3% stopping tolerance.
+    # (snlc_sim.c:11986-11987), within the 3% stopping tolerance.
     _, snrc_iter = solve_texpose_batch(
         calib, genmag[None, :], jnp.array([25.0]),
         jnp.array([5000.0]), jnp.array([6000.0]), 600.0, True,
@@ -372,7 +373,7 @@ def test_wavelength_smearing(testdata):
     assert smeared[n_lam // 2] < 1000.0
     assert smeared[n_lam // 2 - 1] > 0
     # SNANA keeps the raw Gaussian integral, so the tails past +/-NBIN2 are lost
-    # rather than renormalised away (GENSPEC_LAMSMEAR, snlc_sim.c:12240).
+    # rather than renormalised away (GENSPEC_LAMSMEAR, snlc_sim.c:12258).
     lost = 1000.0 - np.sum(smeared)
     assert 0.0 < lost < 5.0
 
@@ -388,7 +389,7 @@ def test_wavelength_smearing(testdata):
 def test_noise_application():
     """The engine's noise step draws the correlated template realisation at
     the near-peak epoch and reuses it elsewhere (GENSPEC_OBSFLUX_RANSMEAR,
-    snlc_sim.c:12342)."""
+    snlc_sim.c:12362)."""
     from jax_snlc_sim.spectra import _add_spectrum_noise
 
     n_lam = 10
@@ -559,7 +560,7 @@ def test_snrsum_rest_v(testdata):
     # spectra that were actually written is an independent route to the same
     # number, and pins the SNANA definition: TRUE GENFLAM over FLAMERR, bin
     # CENTRES inside [5000, 6000]*(1+z_cmb), FLAMERR > 0 only
-    # (GENSPEC_FLAM snlc_sim.c:12537-12558, GENSPEC_SNR :11453-11496).
+    # (GENSPEC_FLAM snlc_sim.c:12555-12576, GENSPEC_SNR :11471-11514).
     z1 = 1.1
     for snid, specs in spectra_by_snid.items():
         total = 0.0
@@ -654,7 +655,7 @@ def test_spec_fits_write_read(tmp_path):
         header = hdul["SPECTRO_HEADER"].data
         flux = hdul["SPECTRO_FLUX"].data
         assert len(header) == 1
-        assert header["SNID"][0] == "42"   # the CID unpadded (snlc_sim.c:25393)
+        assert header["SNID"][0] == "42"   # the CID unpadded (snlc_sim.c:25446)
         assert header["Texpose"][0] == 1800.0
         # the spectrum's bins, then its end-of-event marker row
         assert len(flux) == n_lam + 1
@@ -693,7 +694,7 @@ def test_wrspec_prescale_skips_odd_cids(tmp_path):
 def test_warp_spectrum_lampoly_scales_measured_flam_only():
     """WARP_SPECTRUM: LAMPOLY(...) multiplies the measured FLAM by a polynomial
     in the bin-centre wavelength; SIM_FLAM and FLAMERR are untouched
-    (GENSPEC_FLAM, snlc_sim.c:12503)."""
+    (GENSPEC_FLAM, snlc_sim.c:12521)."""
     from jax_snlc_sim.spectra import _parse_spectro_options
 
     class _Calib:
@@ -714,7 +715,7 @@ def test_warp_spectrum_lampoly_scales_measured_flam_only():
 
 
 def test_warp_spectrum_rejects_non_lampoly():
-    """LAMPOLY is the only argument SNANA accepts (snlc_sim.c:5653)."""
+    """LAMPOLY is the only argument SNANA accepts (snlc_sim.c:5665)."""
     from jax_snlc_sim.inputs import _parse_warp_spectrum
     assert _parse_warp_spectrum('LAMPOLY(1.0,2e-5)') == [1.0, 2e-5]
     for bad in ('LAMPOLY', 'WAVEPOLY(1,2)', 'LAMPOLY(1,2'):
@@ -734,8 +735,8 @@ def _write_kcor_spectrograph(path, instrument, columns=('ZP00', 'SQSKYSIG00')):
     table.header['NBT'] = 1
     table.header['TEXPOSE00'] = 100.0
     fits.HDUList([primary, table]).writeto(path)
-    from jax_snlc_core.filters import KcorReader
-    return KcorReader(path).spectrograph
+    with fits.open(path) as hdul:
+        return read_spectrograph_fits(hdul, path)
 
 
 def test_kcor_spectrograph_needs_the_instrument_key_and_a_whole_table(tmp_path):
@@ -748,3 +749,19 @@ def test_kcor_spectrograph_needs_the_instrument_key_and_a_whole_table(tmp_path):
     with pytest.raises(SNANAError, match="SPECTROGRAPH table has no ZP00"):
         _write_kcor_spectrograph(
             tmp_path / "broken.fits", "TOY", columns=('SQSKYSIG00',))
+
+
+def test_rebin_keeps_the_resolution_of_the_bins_it_combines(testdata):
+    """Combining wavelength bins (``filename(rebin=N)``) leaves the
+    instrument's resolution as it was: each combined bin takes its bins'
+    mean LAMRES, where SNANA's read_SPECBIN_spectrograph leaves it at 0
+    (sntools_spectrograph.c:332-352), which would turn the wavelength smear
+    off."""
+    single = read_spectrograph(str(testdata))
+    combined = read_spectrograph(f"{testdata}(rebin=2)")
+    observed = ~np.asarray(single.islam_extend)
+    sigma = np.asarray(single.lam_sigma)[observed]
+    n = len(sigma) // 2
+    np.testing.assert_allclose(
+        np.asarray(combined.lam_sigma)[~np.asarray(combined.islam_extend)],
+        sigma[:2 * n].reshape(n, 2).mean(axis=1))

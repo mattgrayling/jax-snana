@@ -25,7 +25,7 @@ _QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
 
 
 def test_lensdmu_err_matches_snana_per_event(snana_fixture):
-    """LENSDMU_ERR = |LENSDMU * WEAKLENS_DMUERR_FRAC| (snlc_sim.c:25423), so
+    """LENSDMU_ERR = |LENSDMU * WEAKLENS_DMUERR_FRAC| (snlc_sim.c:25476), so
     SNANA's own SIM_LENSDMU pushed through jax gives SNANA's LENSDMU_ERR."""
     fx = snana_fixture("weaklens_probmap")
     with fits.open(resolve_fits_path(fx.head_fits)) as hdul:

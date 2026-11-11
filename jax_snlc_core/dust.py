@@ -1085,7 +1085,8 @@ class SFDDustMap:
             keys = ('LAM_NSGP', 'LAM_SCAL', 'CRPIX1', 'CRPIX2', 'CRVAL1', 'CRVAL2')
             images = []
             for pole in ('ngp', 'sgp'):
-                path = Path(resolve_fits_path(directory / f'SFD_dust_4096_{pole}.fits'))
+                path = Path(resolve_fits_path(directory / f'SFD_dust_4096_{pole}.fits',
+                                              plain_first=True))
                 if not path.exists():
                     raise SNANAError(f"SFD {pole.upper()} map not found: {path}",
                                      function_name="device_data")

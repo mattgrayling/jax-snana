@@ -67,7 +67,7 @@ def test_covariance_is_built_without_touching_disk(cov_result, tmp_path):
 
 
 def test_systematics_inflate_the_distance_errors(cov_result):
-    covsys = {label: entry["matrix"] for label, entry in cov_result.covariances.items()}
+    covsys = {label: cov_result.covsys(label) for label in cov_result.covariances}
     all_diag = np.diagonal(covsys["ALL"])
 
     assert np.all(np.diagonal(covsys["NOSYS"]) == 0), "NOSYS is stat only"
@@ -89,10 +89,10 @@ def test_in_memory_diagram_matches_the_file_route(mode, tmp_path):
     Covariance stage holds it, gives the diagram wfit reads from the same
     files: the binned one keys rows by ROW, the unbinned one by CID."""
     config = load_config(os.path.join(_FIXTURE, "input.yml"))
-    config.outdir, config.mode = tmp_path, mode
+    config.outdir, config.mode, config.write_mask_cov = tmp_path, mode, 2
     create_covariance(config)
     info = yaml.safe_load((tmp_path / covariance.INFO_YML_FILENAME).read_text())
-    _, _, covtot_inv_name = info["COVOPTS"][0].split()
+    _, _, covtot_inv_name, _ = info["COVOPTS"][0].split()
 
     wfit = WFITConfig()
     wfit.hubble_diagram = str(tmp_path / info["HD"])
@@ -161,15 +161,16 @@ def test_wfit_discovers_the_outputs_through_info_yml(tmp_path):
     assert info["ISDATA_REAL"] == 0
     assert info["SIZE_HD"] > 0
 
-    # "<label> <covsys file> <covtot_inv file>", None where not written
-    label, covsys_name, covtot_inv_name = info["COVOPTS"][0].split()
-    assert label == "ALL" and covsys_name == "None"
+    # "<label> <covsys> <covtot_inv> <factorised>", None where not written;
+    # the default writes only the factorised file
+    label, covsys_name, covtot_inv_name, factorized_name = info["COVOPTS"][0].split()
+    assert label == "ALL" and covsys_name == covtot_inv_name == "None"
 
     wfit = WFITConfig()
     wfit.model = "wcdm"
     wfit.hubble_diagram = str(tmp_path / info["HD"])
-    wfit.covariance = str(tmp_path / covtot_inv_name)
-    wfit.covariance_kind = "total_inverse"
+    wfit.covariance = str(tmp_path / factorized_name)
+    wfit.covariance_kind = "factorized"
     diagrams = load_hubble_diagrams(wfit)
 
     assert diagrams[0].n_rows == info["SIZE_HD"]
@@ -185,7 +186,8 @@ def test_info_yml_reports_the_files_that_were_written(tmp_path):
 
     info = yaml.safe_load((tmp_path / covariance.INFO_YML_FILENAME).read_text())
     for entry in info["COVOPTS"].values():
-        _, covsys_name, covtot_inv_name = entry.split()
+        _, covsys_name, covtot_inv_name, factorized_name = entry.split()
+        assert factorized_name == "None", "the factorised file was not requested"
         for name in (covsys_name, covtot_inv_name):
             assert name != "None", "both products were requested"
             assert (tmp_path / name).is_file(), f"{name} is named but absent"
@@ -240,13 +242,14 @@ def test_pipeline_simulation_priors_match_cli(tmp_path, prior, truth_source):
         actual = stage.run({"covariance": held}, stage_dir)
 
         # Run the real CLI entry point, including argument parsing and file loading.
-        inverse_files = {entry.split()[0]: entry.split()[2]
-                         for entry in info["COVOPTS"].values()}
+        factorized_files = {entry.split()[0]: entry.split()[3]
+                            for entry in info["COVOPTS"].values()}
         hd = str(covariance_config.outdir / info["HD"])
         cli_input = tmp_path / "cli_input.yaml"
         cli_input.write_text(yaml.safe_dump({
-            "covariance_kind": "total_inverse",
-            "covariance": [str(covariance_config.outdir / inverse_files[label]) for label in labels],
+            "covariance_kind": "factorized",
+            "covariance": [str(covariance_config.outdir / factorized_files[label])
+                           for label in labels],
         }))
         cli_yaml = tmp_path / "cli.yaml"
         assert main([*([hd] * len(labels)), "--config", str(cli_input),
@@ -261,6 +264,48 @@ def test_pipeline_simulation_priors_match_cli(tmp_path, prior, truth_source):
             os.environ.pop("SNDATA_ROOT", None)
         else:
             os.environ["SNDATA_ROOT"] = previous_root
+
+
+@pytest.mark.parametrize("use_covtot_factorized, use_covsys_inv, kind, field", [
+    (True, True, "factorized", 3), (False, True, "total_inverse", 2),
+    (False, False, "systematics", 1)])
+def test_cosmology_fits_the_covariance_snana_chooses(tmp_path, use_covtot_factorized,
+                                                      use_covsys_inv, kind, field):
+    """With every form written, the stage fits the factors, else the inverse,
+    else the systematic covariance, as SNANA passes wfit one of them
+    (submit_prog_cosmofit.py:586-605, :931-936), and its fit is the command
+    line's of that file."""
+    from jax_pipeline import Cosmology, Covariance, Fit
+    from wfit import main
+
+    covariance_config = replace(load_config(os.path.join(_FIXTURE, "input.yml")),
+                                outdir=tmp_path / "cov", write_mask_cov=11)
+    create_covariance(covariance_config)
+    covariance = Covariance("covariance", distances=Fit("unused", fitres="unused.FITRES"))
+    held = covariance.load({}, covariance_config.outdir)
+    settings = {"method": "grid", "omsteps": 11, "wsteps": 15, "double_precision": True,
+                "ompri": 0.315, "dompri": 0.9}
+    stage = Cosmology("cosmology", covariance=covariance, overrides=settings,
+                      use_covtot_factorized=use_covtot_factorized,
+                      use_covsys_inv=use_covsys_inv)
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    actual = stage.run({"covariance": held}, stage_dir)
+
+    info = yaml.safe_load((covariance_config.outdir / "INFO.YML").read_text())
+    entry = next(e for e in info["COVOPTS"].values() if e.split()[0] == "ALL")
+    cli_input = tmp_path / "cli_input.yaml"
+    cli_input.write_text(yaml.safe_dump({
+        "covariance_kind": kind,
+        "covariance": str(covariance_config.outdir / entry.split()[field])}))
+    cli_yaml = tmp_path / "cli.yaml"
+    assert main([str(covariance_config.outdir / info["HD"]), "--config", str(cli_input),
+                 "-double_precision", "1", "--method", "grid", "-omsteps", "11",
+                 "-wsteps", "15", "-ompri", "0.315", "-dompri", "0.9",
+                 "-cospar_yaml", str(cli_yaml),
+                 "-outfile_cospar", str(tmp_path / "cli.cospar")]) == 0
+    expected = yaml.safe_load(cli_yaml.read_text())
+    assert actual["ALL"]["parameters"] == expected["parameters"]
 
 
 @pytest.mark.parametrize("in_input_file", [False, True])

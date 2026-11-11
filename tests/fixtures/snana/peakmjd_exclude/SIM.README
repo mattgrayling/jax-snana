@@ -1,6 +1,6 @@
 DOCUMENTATION:
   OVERVIEW:
-    TIME_START:   2026-09-18  09:28  # UT
+    TIME_START:   2026-11-06  18:28  # UT
     SURVEY:       LSST
     GENMODEL:     fixtures/models/SALT3.K21
     SNIA:         True
@@ -8,7 +8,7 @@ DOCUMENTATION:
     USERNAME:     $USER
     SNDATA_ROOT:  $SNDATA_ROOT
     SNANA_DIR:     $SNANA_DIR
-    SNANA_VERSION: v12_02d-12-g74dfb2c5
+    SNANA_VERSION: v12_02f
     CWD:   .
     INPUT_FILE:
     - tests/fixtures/snana/peakmjd_exclude/input.input
@@ -114,10 +114,10 @@ DOCUMENTATION:
     - List=2  FIRST=0.026548  LAST=0.808939   AVG(wrap) = 0.3 +_ 0.0 
     - List=3  FIRST=0.060336  LAST=0.046611   AVG(wrap) = 0.0 +_ 0.0 
 # 
-    CPU_MINUTES:       0.00  
-    NGENEV_TOT:        300    # (0/sec, total events)
-    NGENLC_TOT:        300    # (0/sec, total LC)
-    NGENLC_WRITE:      300    # (0/sec, LC passing trigger)
+    CPU_MINUTES:       0.02  
+    NGENEV_TOT:        300    # (300/sec, total events)
+    NGENLC_TOT:        300    # (300/sec, total LC)
+    NGENLC_WRITE:      300    # (300/sec, LC passing trigger)
     NGENSPEC_WRITE:    0  
     EFF(SEARCH+CUTS):  1.0000 +-  0.0033
     NACCEPT:  [ 300, 0, 0 ]   # NSN(ACCEPT) for [ SpecID, noSpecID, zHOST]

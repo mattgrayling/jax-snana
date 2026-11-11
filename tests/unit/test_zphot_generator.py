@@ -29,7 +29,7 @@ def test_zphoteff_masks_the_events_photoz_and_not_the_reported_one():
     own ZTRUE, so half the hosts fail a flat 50% efficiency. SNANA masks
     SNHOSTGAL.ZPHOT, which the CUTWIN and the redshift source read, and
     leaves the DDLR-sorted photo-z the data file reports alone
-    (sntools_host.c:6831, snlc_sim.c:26068)."""
+    (sntools_host.c:7269, snlc_sim.c:26125)."""
     n = 200
     efficiency = ZphotEfficiency(np.array([0.0, 1.0]), np.array([0.5, 0.5]))
     props = {'ZTRUE': np.full(n, 0.3), 'ZPHOT': np.full(n, 0.31),
@@ -52,7 +52,7 @@ def test_zphoteff_masks_the_events_photoz_and_not_the_reported_one():
 def test_zphoteff_is_read_at_the_host_redshift():
     """The efficiency is interpolated at SNHOSTGAL.ZTRUE, so a map that is
     1 below z=0.5 and 0 above it passes every low-z host and fails every
-    high-z one (sntools_host.c:6829)."""
+    high-z one (sntools_host.c:7267)."""
     efficiency = ZphotEfficiency(np.array([0.0, 0.49, 0.51, 1.0]),
                                  np.array([1.0, 1.0, 0.0, 0.0]))
     ztrue = np.array([0.1, 0.2, 0.8, 0.9])
@@ -66,7 +66,7 @@ def test_zphoteff_is_read_at_the_host_redshift():
 
 def test_zphoteff_file_missing_or_without_two_columns_aborts(tmp_path):
     """A missing HOSTLIB_ZPHOTEFF_FILE aborts, as SNANA's rd2columnFile does
-    (sntools_host.c:4679); one without an EFF column aborts too, where SNANA
+    (sntools_host.c:4851); one without an EFF column aborts too, where SNANA
     crashes. A good file reads as its two columns."""
     hosts = (0.1, 0.5)
     with pytest.raises(SNANAError, match="not found"):
@@ -97,7 +97,7 @@ def test_generate_zphot_quantiles_gaussian_monotonic():
 
 def test_generate_zphot_truncated_law_has_no_atom_at_lower_bound():
     """SNANA redraws component and value while ZPHOT < 0.001 (PICKRAN loop,
-    sntools_host.c:6916-6952); the accepted law is a lower-truncated mixture
+    sntools_host.c:7354-7390); the accepted law is a lower-truncated mixture
     with no point mass at exactly 0.001."""
     n = 20000
     rng = np.random.default_rng(23)
@@ -112,7 +112,7 @@ def test_generate_zphot_truncated_law_has_no_atom_at_lower_bound():
 
 def test_generate_zphot_flat_outlier_truncated_at_lower_bound():
     """Flat outlier draws come from [max(zmin, 0.001), zmax], the accepted
-    (truncated) flat law (sntools_host.c:6929-6952)."""
+    (truncated) flat law (sntools_host.c:7367-7390)."""
     n = 5000
     rng = np.random.default_rng(29)
     ztrue = np.full(n, 0.3)
@@ -128,7 +128,7 @@ def test_generate_zphot_flat_outlier_truncated_at_lower_bound():
 def test_malformed_genzphot_keys_are_fatal():
     """A FUDGEPAR without its five values and a FUDGEMAP entry that is not
     z:rms abort. SNANA misreads both: the short FUDGEPAR takes the next key
-    as its fifth value and crashes (snlc_sim.c:4013-4020), and the entry
+    as its fifth value and crashes (snlc_sim.c:4025-4032), and the entry
     without a colon takes the previous entry's rms (snlc_sim.c:3377-3381)."""
     ranges = ((0.1, 0.5), (0.0, 1.0))
     with pytest.raises(SNANAError, match="five values"):
@@ -139,7 +139,7 @@ def test_malformed_genzphot_keys_are_fatal():
 
 def test_validate_genzphot_fudgemap_coverage_is_fatal():
     """A FUDGEMAP not covering GENRANGE_REDSHIFT aborts at build
-    (snlc_sim.c:7568-7588)."""
+    (snlc_sim.c:7580-7600)."""
     z = np.array([0.1, 0.3, 0.5])
     rms = np.array([0.01, 0.02, 0.03])
     validate_genzphot_fudgemap(z, rms, (0.1, 0.5))

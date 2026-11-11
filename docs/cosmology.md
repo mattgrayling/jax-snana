@@ -258,7 +258,8 @@ here and described in {doc}`cosmology_keys`:
 - `--output-samples`: the posterior draws. Needs `--method nuts`.
 - `--output-covariance` and `-outfile_mucovtot_inv`: the total distance
   covariance the fit used, and its inverse, in the text form the covariance
-  stage writes.
+  stage writes. The inverse is written only for a dense (`covtot_inv`)
+  covariance, not a factorized one.
 
 ### Several realisations
 

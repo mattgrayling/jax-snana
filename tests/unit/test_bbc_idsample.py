@@ -131,7 +131,7 @@ def test_exact_field_matching():
     """fieldlist_biascor compares every FIELD whole, an overlap C3+X3 being its
     own field; a bar-wrapped group in fieldgroup_biascor is exact for the
     FIELD equal to it and skipped for every other (match_fieldGroup,
-    SALT2mu.c:10981); the two keys are exclusive."""
+    SALT2mu.c:10991); the two keys are exclusive."""
     groups = field_groups(_config(fieldlist="C3,X3,C3+X3"))
     assert [g.name for g in groups] == ["C3", "X3", "C3+X3"]
     assert all(g.exact for g in groups)
@@ -152,7 +152,7 @@ def test_exact_field_matching():
 def test_an_unmatched_field_joins_the_survey_s_first_field_sample():
     """An event whose FIELD matches no group carries FIELDGROUP NONE and
     get_IDSAMPLE matches it on SURVEYGROUP, which a field sample stores as
-    its survey's name (SALT2mu.c:10036-10044), so it lands in the first
+    its survey's name (SALT2mu.c:10046-10054), so it lands in the first
     sample of that survey rather than opening a survey-only one
     (SALT2mu.exe: fieldlist_biascor=C3,X3 on C3, X3, C3+X3, E2 gives two
     samples, DES(C3) holding C3, C3+X3 and E2)."""

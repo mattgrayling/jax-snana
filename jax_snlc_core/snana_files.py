@@ -5,8 +5,10 @@
   falls back to as CFITSIO does, FITS tables, the values that mean "no
   file", and the DOCUMENTATION block SNANA requires at the top of its data
   and config files so a published result can be traced back to its inputs.
-- Two-column tables (rd2columnFile), SURVEY.DEF, and the cosmology recorded
-  in a simulation's README.
+- Reading SNANA's text files: their comments, words and ``KEY:`` values,
+  map rows on a grid (GRIDMAP), two-column tables (rd2columnFile) and
+  three-column SEDs (rd_sedFlux).
+- SURVEY.DEF, and the cosmology recorded in a simulation's README.
 - VARNAMES text tables (FITRES, M0DIF, SIMGEN_DUMP and the rest), read and
   written, with the header lines that name the SNANA version, the program
   and the jax version that wrote them.
@@ -17,11 +19,13 @@ A model's own formats live with the model in :mod:`jax_snlc_core.models`,
 and a format only one program reads lives in that program's package.
 """
 
+import csv
 import functools
 import gzip
 import io
 import logging
 import os
+import re
 from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
@@ -36,20 +40,20 @@ from astropy.table import Table
 from jax.scipy.ndimage import map_coordinates
 
 from jax_snlc_core import logging as log
-from jax_snlc_core.logging import SNANAError, version_string
+from jax_snlc_core.logging import SNANAError
 
 logger = logging.getLogger(__name__)
 
 # unset measured value (init_SNDATA_EVENT)
 SNANA_NULLFLOAT = -9.0
 
-# the magnitude of zero flux, as before explosion (sntools.h:124)
+# the magnitude of zero flux, as before explosion (sntools.h:125)
 MAG_ZEROFLUX = 99.0
 
-# a magnitude nothing defines, such as a missing host's (sntools.h:126)
+# a magnitude nothing defines, such as a missing host's (sntools.h:127)
 MAG_UNDEFINED = 666.0
 
-# A host property no catalogue supplied (HOSTLIB_PROPERTY_UNDEFINED, sntools.h:131).
+# A host property no catalogue supplied (HOSTLIB_PROPERTY_UNDEFINED, sntools.h:132).
 HOSTGAL_PROPERTY_NULL = -9999.0
 
 
@@ -62,20 +66,26 @@ def sndata_root() -> Path:
         raise SNANAError("$SNDATA_ROOT is not set", function_name="sndata_root") from None
 
 
-def resolve_fits_path(path, required=False):
+def resolve_fits_path(path, required=False, plain_first=False):
     """Return the file that exists on disk for ``path``, plain or ``.gz``.
 
     SNANA gzips its output but references the plain name, and CFITSIO opens
     the ``.gz`` when given the base name; astropy does not, so every SNANA
-    file is found through here. Prefers the plain file when both exist.
-    With neither present, ``required`` aborts naming both spellings;
-    otherwise the original path passes through so the caller's own open
-    raises.
+    file is found through here. Both present is an error, as in SNANA's
+    open_TEXTgz and rd_snfitsio_check_gzip, since which is current is
+    ambiguous; ``plain_first`` takes the plain file instead, as CFITSIO
+    does where SNANA opens a file with it directly (the kcor file and the
+    SFD maps). With neither present, ``required`` aborts naming both
+    spellings; otherwise the original path passes through so the caller's
+    own open raises.
     """
     path = Path(path)
+    gz_path = path.with_name(path.name + ".gz")
+    if path.exists() and gz_path.exists() and not plain_first:
+        raise SNANAError(f"found both {path} and {gz_path}; remove one",
+                         function_name="resolve_fits_path")
     if path.exists():
         return str(path)
-    gz_path = path.with_name(path.name + ".gz")
     if gz_path.exists():
         return str(gz_path)
     if required:
@@ -90,8 +100,8 @@ def read_fits_table(path):
 
     astropy parses the two headers; the rows stream from the file into one
     buffer that is byte-swapped in place, so the table is held once and
-    never copied. SNANA writes an empty primary HDU and one unscaled table;
-    a ``TSCALn``/``TZEROn`` column is refused rather than read raw.
+    never copied. A ``TSCALn``/``TZEROn`` column, such as an unsigned
+    integer, is scaled as CFITSIO scales it for SNANA.
     """
     path = Path(path)
     opener = gzip.open if path.suffix == ".gz" else open
@@ -99,15 +109,14 @@ def read_fits_table(path):
         primary = fits.Header.fromfile(stream)
         header = fits.Header.fromfile(stream)
         fields = range(1, header["TFIELDS"] + 1)
-        scaled = [header[f"TTYPE{i}"] for i in fields
-                  if f"TSCAL{i}" in header or f"TZERO{i}" in header]
-        if scaled:
-            raise SNANAError(f"{path}: scaled columns {scaled} are not "
-                             "SNANA's format", function_name="read_fits_table")
         columns = fits.ColDefs([fits.Column(name=header[f"TTYPE{i}"],
                                             format=header[f"TFORM{i}"])
                                 for i in fields])
         stored = columns.dtype.newbyteorder(">")
+        if stored.itemsize != header["NAXIS1"]:
+            raise SNANAError(f"{path}: table rows are {header['NAXIS1']} bytes, but "
+                             f"their columns hold {stored.itemsize}",
+                             function_name="read_fits_table")
         rows = bytearray(header["NAXIS2"] * stored.itemsize)
         view = memoryview(rows)
         done = 0
@@ -125,7 +134,13 @@ def read_fits_table(path):
     block_rows = max(1, (1 << 20) // stored.itemsize)
     for start in range(0, len(table), block_rows):
         table[start:start + block_rows].byteswap(inplace=True)
-    return primary, Table(table.view(stored.newbyteorder("=")), copy=False)
+    table = Table(table.view(stored.newbyteorder("=")), copy=False)
+    for i in fields:
+        if f"TSCAL{i}" in header or f"TZERO{i}" in header:
+            name = header[f"TTYPE{i}"]
+            table[name] = (table[name] * np.asarray(header.get(f"TSCAL{i}", 1))
+                           + np.asarray(header.get(f"TZERO{i}", 0)))
+    return primary, table
 
 
 def open_text(path):
@@ -139,7 +154,7 @@ def open_text(path):
 def is_ignorefile(filename: Optional[str]) -> bool:
     """True when a configured file value means "no file".
 
-    Mirrors SNANA's IGNOREFILE (sntools.c:4832-4853): None, the empty
+    Mirrors SNANA's IGNOREFILE (sntools.c:4829-4850): None, the empty
     string, whitespace only, or NULL/NONE/BLANK in any case.
     """
     if filename is None:
@@ -159,7 +174,7 @@ def skip_docana(lines: Iterable[str]) -> Iterator[str]:
     A line whose first whitespace-separated token is exactly
     ``DOCUMENTATION:`` opens the block and ``DOCUMENTATION_END:`` closes it;
     both keys and every line between them are dropped, as rd2columnFile does
-    (sntools.c:7297-7303).
+    (sntools.c:6992-6998).
     """
     in_block = False
     for line in lines:
@@ -203,32 +218,278 @@ def check_file_docana(path, require: bool = True, header_lines=None) -> None:
     log.warn(logger, "DOCANA", detail)
 
 
-# sntools.c:7341 commentchar()
+# sntools.c:7036 commentchar()
 COMMENT_CHARS = '#!%@'
+
+
+def line_words(line: str) -> List[str]:
+    """The words of a line of SNANA text before its first comment word, one
+    starting with any of :data:`COMMENT_CHARS`. A comment character inside a
+    word does not start a comment."""
+    words = line.split()
+    for i, word in enumerate(words):
+        if word[0] in COMMENT_CHARS:
+            return words[:i]
+    return words
+
+
+def text_lines(path) -> Iterator[List[str]]:
+    """The words of each line of the text file ``path``, plain or ``.gz``,
+    leaving out comments, blank lines and the DOCUMENTATION block."""
+    with open_text(path) as fh:
+        for line in skip_docana(fh):
+            words = line_words(line)
+            if words:
+                yield words
+
+
+def key_runs(path) -> Iterator[Tuple[str, List[str]]]:
+    """Each ``KEY:`` of the key-value text file ``path`` with the words after
+    it, up to the next key, as ``(KEY, words)``. SNANA reads these files as
+    one stream of words, so a line may hold several keys and a key's values
+    may run onto the next line."""
+    return word_runs(path, (word for words in text_lines(path) for word in words))
+
+
+def gridmap_segments(path, row_key: str) -> Iterator[List[Tuple[str, List[str]]]]:
+    """:func:`key_runs` of ``path`` in segments, each ended by the blank line
+    that ends a map's ``row_key`` rows; a comment line does not
+    (read_GRIDMAP, sntools_gridmap.c:116-123)."""
+    lines, after_row = [], False
+    with open_text(path) as fh:
+        for line in skip_docana(fh):
+            if line.split():
+                words = line_words(line)
+                lines.append(words)
+                after_row = after_row or words[:1] == [row_key]
+            elif after_row:
+                yield list(word_runs(path, (word for words in lines for word in words)))
+                lines, after_row = [], False
+    yield list(word_runs(path, (word for words in lines for word in words)))
+
+
+def header_words(lines: Iterator[List[str]], stop: str) -> Iterator[str]:
+    """The words of the lines ``lines`` up to the word ``stop``, which ends
+    a file's header; the lines are consumed up to and including the one
+    holding it. SNANA reads such headers as one stream of words."""
+    for words in lines:
+        if stop in words:
+            yield from words[:words.index(stop)]
+            return
+        yield from words
+
+
+def word_runs(path, words: Iterable[str]) -> Iterator[Tuple[str, List[str]]]:
+    """Each ``KEY:`` among ``words``, read from the file ``path``, with the
+    words after it, up to the next key, as ``(KEY, words)``. Words before the
+    first key belong to no key; SNANA passes over them, and so does this,
+    with a warning."""
+    key, values = None, []
+    for word in words:
+        if word.endswith(':'):
+            if key is None and values:
+                log.warn(logger, "TEXT", f"{path}: '{' '.join(values)}' comes before "
+                         f"any key and is not read")
+            elif key is not None:
+                yield key, values
+            key, values = word[:-1], []
+        else:
+            values.append(word)
+    if key is not None:
+        yield key, values
+
+
+def leading_values(path, key: str, values: List[str], count: int) -> List[str]:
+    """The first ``count`` of the words ``values`` that follow ``key`` in the
+    file ``path``. Where SNANA reads a file as a stream of words, each key
+    takes the words it needs and the reader passes over the rest, such as a
+    note after a value; too few words is an error."""
+    if len(values) < count:
+        raise SNANAError(f"{path}: {key}: takes {count} value(s), not "
+                         f"'{' '.join(values)}'", function_name="leading_values")
+    return values[:count]
+
+
+def exact_values(path, key: str, values: List[str], count: int) -> List[str]:
+    """``values`` when ``key`` of the file ``path`` has exactly ``count`` of
+    them, so a short or long entry is an error rather than misread."""
+    if len(values) != count:
+        raise SNANAError(f"{path}: {key}: takes {count} value(s), not "
+                         f"'{' '.join(values)}'", function_name="exact_values")
+    return values
+
+
+def split_names(text: str) -> List[str]:
+    """The names in a list such as VARNAMES or PARNAMES, separated by commas,
+    blanks or both (store_PARSE_WORDS, sntools.c:2643)."""
+    return [name for name in re.split(r'[\s,]+', text) if name]
+
+
+def gridmap(rows, varnames: Sequence[str], where: str
+            ) -> Tuple[List[np.ndarray], np.ndarray]:
+    """A map given as rows of its variables' values followed by its
+    functions' values, as SNANA's GRIDMAP holds one (init_interp_GRIDMAP,
+    sntools_gridmap.c:307-479): the knots of each of ``varnames``, which
+    must be uniformly spaced, and the functions at every grid point, shape
+    (*knots, n_functions). Every grid point needs exactly one row, in any
+    order. ``where`` names the map in an error. Steps differing by more
+    than 1e-6 of their size are not uniform (read_GRIDMAP,
+    sntools_gridmap.c:162-167)."""
+    data = np.asarray(rows, dtype=np.float64)
+    if len(data) == 0:
+        raise SNANAError(f"{where} has no rows", function_name="gridmap")
+    ndim = len(varnames)
+    axes = [np.unique(data[:, d]) for d in range(ndim)]
+    for name, axis in zip(varnames, axes):
+        steps = np.diff(axis)
+        if np.any(np.abs(steps - steps[:1]) > 1.0e-6 * steps):
+            raise SNANAError(f"{where}: {name} is not uniformly spaced",
+                             function_name="gridmap")
+    shape = tuple(len(axis) for axis in axes)
+    cells = tuple(np.searchsorted(axis, data[:, d]) for d, axis in enumerate(axes))
+    if len(data) != np.prod(shape) or len(np.unique(np.ravel_multi_index(cells, shape))) != len(data):
+        raise SNANAError(f"{where}: {len(data)} rows for a {shape} grid; every grid "
+                         f"point needs exactly one row", function_name="gridmap")
+    values = np.empty((*shape, data.shape[1] - ndim))
+    values[cells] = data[:, ndim:]
+    return axes, values
 
 
 def read_two_column_file(path: str) -> Tuple[np.ndarray, np.ndarray]:
     """Read the first two columns of an ASCII table, plain or gzipped, as
-    SNANA's rd2columnFile does (sntools.c:7242-7330).
-
-    A line of two characters or fewer, a line whose first word starts with
-    ``#``, ``!``, ``%`` or ``@``, and the DOCUMENTATION block are skipped;
-    columns beyond the second are ignored. A data line without two numbers,
-    which rd2columnFile has no defined reading of, aborts.
-    """
+    SNANA's rd2columnFile does (sntools.c:6937-7026); columns beyond the
+    second are ignored, and a line without two numbers aborts."""
     col1, col2 = [], []
-    with open_text(path) as fh:
-        for line in skip_docana(fh):
-            tokens = line.split()
-            if len(line) <= 2 or not tokens or tokens[0][0] in COMMENT_CHARS:
-                continue
-            try:
-                col1.append(float(tokens[0]))
-                col2.append(float(tokens[1]))
-            except (IndexError, ValueError):
-                raise SNANAError(f"{path}: '{line.rstrip()}' is not two numbers",
-                                 function_name="read_two_column_file") from None
+    for words in text_lines(path):
+        try:
+            col1.append(float(words[0]))
+            col2.append(float(words[1]))
+        except (IndexError, ValueError):
+            raise SNANAError(f"{path}: '{' '.join(words)}' is not two numbers",
+                             function_name="read_two_column_file") from None
     return np.array(col1), np.array(col2)
+
+
+# rd_sedFlux's tolerances on uniform day and wavelength steps
+# (sntools.c:8121-8122)
+SED_DAYSTEP_TOL = 0.5e-3
+SED_LAMSTEP_TOL = 0.01
+
+
+def read_sed_file(filepath: str, day_range: Tuple[float, float],
+                  wavelength_range: Tuple[float, float],
+                  t0shift_peakmag: bool = True, *, uniform_days: bool
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read a 3-column SED file (phase, wavelength, flux) at ``filepath``
+    (``.SED`` or ``.SED.gz``), as SNANA's rd_sedFlux does for NON1ASED and
+    SIMSED templates, SALT surfaces and error maps, and the calibration's SN
+    SED, skipping blank lines, comments and the DOCUMENTATION block. A data
+    line whose first three words are not numbers is an error.
+
+    Rows outside ``day_range`` or ``wavelength_range`` (both inclusive) are
+    excluded, and NaN fluxes are read as zero, with a warning. Phases must
+    be in increasing order, with the same wavelengths in the same order at
+    each phase. With ``uniform_days``, phase spacing must be constant within
+    ``SED_DAYSTEP_TOL``. Non-uniform wavelength spacing produces a warning.
+
+    When ``t0shift_peakmag`` (SNANA's default-on ``OPTMASK_T0SHIFT_PEAKMAG``,
+    disabled by ``OPTFLAG_T0SHIFT_PEAKMAG: 0`` in a SIMSED SED.INFO), the
+    phase grid is shifted so that peak bolometric flux occurs at phase=0.
+
+    Returns ``(phases, wavelengths, flux_grid)``: phases is the 1-D array of
+    unique phase values (days), wavelengths the 1-D array of unique
+    wavelength values (Angstroms), and flux_grid the 2-D array of shape
+    (n_phases, n_wavelengths).
+    """
+    filepath = str(filepath)
+
+    data_rows = []
+    for words in text_lines(filepath):
+        try:
+            data_rows.append((float(words[0]), float(words[1]), float(words[2])))
+        except (IndexError, ValueError):
+            raise SNANAError(f"{filepath}: '{' '.join(words)}' is not three numbers",
+                             function_name="read_sed_file") from None
+
+    if not data_rows:
+        raise SNANAError(f"No valid SED data found in {filepath}",
+                         function_name="read_sed_file")
+
+    data = np.array(data_rows)
+    inside = ((data[:, 0] >= day_range[0]) & (data[:, 0] <= day_range[1])
+              & (data[:, 1] >= wavelength_range[0])
+              & (data[:, 1] <= wavelength_range[1]))
+    data = data[inside]
+    if not len(data):
+        raise SNANAError(
+            f"No SED rows of {filepath} inside days {day_range} and "
+            f"wavelengths {wavelength_range}", function_name="read_sed_file")
+    raw_phases = data[:, 0]
+    raw_wavelengths = data[:, 1]
+    nan = np.isnan(data[:, 2])
+    if nan.any():
+        log.warn(logger, "SED", f"{filepath}: {int(nan.sum())} NaN fluxes are read as zero")
+    raw_flux = np.where(nan, 0.0, data[:, 2])
+
+    # days never decrease (sntools.c:8272-8276)
+    decreasing = np.flatnonzero(np.diff(raw_phases) < 0)
+    if decreasing.size:
+        i = decreasing[0]
+        raise SNANAError(
+            f"{filepath}: day {raw_phases[i + 1]:f} follows day "
+            f"{raw_phases[i]:f}; a new day must increment",
+            function_name="read_sed_file")
+    # every day has as many wavelengths as the first (:8675-8690)
+    phases, per_day = np.unique(raw_phases, return_counts=True)
+    if np.any(per_day != per_day[0]):
+        k = int(np.argmax(per_day != per_day[0]))
+        raise SNANAError(
+            f"{filepath}: {per_day[k]} wavelengths at day {phases[k]:.2f} but "
+            f"{per_day[0]} at day {phases[0]:.2f}; the wavelength grid must "
+            f"be the same for each day", function_name="read_sed_file")
+    # ... and lists the first day's wavelengths, in order (:8612-8624)
+    n_phases, n_wavelengths = len(phases), int(per_day[0])
+    lam_grid = raw_wavelengths.reshape(n_phases, n_wavelengths)
+    wavelengths = lam_grid[0]
+    # a falling wavelength restarts the list at its first entry (:8583)
+    falling = np.flatnonzero(np.diff(wavelengths) < 0)
+    if falling.size:
+        j = falling[0] + 1
+        raise SNANAError(
+            f"{filepath}: found LAM={wavelengths[j]:.1f} at day "
+            f"{phases[0]:f} but expected LAM={wavelengths[0]:.2f}",
+            function_name="read_sed_file")
+    mismatched = np.argwhere(lam_grid != wavelengths)
+    if mismatched.size:
+        k, j = mismatched[0]
+        raise SNANAError(
+            f"{filepath}: found LAM={lam_grid[k, j]:.1f} at day "
+            f"{phases[k]:f} but expected LAM={wavelengths[j]:.2f}",
+            function_name="read_sed_file")
+    # uniform day steps unless the model allows otherwise (:8549-8560)
+    day_step = np.diff(phases)
+    step_change = np.abs(np.diff(day_step)) > SED_DAYSTEP_TOL
+    if uniform_days and step_change.any():
+        k = int(np.argmax(step_change)) + 1
+        raise SNANAError(
+            f"{filepath}: day step {day_step[k]:e} after {day_step[k - 1]:e} "
+            f"at day {phases[k + 1]:.4f}; the day bins must be uniform",
+            function_name="read_sed_file")
+    # a non-uniform wavelength step only warns (:8595-8606)
+    if np.any(np.abs(np.diff(np.diff(wavelengths))) > SED_LAMSTEP_TOL):
+        log.warn(logger, 'SED', f"{filepath}: non-uniform wavelength step "
+                 f"(rd_sedFlux warns and reads on)")
+
+    # phase varies slowest, wavelength fastest
+    flux_grid = raw_flux.reshape(n_phases, n_wavelengths)
+
+    # T0shiftPeak_SEDMODEL: peak bolometric flux at day 0
+    if t0shift_peakmag:
+        bolometric = flux_grid.sum(axis=1)
+        peak_idx = np.argmax(bolometric)
+        phases = phases - phases[peak_idx]
+
+    return phases, wavelengths, flux_grid
 
 
 def _survey_def_path(path: Optional[str]) -> str:
@@ -250,11 +511,9 @@ def _survey_def_rows(path: Optional[str], prefix: str) -> Iterator[Sequence[str]
     if not Path(path).is_file():
         raise SNANAError(f"Unable to open file with mode = rt. Check '{path}'",
                          function_name="_survey_def_rows")
-    with open_text(path) as fh:
-        for line in fh:
-            toks = line.split('#', 1)[0].split()
-            if toks and toks[0] == prefix:
-                yield toks
+    for toks in text_lines(path):
+        if toks[0] == prefix:
+            yield toks
 
 
 def load_survey_ids(
@@ -276,7 +535,7 @@ def _load_survey_ids(path: str) -> Tuple[Dict[str, int], Dict[int, str]]:
         if len(toks) < 3:
             continue
         name, sid = toks[1], int(toks[2])
-        # A repeated name takes the lowest ID (get_IDSURVEY, sntools.c:3712).
+        # A repeated name takes the lowest ID (get_IDSURVEY, sntools.c:3709).
         if sid < name_to_id.get(name, sid + 1):
             name_to_id[name] = sid
         id_to_name[sid] = name
@@ -302,12 +561,21 @@ def load_survey_geo(
 
 def load_survey_fields(name: str, path: Optional[str] = None) -> List[str]:
     """``name``'s FIELD names in file order (SNANA builds each event's
-    FIELDLIST in this order, snana.F90:19117)."""
-    return [toks[1] for toks in _survey_def_rows(path, 'FIELD:')
-            if len(toks) >= 4 and toks[3] == name]
+    FIELDLIST in this order, snana.F90:19209), upper-cased, leaving out a
+    field whose IDFIELD is 0 or less, such as ``INT``, which says how a
+    survey's fields are written rather than naming one (snana.F90:12455-12477).
+    A '+', which joins the fields of an overlap, is not allowed in a name."""
+    fields = []
+    for toks in _survey_def_rows(path, 'FIELD:'):
+        if len(toks) >= 4 and toks[3] == name and int(toks[2]) > 0:
+            if '+' in toks[1]:
+                raise SNANAError(f"SURVEY.DEF field {toks[1]} contains '+', which joins "
+                                 f"the fields of an overlap", function_name="load_survey_fields")
+            fields.append(toks[1].upper())
+    return fields
 
 
-# KEYLIST_COSPAR_SIM (create_covariance.py:287)
+# KEYLIST_COSPAR_SIM (create_covariance.py:293)
 SIM_COSMOLOGY_KEYS = ("OMEGA_MATTER", "OMEGA_LAMBDA", "w0_LAMBDA", "wa_LAMBDA",
                       "MUSHIFT")
 
@@ -329,7 +597,7 @@ def read_simulation_cosmology(readme: Path) -> dict[str, str]:
     lines, and BBC copies the bias-correction simulation's into its outputs as
     ``SIM_<key>(BIASCOR)``, so create_covariance reads the cosmology with the
     distances instead of looking the simulation up by name (get_cospar_sim,
-    create_covariance.py:2514).
+    create_covariance.py:2655).
 
     MUSHIFT appears only when the simulation set it (sntools_sim_readme.c:848),
     so its absence means no shift.
@@ -359,8 +627,22 @@ def fitopt_muopt_indices(name: str) -> tuple[int, int]:
 
 _ROWKEY = "_ROWKEY"
 
-# the row keys of a table's data rows (validRowKey_TEXT, sntools_output_text.c:1386)
+# the row keys of a table's data rows (validRowKey_TEXT, sntools_output_text.c:1430)
 TABLE_ROW_KEYS = ("SN:", "ROW:", "GAL:", "OBS:")
+
+# Columns read as strings: these names in any case, and any name containing
+# one of the parts (ICAST_for_textVar, sntools_output_text.c:1473-1502).
+STRING_COLUMNS = frozenset((
+    "CID", "SNID", "CCID", "GALID", "ROW", "STARID", "FIELD", "BAND", "BANDLIST",
+    "NAME_TRANSIENT", "NAME_IAUC", "IAUC", "CATALOG", "VERSION", "PARNAME", "OBJID",
+    "SIM_TYPE"))
+STRING_COLUMN_PARTS = ("CCID", "ROW", "GALID", "OBJID")
+
+
+def is_string_column(name: str) -> bool:
+    """Whether a text table's column ``name`` holds strings."""
+    return (name.upper() in STRING_COLUMNS
+            or any(part in name for part in STRING_COLUMN_PARTS))
 
 
 @dataclass(frozen=True)
@@ -428,19 +710,22 @@ def read_fitres_header(path: str) -> Dict[str, str]:
     return meta
 
 
-def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS) -> FitresTable:
+def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS,
+                string_column=is_string_column) -> FitresTable:
     """Parse one FITRES/M0DIF file (``path``, optionally gzipped) into a
     :class:`FitresTable`.
 
-    Column dtypes are kept: string columns such as ``FIELD``, ``BANDLIST`` and
-    a non-numeric ``CID`` stay strings. ``as_text`` keeps every value as its
-    original token and records the row key for concatenation (``cat_only``).
+    The columns ``string_column`` accepts stay literal strings, such as
+    ``FIELD 01`` and an ``NA`` CID; the rest take inferred dtypes.
+    ``as_text`` keeps every value as its original token and records the row
+    key for concatenation (``cat_only``).
 
     As SNANA's SNTABLE_READ_EXEC_TEXT reads a table (sntools_output_text.c:
     1255-1282), only lines starting with one of :data:`TABLE_ROW_KEYS` are
-    rows. ``row_keys`` restricts the accepted prefixes for a specific format.
-    Values past the last VARNAMES column are ignored, and a row with
-    fewer values than VARNAMES aborts.
+    rows. ``row_keys`` and ``string_column`` follow a format with its own
+    reader, such as a HOSTLIB. Values past the last VARNAMES column are
+    ignored, and a row with fewer values than VARNAMES aborts. A ``*`` in a
+    string first column repeats the row above's value.
     """
     meta: Dict[str, str] = {}
     varnames: Optional[List[str]] = None
@@ -449,7 +734,7 @@ def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS) ->
         for line in f:
             s = line.strip()
             if s.startswith("VARNAMES:"):
-                varnames = s.split()[1:]
+                varnames = split_names(s[len("VARNAMES:"):])
                 break
             if s.startswith("#"):
                 _parse_fitres_header_line(s, meta)
@@ -460,28 +745,61 @@ def read_fitres(path: str, as_text: bool = False, *, row_keys=TABLE_ROW_KEYS) ->
 
         rows = io.StringIO()
         for line_number, line in enumerate(f, start=1):
-            words = line.split('#', 1)[0].split()
+            words = line_words(line)
             if not words or words[0] not in row_keys:
                 continue
             if len(words) < len(varnames) + 1:
                 raise SNANAError(
                     f"{path}: row at line {line_number} after VARNAMES holds fewer "
                     "values than VARNAMES names", function_name="read_fitres")
-            rows.write(line)
+            rows.write(" ".join(words) + "\n")
 
     rows.seek(0)
     df = pd.read_csv(
-        rows, sep=r"\s+", comment="#", header=None, names=[_ROWKEY] + varnames,
+        rows, sep=" ", header=None, names=[_ROWKEY] + varnames, quoting=csv.QUOTE_NONE,
         usecols=range(len(varnames) + 1), dtype=str if as_text else None,
-        # IDs remain literal tokens, including leading zeros.
         converters=None if as_text else {
-            name: str for name in ('CID', 'SNID') if name in varnames},
+            name: str for name in varnames if string_column(name)},
         keep_default_na=not as_text,
     )
     rowkeys = df.pop(_ROWKEY)
     rowkey = rowkeys.to_numpy() if as_text else None
+    first = varnames[0]
+    if string_column(first):
+        # a '*' repeats the row above's value (sntools_output_text.c:1355-1361)
+        if len(df) and df[first].iloc[0] == "*":
+            raise SNANAError(f"{path}: the first row's {first} is '*', but no row "
+                             f"above it gives a value to repeat", function_name="read_fitres")
+        df[first] = df[first].mask(df[first] == "*").ffill()
     return FitresTable(df=df, varnames=varnames, meta=meta,
                        varnames_by_file=[varnames], rowkey=rowkey)
+
+
+# VARNAME_TABLE_IDLIST, sntools_output.h:88
+TABLE_ID_COLUMNS = ("ROW", "CID", "CCID", "SNID", "GALID", "HOSTGAL_OBJID")
+
+
+def table_ids(path, table: FitresTable) -> List[str]:
+    """The names of the rows of ``table``, read from ``path``: its first
+    column of :data:`TABLE_ID_COLUMNS` (SNTABLE_AUTOSTORE_INIT,
+    sntools_output.cpp:2253)."""
+    id_columns = [name for name in TABLE_ID_COLUMNS if table.has(name)]
+    if not id_columns:
+        raise SNANAError(f"{path} has none of the columns {TABLE_ID_COLUMNS} to name its rows",
+                         function_name="table_ids")
+    return [str(cid) for cid in table.df[id_columns[0]]]
+
+
+def read_cid_list(path) -> Tuple[List[str], Optional[FitresTable]]:
+    """The CIDs of a CID list file, as SNANA reads one (match_cidlist_init,
+    sntools.c:260-413): a table under VARNAMES, read as :func:`read_fitres`
+    reads it and named by :func:`table_ids`, or else every word of the file,
+    a word holding commas split at them. Returns the CIDs and the table, or
+    None for a plain list."""
+    if any(words[0] == 'VARNAMES:' for words in text_lines(path)):
+        table = read_fitres(path)
+        return table_ids(path, table), table
+    return [cid for words in text_lines(path) for cid in split_names(' '.join(words))], None
 
 
 def read_fitres_multi(paths: Sequence[str], as_text: bool = False) -> FitresTable:
@@ -574,7 +892,7 @@ def load_snana_dump(dump_path: str, dedup_cid: bool = False) -> SnanaDumpData:
 
 
 # must parse as >= 11.02 for the VPEC sign (correct_sign_vpec_data)
-SNANA_VERSION_STRING = "v12_02d-12-g74dfb2c5-JAX"
+SNANA_VERSION_STRING = "v12_02f-JAX"
 
 
 def snana_version_comment():
@@ -584,23 +902,16 @@ def snana_version_comment():
 
 
 def program_comment(program):
-    """The PROGRAM header line SNANA's tables carry after SNANA_VERSION
-    (sntools_output_text.c:721, SALT2mu.c:23555), naming the script that
-    wrote the file."""
+    """The PROGRAM header line SALT2mu's tables carry after SNANA_VERSION
+    (SALT2mu.c:23569), naming the script that wrote the file."""
     return f"PROGRAM:       {program}"
-
-
-def jax_snana_version_comment():
-    """The header line giving the jax-snana version that wrote the file,
-    beside SNANA_VERSION."""
-    return f"JAX-SNANA_VERSION: {version_string()}"
 
 
 def snana_value_strings(name, values):
     """Format a float column as SNANA's text writer does.
 
     The choice is per value, not per column, so one column can hold both
-    ``-9`` and ``2.29797e-05`` (sntools_output_text.c:467-495).
+    ``-9`` and ``2.29797e-05`` (sntools_output_text.c:478-506).
     """
     v = np.asarray(values, dtype=float)
     if "MJD" in name:
@@ -629,8 +940,8 @@ def snana_value_strings(name, values):
 
 def write_varnames_table(output_path, varnames, columns, fmt, style='key',
                          rowkey='SN:', header_comments=(),
-                         blank_separator=True, post_varnames_comments=()):
-    """Write an SNANA text table (sntools_output_text.c:600-761 formats):
+                         sntable_frame=True, post_varnames_comments=()):
+    """Write an SNANA text table (sntools_output_text.c:612-785 formats):
     FITRES (``SN:``), M0DIF (``ROW:``), SNANA, OUTLIER, LCPLOT and the BBC
     diagnostic dumps.
 
@@ -638,6 +949,10 @@ def write_varnames_table(output_path, varnames, columns, fmt, style='key',
     A column it leaves out, or maps to None, is written as SNANA's own text
     writer would: strings as they are, numbers by the per-value rule.
     Styles: key (# comments + VARNAMES: + rowkey rows), csv, col, none.
+    ``header_comments`` start every style; with ``sntable_frame`` they are
+    followed by a blank line, and a key table has ``#`` after its VARNAMES,
+    as SNANA's table writer frames them (SNTABLE_WRITE_HEADER_TEXT,
+    sntools_output_text.c:714-760).
     """
     if style == 'none':
         return
@@ -659,14 +974,17 @@ def write_varnames_table(output_path, varnames, columns, fmt, style='key',
     lines = np.array([sep.join(row) for row in zip(*str_cols)],
                      dtype=np.str_) if str_cols else np.empty(0, dtype=np.str_)
 
+    framed = bool(header_comments) and sntable_frame
     with open(output_path, 'w') as f:
+        for line in header_comments:
+            # None is a truly blank separator line; "" is a bare "# "
+            f.write("\n" if line is None else f"# {line}\n")
+        if framed:
+            f.write("\n")
         if style == 'key':
-            for line in header_comments:
-                # None is a truly blank separator line; "" is a bare "# "
-                f.write("\n" if line is None else f"# {line}\n")
-            if header_comments and blank_separator:
-                f.write("#\n")
             f.write(f"VARNAMES: {' '.join(varnames)}\n")
+            if framed:
+                f.write("#\n")
             # after VARNAMES, as write_fitres_driver
             for line in post_varnames_comments:
                 f.write("\n" if line is None else f"# {line}\n")
@@ -708,42 +1026,45 @@ HOSTGAL_NO_HOST_NULL = {
 }
 
 HOSTGAL_PREFIXES = ('HOSTGAL',) + tuple(f'HOSTGAL{k}' for k in range(2, MXHOSTGAL + 1))
-# width of each slot's photo-z quantile vector in a data file (sndata.h:185)
+# the most photo-z quantile columns SNANA reads from a HOSTLIB (sndata.h:187)
 MXBIN_HOSTGALz_QUANTILE = 20
-# width of each slot's LOGMASS(z) grid in a data file (sndata.h:184)
-MXBIN_HOSTGALz = 40
 
-#: sndata.h:84-87
+#: sndata.h:87-90
 HOSTGAL_PROPERTY_BASENAMES = ('LOGMASS', 'LOGSFR', 'LOGsSFR', 'COLOR')
 
-#: sntools_host.h:116-121, each to the spelling kept in memory
+#: sntools_host.h:123-128, each to the spelling kept in memory
 HOST_COORDINATE_NAMES = {'RA': 'RA_GAL', 'RA_HOST': 'RA_GAL', 'RA_GAL': 'RA_GAL',
                          'DEC': 'DEC_GAL', 'DEC_HOST': 'DEC_GAL',
                          'DEC_GAL': 'DEC_GAL'}
 
+#: sntools_host.c:3020-3044: every other spelling of a HOSTLIB column, to the
+#: one kept in memory. ZTRUE_CMB is the redshift in the CMB frame, which
+#: read_hostlib turns into the heliocentric ZTRUE.
+HOST_ALTERNATE_NAMES = {**HOST_COORDINATE_NAMES, 'REDSHIFT': 'ZTRUE',
+                        'ZTRUE_CMB': 'ZTRUE', 'VPECERR': 'VPEC_ERR'}
 
-def hostgal_null_key(col, bands):
-    """Column name with any trailing band stripped, for sentinel lookup."""
-    for b in bands:
-        if col.endswith(f'_{b}'):
-            return col[: -(len(b) + 1)]
-    return col
+
+def hostgal_null_key(col):
+    """Column name with any trailing band stripped, for sentinel lookup;
+    SNANA bands are single characters."""
+    stem, _, band = col.rpartition('_')
+    return stem if len(band) == 1 and stem in HOSTGAL_NO_HOST_NULL else col
 
 
 def canonical_property_name(name: str) -> str:
     """The in-memory spelling of a host column: ``LOGMASS_TRUE`` and
-    ``LOGMASS`` are both ``LOGMASS``, ``RA`` and ``RA_HOST`` are ``RA_GAL``;
-    any other name is itself.
+    ``LOGMASS`` are both ``LOGMASS``, ``RA`` and ``RA_HOST`` are ``RA_GAL``,
+    ``REDSHIFT`` is ``ZTRUE``; any other name is itself.
 
-    SNANA rewrites each property basename to ``<BASE>_TRUE`` wherever it reads
-    a name: the HOSTLIB header, a WGTMAP's variables and ``HOSTLIB_STOREPAR``
-    (checkAlternateVarNames_HOSTLIB, sntools_host.c:3029, applied at :2481,
-    :1333, :1098). It reads the host coordinates under ``RA``, ``RA_HOST`` or
-    ``RA_GAL``, and likewise for DEC (sntools_host.c:2740-2750). Every name
+    SNANA rewrites each name it reads wherever it reads one: the HOSTLIB
+    header, a WGTMAP's variables and ``HOSTLIB_STOREPAR``
+    (checkAlternateVarNames_HOSTLIB, sntools_host.c:2981, applied at :2492,
+    :1344, :1109). It reads the host coordinates under ``RA``, ``RA_HOST`` or
+    ``RA_GAL``, and likewise for DEC (sntools_host.c:2758-2768). Every name
     read from an input goes through here first."""
     if name.endswith('_TRUE') and name[:-5] in HOSTGAL_PROPERTY_BASENAMES:
         return name[:-5]
-    return HOST_COORDINATE_NAMES.get(name, name)
+    return HOST_ALTERNATE_NAMES.get(name, name)
 
 
 @dataclass
@@ -762,50 +1083,39 @@ class WgtMapData:
     snvar_indices: List[int]
 
 
-def _read_wgtmap_header(source):
-    """Consume the header and return dimension and function names.
+def _read_wgtmap_header(filepath, lines):
+    """Consume the header from the word ``lines`` of ``filepath`` and return
+    dimension and function names.
 
     Columns before WGT are dimensions; WGT and subsequent columns are
     functions (read_WGTMAP, sntools_wgtmap.c:78-92).
     """
-    for line in source:
-        words = line.split('#', 1)[0].split()
-        if words and words[0] in ('VARNAMES:', 'VARNAMES_WGTMAP:'):
-            names = words[1:]
+    for words in lines:
+        if words[0] in ('VARNAMES:', 'VARNAMES_WGTMAP:'):
+            names = split_names(' '.join(words[1:]))
             if 'WGT' not in names or names[0] == 'WGT':
-                raise SNANAError(f"Invalid VARNAMES_WGTMAP in {source.name}",
+                raise SNANAError(f"Invalid VARNAMES_WGTMAP in {filepath}",
                                  function_name='_read_wgtmap_header')
             iwgt = names.index('WGT')
             return [canonical_property_name(n) for n in names[:iwgt]], names[iwgt:]
-    raise SNANAError(f"VARNAMES_WGTMAP line not found in {source.name}",
+    raise SNANAError(f"VARNAMES_WGTMAP line not found in {filepath}",
                      function_name='_read_wgtmap_header')
 
 
-def _parse_wgtmap(filepath: str) -> Tuple[List[str], List[str], np.ndarray]:
+def _parse_wgtmap(filepath: str) -> Tuple[List[str], List[str], List[List[float]]]:
     """Read dimension names, function names and grid rows in one pass."""
-    rows = []
-    with open_text(filepath) as source:
-        varnames, fun_names = _read_wgtmap_header(source)
-        for line in source:
-            words = line.split('#', 1)[0].split()
-            if words and words[0] == 'WGT:':
-                rows.append([float(x) for x in words[1:]])
-
-    data = np.array(rows, dtype=np.float64)
+    lines = text_lines(filepath)
+    varnames, fun_names = _read_wgtmap_header(filepath, lines)
     ncol = len(varnames) + len(fun_names)
-    if data.ndim != 2 or data.shape[1] != ncol:
-        raise SNANAError(
-            f"WGTMAP rows must have {ncol} values ({len(varnames)} dimensions + "
-            f"{len(fun_names)} functions); got "
-            f"{data.shape[1] if data.ndim == 2 else 'ragged rows'}",
-            function_name="_parse_wgtmap")
-    return varnames, fun_names, data
+    rows = [[float(x) for x in exact_values(filepath, 'WGT', words[1:], ncol)]
+            for words in lines if words[0] == 'WGT:']
+    return varnames, fun_names, rows
 
 
 def read_wgtmap_varnames(filepath: str) -> List[str]:
     """Read only the WGTMAP dimension names, without loading its grid."""
-    with open_text(resolve_fits_path(filepath, required=True)) as source:
-        varnames, _ = _read_wgtmap_header(source)
+    filepath = resolve_fits_path(filepath, required=True)
+    varnames, _ = _read_wgtmap_header(filepath, text_lines(filepath))
     return varnames
 
 
@@ -817,7 +1127,7 @@ def read_wgtmap(filepath: str, sn_variables, opt_extrap: int = 0) -> WgtMapData:
     ``sn_variables`` maps each lower-cased spelling of a per-SN quantity,
     rather than a catalogue column, to the name the caller stores it under;
     a dimension it spells takes that name. The caller derives it from its
-    model (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2868).
+    model (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2886).
     ``opt_extrap`` is 0 to abort if any galaxy is out of bounds (SNANA
     default) or 1 to clamp out-of-bounds values to the grid edge.
     """
@@ -829,42 +1139,17 @@ def read_wgtmap(filepath: str, sn_variables, opt_extrap: int = 0) -> WgtMapData:
     log.line(logger, f"Dimensions: {ndim} ({', '.join(varnames)})")
     log.line(logger, f"Loaded {len(data)} grid points")
 
-    # uniform bins, tolerance 1e-6, as read_GRIDMAP
-    axes = [np.unique(data[:, i]) for i in range(ndim)]
-    for name, ax in zip(varnames, axes):
-        d = np.diff(ax)
-        if len(d) and np.any(np.abs(d - d[0]) / d > 1.0e-6):
-            raise SNANAError(
-                f"non-uniform bin in WGTMAP dimension '{name}'",
-                function_name="read_wgtmap")
-
+    axes, functions = gridmap(data, varnames, f"WGTMAP {filepath}")
     nbins = np.array([len(ax) for ax in axes], dtype=np.int32)
     ranges = np.array([[ax[0], ax[-1]] for ax in axes])
-
-    # every cell exactly once, in any row order
-    idx = tuple(np.searchsorted(axes[i], data[:, i]) for i in range(ndim))
-    counts = np.zeros(tuple(nbins), dtype=np.int64)
-    np.add.at(counts, idx, 1)
-    if np.any(counts != 1):
-        cell = np.argwhere(counts != 1)[0]
-        coords = ', '.join(f"{v}={axes[i][cell[i]]:g}"
-                           for i, v in enumerate(varnames))
-        raise SNANAError(
-            f"WGTMAP cell at {coords} appears "
-            f"{int(counts[tuple(cell)])} times; every grid cell must be "
-            f"tabulated exactly once.", function_name="read_wgtmap")
-
-    wgt_grid = np.zeros(tuple(nbins))
-    wgt_grid[idx] = data[:, ndim]
+    wgt_grid = functions[..., 0]
 
     # an all-zero SNMAGSHIFT means unused
     snmagshift_grid = None
     if 'SNMAGSHIFT' in fun_names:
-        vals = data[:, ndim + fun_names.index('SNMAGSHIFT')]
-        if not np.allclose(vals, 0.0):
-            snmagshift_grid = np.zeros(tuple(nbins))
-            snmagshift_grid[idx] = vals
-            snmagshift_grid = jnp.array(snmagshift_grid, dtype=jnp.float32)
+        snmagshift = functions[..., fun_names.index('SNMAGSHIFT')]
+        if not np.allclose(snmagshift, 0.0):
+            snmagshift_grid = jnp.array(snmagshift, dtype=jnp.float32)
 
     # float64 against underflow
     wgt_grid = jnp.array(wgt_grid, dtype=jnp.float64)
@@ -974,15 +1259,10 @@ def read_covariance_text(path) -> np.ndarray:
     matrix, one value per line, optionally gzipped.
 
     Only the first token of a line is read, as ``read_mucov_text`` does
-    (wfit.c:2011), so the per-element labels that ``--label_cov_rows`` appends
+    (wfit.c:2078), so the per-element labels that ``--label_cov_rows`` appends
     are ignored.
     """
-    values = []
-    with open_text(path) as stream:
-        for line in stream:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                values.append(float(stripped.split()[0]))
+    values = [float(words[0]) for words in text_lines(path)]
     if not values:
         raise SNANAError(
             f"empty covariance file: {path}",
@@ -1051,7 +1331,7 @@ def parse_prescales(raw) -> Dict[str, float]:
     """Parse a SNANA prescale dict, e.g. `C3/4.3+X3/2.2` (sntools.c
     parse_string_prescales). '+' is the default separator; a comma anywhere in
     the string switches to comma-separated. An entry with no `/value` takes
-    prescale 1.0 (sntools.c:1002)."""
+    prescale 1.0 (sntools.c:1001)."""
     if raw is None:
         return {}
     text = str(raw).strip()

@@ -14,7 +14,7 @@ from jax import vmap
 
 from jax_snlc_core.optimiser import newton_lm
 
-# OPT_SETPKMJD bits (snana.F90:2365-2371, sntools.h:412-415)
+# OPT_SETPKMJD bits (snana.F90:2371-2377, sntools.h:413-416)
 OPTMASK_SETPKMJD_BAZIN = 1        # Bazin (2009) fit (OPTBIT_SETPKMJD_ANYFUN)
 OPTMASK_SETPKMJD_NOABORT = 4      # no abort for an event without a peak
 OPTMASK_SETPKMJD_FLUXMAX = 8      # MJD of the maximum flux
@@ -53,7 +53,7 @@ def _find_peak_single_sn(mjd, flux, snr, n_obs, snrcut, nwin_combine,
     obs_indices = jnp.arange(max_obs)
 
     # OPT_SETPKMJD bit 16 weights each qualifying epoch by 1; bit 32 adds
-    # log10(SNR) on top of that 1 (sntools.c:1805-1806).
+    # log10(SNR) on top of that 1 (sntools.c:1800-1801).
     weights = snr_mask.astype(jnp.float32)
     if log_snr_weight:
         weights = weights + jnp.where(
@@ -105,7 +105,7 @@ def _clump_peaks(mjds, fluxcals, snrs, n_obs, snrcut, snrcut_backup,
 def naive_fluxmax_peakmjd(mjds, fluxcals, snrs, n_obs_per_sn, *, snrcut_backup):
     """OPT_SETPKMJD bit 8: the MJD of the brightest epoch passing SNRCUT_BACKUP,
     with no clumping. SNANA runs a single iteration for this option and starts
-    from the backup cut (sntools.c:1682)."""
+    from the backup cut (sntools.c:1677)."""
     mjds, fluxcals = jnp.asarray(mjds), jnp.asarray(fluxcals)
     snrs, n_obs = jnp.asarray(snrs), jnp.asarray(n_obs_per_sn)
     valid = (jnp.arange(mjds.shape[1])[None, :] < n_obs[:, None]) & \

@@ -293,7 +293,7 @@ def _gradient_diagnostics(p, gradient, bounds):
 @partial(jax.jit, static_argnames="spec")
 def _muerrsq(spec, p, inp, sigint):
     """The mu-variance at ``p`` and ``sigint``: the next iteration's
-    reference (SALT2mu.c:5661) and what write_chi2grid reads."""
+    reference (SALT2mu.c:5671) and what write_chi2grid reads."""
     fn = mures_muerrsq_fn(spec, inp, spec.nuisance(p, sigint), "snana_secant")
     return fn(p, sigint)[1]
 
@@ -301,9 +301,9 @@ def _muerrsq(spec, p, inp, sigint):
 @partial(jax.jit, static_argnames="spec")
 def _chi2_ia(spec, p, inp, sigint, nfloat):
     """(CHI2SUM_IA, dof): the pIa-weighted Ia chi2 whose reduced form the
-    sigint secant drives to 1 (SALT2mu.c:4734, :5086). Under a CC prior each
+    sigint secant drives to 1 (SALT2mu.c:4737, :5089). Under a CC prior each
     event enters weighted by its Ia probability and the dof is the summed
-    weight less the floated count (:5085, :5603, :5605)."""
+    weight less the floated count (:5088, :5613, :5615)."""
     nuis = spec.nuisance(p, sigint)
     fn = mures_muerrsq_fn(spec, inp, nuis, "snana_secant")
     mures, muerrsq = fn(p, sigint)
@@ -373,7 +373,7 @@ def run_fit(spec: FitSpec, inputs: LikelihoodInputs, m0_reference: float,
     for it in range(niter):
         p, ff, _ = _timed_fit(timings, spec, p, bounds[0], bounds[1], inp,
                               sigint, inp.muerrsq_last)
-        # the iflag==3 store (SALT2mu.c:5661): the next iteration reads it, and the
+        # the iflag==3 store (SALT2mu.c:5671): the next iteration reads it, and the
         # last one is what write_chi2grid sees
         muerrsq_final = _timed(timings, "fit_stats", _muerrsq, spec, p, inp, sigint)
         chi2sum_ia, ndof_ia = (float(x) for x in _timed(
@@ -381,9 +381,9 @@ def run_fit(spec: FitSpec, inputs: LikelihoodInputs, m0_reference: float,
         redchi2 = chi2sum_ia / ndof_ia
         chi2red_hist.append(redchi2)
         sigint_hist.append(sigint)
-        # prepNextFit STOP conditions (SALT2mu.c:4737)
+        # prepNextFit STOP conditions (SALT2mu.c:4740)
         stop_tol = abs(redchi2 - 1.0) < redchi2_tol
-        # a CC prior gets at least two iterations (:4745)
+        # a CC prior gets at least two iterations (:4748)
         if inputs.beams and it == 0:
             stop_tol = False
         stop_cov0 = it > 0 and sigint <= 0.0
@@ -414,7 +414,7 @@ def run_fit(spec: FitSpec, inputs: LikelihoodInputs, m0_reference: float,
 
 
 _SIGINT_NEXT_MAX = 100.0    # next_covFitPar aborts above this (:22243)
-MAXFITITER = 20             # SALT2mu.c:650
+MAXFITITER = 20             # SALT2mu.c:652
 
 
 def fit_bounds(model, floated_nuis, nzbin, m0_reference, mode,

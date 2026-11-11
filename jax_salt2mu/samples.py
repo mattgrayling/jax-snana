@@ -1,9 +1,9 @@
-"""IDSAMPLE partitioning (SNANA prepare_IDSAMPLE_biasCor, SALT2mu.c:9839).
+"""IDSAMPLE partitioning (SNANA prepare_IDSAMPLE_biasCor, SALT2mu.c:9849).
 
 An IDSAMPLE is a ``surveygroup x fieldgroup x zSPEC/zPHOT`` partition of the data.
 ``partition_idsamples`` builds the sample table from data events exactly as
 ``prepare_IDSAMPLE_biasCor``; ``assign_to_samples`` maps biasCor/CCprior events
-onto that existing table (``get_IDSAMPLE``, SALT2mu.c:11154).
+onto that existing table (``get_IDSAMPLE``, SALT2mu.c:11164).
 """
 
 import re
@@ -21,7 +21,7 @@ from .config import MASK_BIASCOR_SAMPLE, BBCConfig
 from .tablevar import CUTBIT_IDSAMPLE, CUTBIT_z
 
 
-_IGNORE = {"null", "none", "blank", ""}  # IGNOREFILE (sntools.c:4832)
+_IGNORE = {"null", "none", "blank", ""}  # IGNOREFILE (sntools.c:4829)
 
 
 def _sample_codes(idsurvey, fields, is_photoz):
@@ -76,7 +76,7 @@ class FieldGroup:
 
 
 def field_groups(config: BBCConfig) -> List[FieldGroup]:
-    """The user's field groups (set_FIELDGROUP_biasCor, SALT2mu.c:10320):
+    """The user's field groups (set_FIELDGROUP_biasCor, SALT2mu.c:10330):
     fieldlist_biascor lists exact field names, fieldgroup_biascor
     substrings, a bar-wrapped one exact; the two keys are exclusive."""
     group_key = config.fieldgroup_biascor.strip()
@@ -98,7 +98,7 @@ def field_groups(config: BBCConfig) -> List[FieldGroup]:
 
 def match_field_group(field: Optional[str], groups: List[FieldGroup],
                       snid: str = "") -> Tuple[str, str]:
-    """match_fieldGroup (SALT2mu.c:10981): the group an event's FIELD falls in
+    """match_fieldGroup (SALT2mu.c:10991): the group an event's FIELD falls in
     and its options. A FIELD equal to a group that demands an exact match is
     compared whole, overlaps included, against every group; every group
     demands one under fieldlist_biascor. Otherwise the FIELD's
@@ -130,7 +130,7 @@ def match_field_group(field: Optional[str], groups: List[FieldGroup],
 
 def _sample_matches(fieldgroup, surveygroup, photoz, s_fieldgroup, s_surveygroup,
                     s_photoz) -> bool:
-    """get_IDSAMPLE (SALT2mu.c:11154): an event with a field group joins the
+    """get_IDSAMPLE (SALT2mu.c:11164): an event with a field group joins the
     sample of that group, one without joins the first sample of its survey
     group, a field sample of that survey included; the zSPEC/zPHOT side
     must agree."""
@@ -142,7 +142,7 @@ def _sample_matches(fieldgroup, surveygroup, photoz, s_fieldgroup, s_surveygroup
 
 
 class _SurveyGroups:
-    """set_SURVEYGROUP_biasCor (SALT2mu.c:10416): user groups + auto singletons."""
+    """set_SURVEYGROUP_biasCor (SALT2mu.c:10426): user groups + auto singletons."""
 
     def __init__(self, surveygroup_str: str, present_ids, name_to_id, id_to_name):
         self.id_to_name = id_to_name
@@ -178,7 +178,7 @@ class _SurveyGroups:
             self.ids_of[name] = [sid]
 
     def match(self, idsurvey: int, snid: str = "") -> Tuple[str, str]:
-        """match_surveyGroup (SALT2mu.c:11099): unique group for idsurvey."""
+        """match_surveyGroup (SALT2mu.c:11109): unique group for idsurvey."""
         hits = []
         for name, ids in self.ids_of.items():
             if idsurvey in ids:
@@ -193,7 +193,7 @@ class _SurveyGroups:
 
 
 def _one_sample(config: BBCConfig, n: int) -> Tuple[np.ndarray, List[BiasCorSample]]:
-    """opt_biascor bit-64 off -> single 'ALL' sample (SALT2mu.c:9950)."""
+    """opt_biascor bit-64 off -> single 'ALL' sample (SALT2mu.c:9960)."""
     s = BiasCorSample(idsample=0, name="ALL", surveygroup="ALL", fieldgroup="NONE",
                       is_photoz=False, stringopt="", zrange=(config.zmin, config.zmax))
     return np.zeros(n, dtype=np.int64), [s]
@@ -201,7 +201,7 @@ def _one_sample(config: BBCConfig, n: int) -> Tuple[np.ndarray, List[BiasCorSamp
 
 def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
                         ) -> Tuple[np.ndarray, List[BiasCorSample]]:
-    """Reproduce prepare_IDSAMPLE_biasCor (SALT2mu.c:9839).
+    """Reproduce prepare_IDSAMPLE_biasCor (SALT2mu.c:9849).
 
     Returns per-event idsample array and the sorted BiasCorSample table.
     """
@@ -219,7 +219,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
     use_fieldgroup = bool(groups) and field is not None
 
     # an event the user excluded never becomes, or joins, an IDSAMPLE
-    # (select_IDLIST/select_FIELD then continue, SALT2mu.c:10011-10014)
+    # (select_IDLIST/select_FIELD then continue, SALT2mu.c:10021-10024)
     selected = np.ones(n, dtype=bool)
     if config.idsurvey_select:
         selected &= np.isin(idsurvey, config.idsurvey_select)
@@ -252,7 +252,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
         isn = int(first[u])
         idsrv = int(idsurvey[isn])
         fieldgroup, stringopt = match_field_group(flds[isn], groups)
-        if stringopt == "":  # STRINGOPT-empty gate (SALT2mu.c:10037)
+        if stringopt == "":  # STRINGOPT-empty gate (SALT2mu.c:10047)
             surveygroup, stringopt = survey_groups.match(idsrv)
         else:
             surveygroup = id_to_name[idsrv]
@@ -284,7 +284,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
 
     _check_field_split_consistency(samples)
 
-    # sort_IDSAMPLE_biasCor_driver (SALT2mu.c:10554)
+    # sort_IDSAMPLE_biasCor_driver (SALT2mu.c:10564)
     order = _sorted_order(samples, survey_groups, groups, has_photoz)
     old_to_new = np.empty(len(order), dtype=np.int64)
     old_to_new[np.asarray(order, dtype=np.int64)] = np.arange(len(order))
@@ -301,7 +301,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
             zrange=_sample_zrange(s["stringopt"], s["zmin"], s["zmax"], config)))
 
     if config.surveygroup_biascor_abortflag:
-        # abort on a requested surveygroup with no data (SALT2mu.c:10479)
+        # abort on a requested surveygroup with no data (SALT2mu.c:10489)
         present = {t.surveygroup for t in table}
         missing = [g for g in survey_groups.user_names if g not in present]
         if missing:
@@ -313,7 +313,7 @@ def partition_idsamples(idsurvey, field, zhd, is_photoz, config: BBCConfig
 
 
 def _check_field_split_consistency(samples: List[dict]) -> None:
-    """Abort if a survey has both survey-only and field-split events (SALT2mu.c:10627)."""
+    """Abort if a survey has both survey-only and field-split events (SALT2mu.c:10637)."""
     for s0 in samples:
         if not _is_none(s0["fieldgroup"]):
             continue
@@ -333,7 +333,7 @@ def _sorted_order(samples, survey_groups: _SurveyGroups, groups: List[FieldGroup
                   ) -> List[int]:
     """Order: user survey groups in the order given in surveygroup_biascor, user field
     groups, then auto groups by ascending IDSURVEY; zSPEC block before zPHOT
-    (SALT2mu.c:10706). Auto order is numeric, not SURVEY.DEF order: verified against
+    (SALT2mu.c:10716). Auto order is numeric, not SURVEY.DEF order: verified against
     SALT2mu.exe with CNIa(20)/YSE_ZTF(19), which SURVEY.DEF lists in the other order."""
     order: List[int] = []
     z_blocks = [False, True] if has_photoz else [None]
@@ -369,7 +369,7 @@ def _sorted_order(samples, survey_groups: _SurveyGroups, groups: List[FieldGroup
 
 def assign_to_samples(idsurvey, field, is_photoz, samples: List[BiasCorSample],
                       config: BBCConfig) -> np.ndarray:
-    """get_IDSAMPLE (SALT2mu.c:11154) for biasCor/CCprior events on the data's
+    """get_IDSAMPLE (SALT2mu.c:11164) for biasCor/CCprior events on the data's
     sample table, with the user's field groups; -9 for an event matching
     no sample."""
     idsurvey = np.asarray(idsurvey, dtype=np.int64)
@@ -438,7 +438,7 @@ def assign_biascor(biascor_tv, samples, config, model):
     bc_idsample = assign_to_samples(
         biascor_tv.idsurvey, biascor_tv.field, biascor_tv.is_photoz, samples, config)
     # a biasCor event matching no data IDSAMPLE fails the IDSAMPLE cut
-    # (SALT2mu.c:18957-18958), keeping it out of sigInt and zM0
+    # (SALT2mu.c:18971-18972), keeping it out of sigInt and zM0
     biascor_tv.cutbits[bc_idsample < 0] |= 1 << CUTBIT_IDSAMPLE
     apply_biascor_zcut(biascor_tv, bc_idsample, samples, config, model)
     return bc_idsample
@@ -446,9 +446,9 @@ def assign_biascor(biascor_tv, samples, config, model):
 
 def apply_biascor_zcut(biascor_tv, bc_idsample, samples, config, model) -> None:
     """The biasCor z cut, whose zmax each sample widens by its own z binsize
-    (set_CUTMASK, SALT2mu.c:18866). Needs the IDSAMPLE partition, so it runs here
+    (set_CUTMASK, SALT2mu.c:18880). Needs the IDSAMPLE partition, so it runs here
     rather than in ``compute_cutbits``."""
-    # an event matching no sample keeps SNANA's pre-STRINGOPT default (:10178)
+    # an event matching no sample keeps SNANA's pre-STRINGOPT default (:10188)
     zbin = np.array([sample_binsize(s, config, model).zbin for s in samples]
                     + [(config.zmax - config.zmin) / config.nzbin])
     zmax = config.zmax + zbin[np.where(bc_idsample >= 0, bc_idsample, -1)]

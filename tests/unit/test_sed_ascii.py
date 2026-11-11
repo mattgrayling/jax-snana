@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.models.sed_model import SED_WAVELENGTH_RANGE, read_sed_file
+from jax_snlc_core.models.sed_model import SED_WAVELENGTH_RANGE
+from jax_snlc_core.snana_files import read_sed_file
 
 DAYS = (-150.0, 500.0)
 
@@ -71,12 +72,12 @@ def test_read_sed_file_gzipped(tmp_path):
 
 
 @pytest.mark.parametrize("bad_row, message", [
-    ("incomplete row\n", "2 words, expected at least 3"),
-    ("0.0 4500.0 abc\n", "line 2 '0.0 4500.0 abc' is not three numbers"),
+    ("incomplete row\n", "'incomplete row' is not three numbers"),
+    ("0.0 4500.0 abc\n", "'0.0 4500.0 abc' is not three numbers"),
 ])
 def test_read_sed_file_aborts_on_a_bad_row(tmp_path, bad_row, message):
     """rd_sedFlux aborts on a row with fewer than three words
-    (sntools.c:8505-8513); a row that does not parse aborts too, naming the
+    (sntools.c:8200-8208); a row that does not parse aborts too, naming the
     file and the line."""
     p = tmp_path / "bad_row.SED"
     p.write_text("0.0 4000.0 1.0\n" + bad_row + "0.0 5000.0 1.0\n")
@@ -87,7 +88,7 @@ def test_read_sed_file_aborts_on_a_bad_row(tmp_path, bad_row, message):
 
 def test_read_sed_file_keeps_only_rows_inside_the_ranges(tmp_path):
     """rd_sedFlux drops rows outside the day and wavelength ranges as it reads
-    (sntools.c:8538-8542), so a template's stray lambda=0 row or a far-out
+    (sntools.c:8233-8237), so a template's stray lambda=0 row or a far-out
     epoch never reaches the model's grid."""
     p = tmp_path / "wide.SED"
     p.write_text(
@@ -118,7 +119,7 @@ def test_read_sed_file_keeps_only_rows_inside_the_ranges(tmp_path):
 def test_read_sed_file_aborts_on_a_broken_grid(tmp_path, rows, message):
     """rd_sedFlux aborts when a day decreases, when a day lists a different
     number of wavelengths, when a wavelength fails to repeat, or when the
-    wavelengths fall within a day (sntools.c:8576-8624, :8675-8690)."""
+    wavelengths fall within a day (sntools.c:8271-8319, :8370-8385)."""
     p = tmp_path / "bad.SED"
     p.write_text(rows)
     with pytest.raises(SNANAError, match=message):
@@ -127,7 +128,7 @@ def test_read_sed_file_aborts_on_a_broken_grid(tmp_path, rows, message):
 
 def test_read_sed_file_uniform_days_only_where_asked(tmp_path):
     """Non-uniform day bins abort unless the model allows them, as NON1ASED
-    and SIMSED do through OPTMASK_DAYLIST_SEDMODEL (sntools.c:8549-8560)."""
+    and SIMSED do through OPTMASK_DAYLIST_SEDMODEL (sntools.c:8244-8255)."""
     p = tmp_path / "steps.SED"
     _write_sed(p, np.array([0.0, 1.0, 2.0, 4.0]), np.array([4000.0, 5000.0]),
                np.ones((4, 2)))
@@ -139,7 +140,7 @@ def test_read_sed_file_uniform_days_only_where_asked(tmp_path):
 
 
 def test_read_sed_file_reads_a_nan_flux_as_zero(tmp_path):
-    """rd_sedFlux reads a NaN flux as zero (sntools.c:8520)."""
+    """rd_sedFlux reads a NaN flux as zero (sntools.c:8215)."""
     p = tmp_path / "nan.SED"
     p.write_text("0.0 4000.0 nan\n0.0 5000.0 1.0\n")
     _, _, flux = read_sed_file(str(p), DAYS, SED_WAVELENGTH_RANGE,

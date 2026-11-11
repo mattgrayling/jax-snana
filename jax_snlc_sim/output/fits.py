@@ -22,14 +22,14 @@ GZIP_THREADS = 8
 logger = logging.getLogger(__name__)
 
 # SNANA's format-version stamp; 29 is the revision gating the detector
-# columns on DETINFO_FLAG (SNFITSIO_CODE_IVERSION, sntools_dataformat_fits.c:1120).
+# columns on DETINFO_FLAG (SNFITSIO_CODE_IVERSION, sntools_dataformat_fits.c:1124).
 _CODE_IVERSION = 29
 
 # A FITS file is a whole number of 2880-byte blocks, header and data alike.
 _BLOCK = 2880
 _CARD = 80
 
-# WRITE_MASK bits (sndata.h:51-61)
+# WRITE_MASK bits (sndata.h:53-63)
 _WRITE_MASK_SIM_SNANA = 4
 _WRITE_MASK_SIM_SNRMON = 16
 _WRITE_MASK_SIM_MODELPAR = 32
@@ -42,7 +42,7 @@ _WRITE_MASK_COMPACT_NOFLUXCAL = 4096
 _PACKAGE_PATH = str(Path(__file__).resolve().parents[2])
 
 # the row closing each event's epochs and each spectrum's bins
-# (SNFITSIO_EOE_MARKER, sntools_dataformat_fits.c:1509-1516, :2895)
+# (SNFITSIO_EOE_MARKER, sntools_dataformat_fits.c:1514-1521, :2906)
 _EOE_MARKER = -777.0
 _PHOT_MARKER = {'MJD': _EOE_MARKER, 'FLUXCAL': _EOE_MARKER,
                 'FLUXCALERR': _EOE_MARKER, 'BAND': b'-', 'FIELD': b'XXXX'}
@@ -84,7 +84,7 @@ def primary_keywords(config, resources, kcor_filter_names, file_prefix, model,
                      snrmon_colname, version_name, zp_fluxcal, columns, flags,
                      writes_spectra, writes_sed_true, head):
     """The primary header SNANA writes to each of its data files
-    (wr_snfitsio_create, sntools_dataformat_fits.c:1123-1412). The
+    (wr_snfitsio_create, sntools_dataformat_fits.c:1127-1416). The
     private-variable count goes to HEAD alone, and a BLINDTEST file ends at
     DATATYPE, as data does.
     """
@@ -95,7 +95,7 @@ def primary_keywords(config, resources, kcor_filter_names, file_prefix, model,
         'SURVEY': resources.survey_name,
         'SUBSURVEY_FLAG': int(subsurvey_flag(resources)),
         'ZP_FLUXCAL': zp_fluxcal,
-        # USE_SIMLIB_IDEXPT detector columns (snlc_sim.c:7425)
+        # USE_SIMLIB_IDEXPT detector columns (snlc_sim.c:7437)
         'DETINFO_FLAG': 0,
         'ATMOS_FLAG': int(flags['atmos']),
         'PHOTFLAG_DETECT': resources.searcheff_photflag_detect,
@@ -285,7 +285,7 @@ def write_spec_fits(config, keywords, kcor_filter_names, file_prefix,
     """
     output_file = Path(output_dir) / f'{file_prefix}_SPEC.FITS'
 
-    # WRSPEC_PRESCALE tests the internal CID (apply_prescale_GENSPEC, snlc_sim.c:21855)
+    # WRSPEC_PRESCALE tests the internal CID (apply_prescale_GENSPEC, snlc_sim.c:21895)
     ps = config.output.wrspec_prescale
     all_spectra = []
     for snid in sorted(spectra_by_sn.keys()):
@@ -392,7 +392,7 @@ def gzip_output_fits(output_dir: str) -> None:
 
     isal writes the same gzip format across threads. Its levels run 0 to 3,
     a scale of its own, and 3 is its strongest; SNANA runs ``gzip *.FITS``
-    with no level flag (sntools_dataformat_fits.c:3140), so zlib's default 6.
+    with no level flag (sntools_dataformat_fits.c:3151), so zlib's default 6.
     """
     for path in Path(output_dir).glob("*.FITS"):
         gz_path = path.with_name(path.name + '.gz')

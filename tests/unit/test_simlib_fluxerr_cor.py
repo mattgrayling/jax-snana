@@ -266,7 +266,7 @@ def test_noise_clamps_below_grid_to_edge():
 
 def test_fluxerr_add_applies_after_fudgescale_unscaled():
     """The legacy additive term runs after FUDGESCALE_FLUXERR and is not
-    scaled by it (snlc_sim.c:28105-28134): the variance it adds must be the
+    scaled by it (snlc_sim.c:28163-28192): the variance it adds must be the
     same with and without the fudge scale. The pre-ordering-fix chain added
     it before the scale, quadrupling it under FUDGESCALE_FLUXERR=2."""
     f1sq = jnp.full(5, 4.0, dtype=jnp.float32)   # FUDGESCALE_FLUXERR = 2
@@ -283,7 +283,7 @@ def test_fluxerr_add_applies_after_fudgescale_unscaled():
 
 def test_fluxerr_add_gated_by_exposure_time():
     """The legacy additive term applies only when EXPOSURE_TIME_FILTER == 1
-    for the band (snlc_sim.c:28114-28116)."""
+    for the band (snlc_sim.c:28172-28174)."""
     add = jnp.array([0.0, 0.0, 100.0, 0.0, 0.0], dtype=jnp.float32)
     xt = jnp.array([1.0, 1.0, 2.0, 1.0, 1.0], dtype=jnp.float32)
     s_base = float(_call_noise(active=True, filter_idx=2)[1])
@@ -296,7 +296,7 @@ def test_fluxerr_add_gated_by_exposure_time():
 
 def test_fudge_magerr_reported_error_only():
     """FUDGE_MAGERR adds to SQSIG_TRUE[S] and the reported error but not to
-    the SZ draw variance (snlc_sim.c:28005-28012), so the drawn flux is
+    the SZ draw variance (snlc_sim.c:28069-28076), so the drawn flux is
     unchanged while the reported error grows."""
     magerr = jnp.array([0.0, 0.0, 0.1, 0.0, 0.0], dtype=jnp.float32)
     f_off, s_off, _, _ = _call_noise(noise_value=1.0, smearflag_flux=1,
@@ -309,7 +309,7 @@ def test_fudge_magerr_reported_error_only():
 
 
 def test_smearflag_flux_any_positive_activates_draws():
-    """Any SMEARFLAG_FLUX > 0 applies the noise shifts (snlc_sim.c:28464-28472);
+    """Any SMEARFLAG_FLUX > 0 applies the noise shifts (snlc_sim.c:28528-28536);
     zero leaves the true flux."""
     f0 = float(_call_noise(noise_value=1.0, smearflag_flux=0)[0])
     f1 = float(_call_noise(noise_value=1.0, smearflag_flux=1)[0])
@@ -321,7 +321,7 @@ def test_smearflag_flux_any_positive_activates_draws():
 
 def test_smearflag_bit2_subtracts_source_plus_host():
     """SMEARFLAG_FLUX bit 2 removes source AND host shot noise from the
-    reported error (snlc_sim.c:28518-28523)."""
+    reported error (snlc_sim.c:28576-28581)."""
     host_pe = 500.0
     s = lambda flag, g: float(_call_noise(smearflag_flux=flag,
                                           fluxgal_pe=g)[1])
@@ -333,7 +333,7 @@ def test_smearflag_bit2_subtracts_source_plus_host():
 
 def test_template_noise_activates_on_skysig_alone():
     """Template variance enters whenever template_skysig > 0
-    (snlc_sim.c:27807); TEMPLATE_ZPT validity is enforced at construction,
+    (snlc_sim.c:27865); TEMPLATE_ZPT validity is enforced at construction,
     not by the kernel's presence rule."""
     s_off = float(_call_noise()[1])
     s_on = float(_call_noise(template_skysig=2.0, template_zpt=26.0)[1])
@@ -342,7 +342,7 @@ def test_template_noise_activates_on_skysig_alone():
 
 def test_sub_unity_true_scale_surfaces_as_nan():
     """A FLUXERRMODEL TRUE-side scale below one gives negative fudge
-    variance; SNANA aborts (snlc_sim.c:28065-28079) and the kernel must
+    variance; SNANA aborts (snlc_sim.c:28123-28137) and the kernel must
     surface NaN rather than flooring it to zero."""
     f, sigma, _, _ = _call_noise(smearflag_flux=1, sqscale_true=0.81)
     assert np.isnan(float(f))
@@ -350,23 +350,24 @@ def test_sub_unity_true_scale_surfaces_as_nan():
 
 def test_fluxerr_sqscale_exact_one_bumped_to_1p001():
     """A TRUE-side error scale of exactly 1.0 is bumped to 1.001
-    (snlc_sim.c:28059-28062); the DATA side is not bumped. A masked-off map
+    (snlc_sim.c:28117-28120); the DATA side is not bumped. A masked-off map
     leaves scale 1, so the bump applies there too."""
-    one = jnp.array(1.0)
+    maps = {'is_errscale': jnp.array([True, True]), 'scale_true': jnp.ones(2),
+            'scale_data': jnp.ones(2), 'applies_true': jnp.array([True, False]),
+            'applies_data': jnp.array([True, False])}
     sqt, sqd = fluxerr_model_sqscales(
-        one, one, one, one, one, jnp.array(10.0), jnp.array(100.0), True)
+        maps, jnp.array(0), jnp.array(1.0), jnp.array(10.0), jnp.array(100.0))
     assert float(sqt) == pytest.approx(1.001**2, rel=1e-6)
     assert float(sqd) == pytest.approx(1.0)
     sqt_masked, sqd_masked = fluxerr_model_sqscales(
-        jnp.array(1.7), one, one, jnp.array(0.0), jnp.array(0.0),
-        jnp.array(10.0), jnp.array(100.0), True)
+        maps, jnp.array(1), jnp.array(1.7), jnp.array(10.0), jnp.array(100.0))
     assert float(sqt_masked) == pytest.approx(1.001**2, rel=1e-6)
     assert float(sqd_masked) == pytest.approx(1.0)
 
 
 def test_zero_point_jitter_scales_the_difference_flux():
     """SNANA's zero-point jitter scales the SN's search flux less its own
-    flux in the template (snlc_sim.c:27842-27849): an SN as bright in the
+    flux in the template (snlc_sim.c:27900-27907): an SN as bright in the
     template as in the search image gets none, while without a template it
     gets the jitter of its whole flux, and the jitter variance goes as the
     square of the difference flux."""

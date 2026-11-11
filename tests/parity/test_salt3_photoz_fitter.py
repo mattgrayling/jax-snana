@@ -59,7 +59,7 @@ def salt3_photoz_fit_results(snana_fixture):
 
 
 def test_photoz_bound_bounds_the_fit(snana_fixture):
-    """PHOTOZ_BOUND is the MINUIT bound on zPHOT (snlc_fit.F90:8459-8467), so
+    """PHOTOZ_BOUND is the MINUIT bound on zPHOT (snlc_fit.F90:8503-8511), so
     it holds the start point and a pinned prior as well as every step. On a
     bound tighter than the sample's redshifts every fit lies inside it and
     the events SNANA leaves at the upper bound sit there in jax too."""
@@ -87,7 +87,7 @@ def test_photoz_bound_bounds_the_fit(snana_fixture):
 def test_distance_prior_matches_snana(snana_fixture, name):
     """PRIOR_MUERRSCALE and PRIOR_DMU_RANGE tie the fitted distance to the
     reference cosmology's at the fitted redshift (CHI2PRIOR(IPAR_DLMAG),
-    snlc_fit.F90:4910). With no other redshift information either prior
+    snlc_fit.F90:4961). With no other redshift information either prior
     moves many fitted redshifts by more than the tolerance here, so the match
     shows the prior applied as SNANA applies it. Fits on the light curve alone
     can settle in different local minima, so two events may differ."""
@@ -210,8 +210,9 @@ def test_photoz_external_start(snana_fixture):
     batch = load_batch(config, fx.head_fits, fx.phot_fits, max_fit=1)
     fitter = build_fitter(config, build_fit_model(config), batch)
     batch = for_fit(fitter, batch)
+    fitres = fx.root / 'FITRES.TEXT'
     batch.sncid_inival = start_values_from_sncid_list(
-        read_fitres(fx.root / 'FITRES.TEXT'), batch.snids, fitter.param_names)
+        fitres, read_fitres(fitres), batch.snids, fitter.param_names)
     start = fitter.start_values(fitter.config, batch, fitter.usesim_columns)
     for name, values in batch.sncid_inival.items():
         np.testing.assert_array_equal(start[name], values)
@@ -463,7 +464,7 @@ def test_photoz_fitres_columns_vs_snana(salt3_photoz_fit_results):
 
 def test_photoz_fitchi2_is_snanas(salt3_photoz_fit_results):
     """FITCHI2 under photo-z with the full flux covariance. Photo-z turns
-    OPT_CHI2_SIGMA on (snlc_fit.F90:7130), so the chi2 carries
+    OPT_CHI2_SIGMA on (snlc_fit.F90:7180), so the chi2 carries
     2*ln(sigma/sigma_last) per epoch, where sigma_last is the previous
     iteration's full diagonal error (JEP_FLUX_ERRTOT, :5100), not the
     covariance's diagonal with the colour dispersion taken out, which would
@@ -498,7 +499,7 @@ def test_photoz_error_stays_within_the_prior_width(salt3_photoz_fit_results):
 
 def test_photoz_fit_matches_snana_without_a_covariance_matrix(snana_fixture):
     """Photo-z under USE_DIAG_ONLY, where rounds 2+ recompute sigma rather than
-    freezing it (snlc_fit.F90:10572). Photo-z defaults OPT_CHI2_SIGMA on
+    freezing it (snlc_fit.F90:10695). Photo-z defaults OPT_CHI2_SIGMA on
     (:7184), so this is the one path carrying the live error surface and the
     2*ln(sigma/sigma_last) term together."""
     fx = snana_fixture("salt3_fit_photoz_diagcov")
@@ -667,8 +668,8 @@ def test_header_override_logmass_grid_vs_snana(snana_fixture, data_root,
                                                fixture, dofit_photoz):
     """A LOGMASS(z) grid in the override replaces HOST_LOGMASS and its error by
     the grid's spline at the fit's redshift, and in a photo-z fit again at the
-    host's photo-z (SET_LOGMASS, snana.F90:17831; FITANA_LOGMASS,
-    snlc_fit.F90:13047). The override covers CIDs 1 to 40; the rest keep
+    host's photo-z (SET_LOGMASS, snana.F90:17923; FITANA_LOGMASS,
+    snlc_fit.F90:13202). The override covers CIDs 1 to 40; the rest keep
     their catalogue mass. HOST_LOGMASS_ZPHOT stays the null SNANA writes."""
     from jax_snlc_fit.output import build_host_columns
 
@@ -1037,7 +1038,7 @@ def test_photoz_trest_cut_matches_snana(snana_fixture, repo_root, data_root,
     """A photo-z fit relaxes the Trest-family cuts and re-tests after fitting.
 
     SNANA widens each window by (1+z) against PHOTOZ_BOUND(2) before fitting
-    (TRESTzCUT, snlc_fit.F90:3289) and then counts the filters still holding an
+    (TRESTzCUT, snlc_fit.F90:3321) and then counts the filters still holding an
     epoch inside the *nominal* window, cutting on that count rather than on the
     window itself (GET_TRESTVAR :13234, CUTWIN_NFILT_TRESTMIN default 1).
 
@@ -1079,7 +1080,7 @@ def test_photoz_trest_cut_matches_snana(snana_fixture, repo_root, data_root,
 
     # T0GAPMAX counts only gaps touching the peak window, and that window is
     # (CUTWIN_TRESTMIN(2), CUTWIN_TRESTMAX(1)) rather than a key of its own
-    # (snana.F90:21105-21106). Left open it inverts and collapses to TGAPMAX; bounded
+    # (snana.F90:21197-21198). Left open it inverts and collapses to TGAPMAX; bounded
     # it is a different cut, so both regimes are anchored.
     assert rows("PZT0.FITRES.TEXT", "CUTWIN_T0GAPMAX", "0.0,12.0") == 100
     assert rows("PZT0WIN.FITRES.TEXT", "CUTWIN_TRESTMIN", "-20.0,-2.0",
@@ -1091,7 +1092,7 @@ def test_photoz_fit_in_fewer_bands_than_the_data(snana_fixture, repo_root,
                                                  data_root, tmp_path):
     """A photo-z fit whose FILTLIST_FIT leaves out a band of the data, here u
     of ugrizY, tests ZFIT_RANGE on its own fit bands, each against that
-    band's rest-frame range (LTEST_ZPHFILTER, snlc_fit.F90:3569-3572); the
+    band's rest-frame range (LTEST_ZPHFILTER, snlc_fit.F90:3601-3604); the
     band left out is never fitted."""
     fx = snana_fixture("salt3_fit_photoz")
     version = "JAX_TEST_SALT3_FIT_PHOTOZ"

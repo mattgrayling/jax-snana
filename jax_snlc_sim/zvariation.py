@@ -1,6 +1,6 @@
 """ZVARIATION: additive z-dependent shifts of population parameters.
 
-Mirrors SNANA init_zvariation / get_zvariation (snlc_sim.c:22736-23190):
+Mirrors SNANA init_zvariation / get_zvariation (snlc_sim.c:22795-23249):
 each entry names a sim parameter (GEN<component>_<par>, GENMAG_OFF_GLOBAL,
 EBV_IGM, or the AV/EBV exponential-profile family) and gives its shift vs
 zCMB as either a polynomial (ZPOLY, arbitrary order comma-separated or
@@ -24,6 +24,7 @@ import numpy as np
 
 from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
+from jax_snlc_core.snana_files import text_lines
 from jax_snlc_core.utils import eval_genpoly
 
 logger = logging.getLogger(__name__)
@@ -107,11 +108,7 @@ def _parse_poly(text: str, parname: str, require_comma: bool) -> np.ndarray:
 def parse_zvariation_file(path: str) -> List[ZVariationEntry]:
     """ZVARIATION_FILE format: PARAMETER: / ZPOLY: / ZBIN: rows, END: stops."""
     entries: List[ZVariationEntry] = []
-    tokens = []
-    with open(path) as f:
-        for line in f:
-            line = line.split('#')[0]
-            tokens.extend(line.split())
+    tokens = [word for words in text_lines(path) for word in words]
     i = 0
     current: Optional[ZVariationEntry] = None
     zbins: List[Tuple[float, float]] = []
@@ -190,7 +187,7 @@ def build_pardef(model_parnames: List[str], dynamic: bool) -> set:
     """Valid parameter registry (init_zvariation :22430-22500).
 
     The misc names register only when the model does not declare its
-    parameters in the input (snlc_sim.c:22868-22882)."""
+    parameters in the input (snlc_sim.c:22921-22935)."""
     pars = ['RV', 'AV'] + list(model_parnames)
     names = set()
     for prefix in PREFIX_GENGAUSS:
@@ -205,7 +202,7 @@ def _pardef_for(spellings, names_from_input) -> set:
     """The parameter names a variation may target, for the running model."""
     model_pars = sorted(set(spellings.values()))
     # SNANA's MISC-pardef gate is run-level NPAR_SIMSED > 0, which
-    # SIMSED_GRIDONLY: SEQUENTIAL fails (snlc_sim.c:6064, :22865)
+    # SIMSED_GRIDONLY: SEQUENTIAL fails (snlc_sim.c:6076, :22918)
     return build_pardef(model_pars, names_from_input and bool(model_pars))
 
 

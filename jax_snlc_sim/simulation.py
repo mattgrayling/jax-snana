@@ -633,10 +633,10 @@ class Survey:
 
 
 # HOSTLIB_MSKOPT bits with no generation meaning here: +HOSTAPPEND, +HOSTMAGS,
-# +HOSTNBR and +HOSTSELECT rewrite the catalogue instead (sntools_host.h:48-51)
+# +HOSTNBR and +HOSTSELECT rewrite the catalogue instead (sntools_host.h:52-55)
 HOSTLIB_MSKOPT_REWRITE_BITS = {4096: "+HOSTAPPEND", 8192: "+HOSTMAGS",
                                16384: "+HOSTNBR", 32768: "+HOSTSELECT"}
-# Gaussian photo-z quantiles from ZPHOT and ZPHOT_ERR (sntools_host.h:52)
+# Gaussian photo-z quantiles from ZPHOT and ZPHOT_ERR (sntools_host.h:56)
 HOSTLIB_MSKOPT_ZPHOT_QGAUSS = 65536
 
 
@@ -1409,7 +1409,7 @@ FORMAT_MASK_noSPEC = 2048
 
 
 def parse_format_mask(mask: int) -> Dict[str, bool]:
-    """Decode FORMAT_MASK into per-bit flags (snlc_sim.c:7415-7424)."""
+    """Decode FORMAT_MASK into per-bit flags (snlc_sim.c:7427-7436)."""
     m = int(mask)
     return {
         'vbose': bool(m & FORMAT_MASK_VBOSE),
@@ -1455,7 +1455,7 @@ class SimulationConfig:
 
     def __post_init__(self):
         # Atmosphere/DCR auto-enables the ATMOS output format and the SED-true
-        # spectrograph path that drives the DCR integral (snlc_sim.c:7389).
+        # spectrograph path that drives the DCR integral (snlc_sim.c:7401).
         if self.instrument.atmos_optmask > 0:
             self.output.format_mask |= 128
             # ZERO_NEGFLAM, in both copies of GENMODEL_MSKOPT
@@ -1543,6 +1543,7 @@ class LightCurveSimulator:
     simlib_fluxerr_add: Optional[Any] = field(default=None, metadata={'host_only': True})
     simlib_template_texpose: float = field(default=None, metadata={'host_only': True})
     simlib_subsurvey_list: tuple = field(metadata={'static': True})     # global-header SUBSURVEY_LIST
+    simlib_genskip_peakmjd: tuple = field(metadata={'static': True})    # global-header GENSKIP_PEAKMJD
     # the entries grouped by CUTWIN_REDSHIFT window, for the entry draw;
     # None when no entry has one
     simlib_windows: Optional[Any]
@@ -1595,21 +1596,12 @@ class LightCurveSimulator:
     sfd_map: Optional[Any] = field(default=None, metadata={'host_only': True}) # None if unreachable
     field_sfd_ebv: Optional[Any]     # SFD98 at each field, or None
 
-    # instrument state: effective saturation values (SIMLIB-header override),
-    # the ADDPHASECOR Cholesky factor, and the compiled FLUXERRMODEL
-    npe_pixel_saturate: int
-    photflag_saturate: int = field(metadata={'static': True})
+    # instrument state: the ADDPHASECOR Cholesky factor and the compiled
+    # FLUXERRMODEL
     phasecor_cholesky_L: Optional[Any]  # None = GENMAG_SMEAR_ADDPHASECOR off
     fluxerr_enabled: bool = field(metadata={'static': True})
     fluxerr_active_vars: Tuple[str, ...] = field(metadata={'static': True})
-    fluxerr_is_errscale: bool = field(metadata={'static': True})
-    fluxerr_grids: Optional[Any]
-    fluxerr_grid_origins: Tuple[float, ...]
-    fluxerr_grid_steps: Tuple[float, ...]
-    fluxerr_scale_true: Optional[Any]
-    fluxerr_scale_data: Optional[Any]
-    fluxerr_applies_true: Optional[Any]
-    fluxerr_applies_data: Optional[Any]
+    fluxerr_maps: Optional[Dict[str, Any]]   # stacked_fluxerr_maps
     fluxerr_map_index_per_field: Optional[Any]
     fluxerr_needs_host_vars: bool = field(metadata={'static': True})
     fluxerr_has_redcov: bool = field(metadata={'static': True})

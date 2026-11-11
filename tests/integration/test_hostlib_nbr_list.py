@@ -280,7 +280,7 @@ def test_nbr_hostlib_hostgal_and_hostgal2_invariants(nbr_fixture):
 def test_nbr_hostgal2_specz_photoz(nbr_head):
     """HOSTGAL/HOSTGAL2 photo-z carry the same ZDIF shift and each spec-z is the
     measured SN z (true-match host) or that host's catalog ZTRUE
-    (GEN_SNHOST_ZPHOT / snlc_sim.c:26071-26078)."""
+    (GEN_SNHOST_ZPHOT / snlc_sim.c:26128-26135)."""
     c, hostlib = nbr_head
     cat = {}
     for line in hostlib.read_text().splitlines():
@@ -310,7 +310,7 @@ def test_nbr_hostgal2_specz_photoz(nbr_head):
 
 def test_nbr_hostgal2_objid_unique(nbr_head):
     """HOSTGAL2_OBJID_UNIQUE = CID*57 + [0,56], distinct from HOSTGAL_OBJID_UNIQUE
-    (set_GALID_UNIQUE collision avoidance, sntools_host.c:9060)."""
+    (set_GALID_UNIQUE collision avoidance, sntools_host.c:9457)."""
     c, _ = nbr_head
     u1, u2 = c['HOSTGAL_OBJID_UNIQUE'], c['HOSTGAL2_OBJID_UNIQUE']
     o2 = c['HOSTGAL2_OBJID']
@@ -323,7 +323,7 @@ def test_nbr_hostgal2_objid_unique(nbr_head):
 
 
 def test_sim_hostlib_galid_names_the_drawn_host(nbr_head):
-    """SIM_HOSTLIB_GALID is the drawn galaxy (SNHOSTGAL.GALID, snlc_sim.c:26128),
+    """SIM_HOSTLIB_GALID is the drawn galaxy (SNHOSTGAL.GALID, snlc_sim.c:26184),
     so its HOSTLIB row gives every SIM_HOSTLIB(...) value, while HOSTGAL_OBJID
     names the DDLR-ranked host and differs for some events."""
     c, hostlib = nbr_head
@@ -349,7 +349,7 @@ def test_no_nbr_list_applies_ddlr_cuts(tmp_path):
     """Without a NBR_LIST the single candidate still faces the DDLR cuts.
 
     SNANA counts a match only when DDLR clears HOSTLIB_MAXDDLR (NMATCH) or
-    MAXDDLR2 (NMATCH2) (SORT_SNHOSTGAL_byDDLR, sntools_host.c:8830), so a SN
+    MAXDDLR2 (NMATCH2) (SORT_SNHOSTGAL_byDDLR, sntools_host.c:9227), so a SN
     far from its galaxy is reported hostless even though the galaxy still
     drives generation. jax used to report a match unconditionally here.
     """

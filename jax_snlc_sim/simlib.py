@@ -30,15 +30,16 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.cosmology import eq_to_gal
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.noise import noise_equivalent_aperture as _compute_noise_equivalent_aperture
-from jax_snlc_core.snana_files import (check_file_docana, load_survey_ids,
-                                       open_text, parse_prescales, resolve_fits_path)
+from jax_snlc_core.snana_files import (check_file_docana, header_words, leading_values,
+                                       load_survey_ids, parse_prescales, resolve_fits_path,
+                                       split_names, text_lines, word_runs)
 from jax_snlc_core.spectrograph import synthetic_band_zptpsfsky
 from jax_snlc_core.random import stream_key
 from jax_snlc_sim.simulation import run_key
 
 logger = logging.getLogger(__name__)
 
-FWHM_SIGMA_RATIO = 2.3548    # sntools.h:99
+FWHM_SIGMA_RATIO = 2.3548    # sntools.h:100
 TWOPI = 2.0 * np.pi
 
 _READER_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
@@ -46,6 +47,8 @@ _READER_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 # snlc_sim.h:70,72
 TGAP_SEASON_SIMLIB = 90.0
 MXSEASON_SIMLIB = 30
+# the field of an entry the SIMLIB names none for (sntools.h:118)
+FIELD_NONAME = "VOID"
 
 
 def _compute_seasons(mjds: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -88,6 +91,18 @@ _ENTRY_KEYS = ('header_values', 'gengauss', 'cutwin_redshift',
 _REDSHIFT_KEYS = ('REDSHIFT', 'DISTANCE', 'GENRANGE_REDSHIFT')
 # an entry's redshift window redraws z only above this lower edge
 ZMIN_SIMLIB_REGEN = 1.0e-5
+
+# global header keys giving Instrument settings, by field name; either
+# spelling of the PHOTFLAG masks (SIMLIB_readGlobalHeader_TEXT, snlc_sim.c:18498-18516)
+SIMLIB_INSTRUMENT_KEYS = {
+    'NPE_PIXEL_SATURATE': 'npe_pixel_saturate',
+    'PHOTFLAG_SATURATE': 'photflag_saturate', 'PHOTMASK_SATURATE': 'photflag_saturate',
+    'PHOTFLAG_SNRMAX': 'photflag_snrmax', 'PHOTMASK_SNRMAX': 'photflag_snrmax',
+    'PHOTFLAG_NEARPEAK': 'photflag_nearpeak', 'PHOTMASK_NEARPEAK': 'photflag_nearpeak',
+}
+# the template noise lines, by the template arrays they fill
+_TEMPLATE_NOISE_KEYS = {'TEMPLATE_SKYSIG:': 'skysig', 'TEMPLATE_CCDSIG:': 'readnoise',
+                        'TEMPLATE_ZPT:': 'zpt'}
 
 
 def _entry_from_json(text) -> dict:
@@ -202,11 +217,11 @@ class SimlibField:
     template_readnoises: np.ndarray
     template_zpts: np.ndarray
     # APPEND: <flag> before the row: ORed into PHOTFLAG, and the row stays
-    # after the sorted ones (snlc_sim.c:19745, :21719, :25633)
+    # after the sorted ones (snlc_sim.c:19772, :21759, :25686-25688)
     append_photflags: np.ndarray
     season_starts: np.ndarray = field(default_factory=lambda: np.full(MXSEASON_SIMLIB, np.inf, dtype=np.float32))
     season_ends: np.ndarray = field(default_factory=lambda: np.full(MXSEASON_SIMLIB, -np.inf, dtype=np.float32))
-    field_name: str = "FIELD_NONAME"  # SIMLIB FIELD: name (e.g., 'C1', 'DDF')
+    field_name: str = FIELD_NONAME  # SIMLIB FIELD: name (e.g., 'C1', 'DDF')
     groupid_hostlib: tuple = ()  # GROUPID_HOSTLIB values (empty = no constraint)
     # SPECTROGRAPH: rows (MJD, TEXPOSE), used under USE_SIMLIB_SPECTROGRAPH
     spec_mjds: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
@@ -215,83 +230,53 @@ class SimlibField:
     take_spectrum: tuple = ()
     # single-valued header keys as written, for the USE_SIMLIB_* overrides
     header_values: dict = field(default_factory=dict)
-    # GENRANGE_<name>/GENSIGMA_<name> as (lo, hi, sigma) (snlc_sim.c:22173-22192)
+    # GENRANGE_<name>/GENSIGMA_<name> as (lo, hi, sigma) (snlc_sim.c:22218-22237)
     gengauss: dict = field(default_factory=dict)
-    # NaN when absent (snlc_sim.c:20144-20156, :22358)
+    # NaN when absent (snlc_sim.c:20186-20198, :22403)
     cutwin_redshift: tuple = (float('nan'), float('nan'))
     genrange_redshift: tuple = (float('nan'), float('nan'))
     redshift_keys: tuple = ()
     subsurvey: str = ''
 
 
-def _resolve_simlib_path(path):
-    """The SIMLIB that exists on disk for ``path``, plain or gzipped.
-
-    SNANA's open_TEXTgz treats a plain and a gzipped copy of the same SIMLIB as
-    an error rather than picking one, since which is current is ambiguous.
-    """
-    path = Path(path)
-    if path.exists() and path.with_name(path.name + '.gz').exists():
-        raise SNANAError(
-            f"Found both {path} and {path}.gz. Remove one; which is current "
-            f"is ambiguous.", function_name="_resolve_simlib_path")
-    resolved = resolve_fits_path(str(path))
-    if not Path(resolved).exists():
-        raise SNANAError(f"SIMLIB file not found: {path}",
-                         function_name="_resolve_simlib_path")
-    return resolved
-
-
-def _header_key_runs(line):
-    """``(key, values)`` for each ``KEY:`` token on a header line, the values
-    being the tokens up to the next key (SNANA walks the word list the same
-    way, snlc_sim.c:19690-19758)."""
-    runs = []
-    for token in line.split():
-        if token.endswith(':') and len(token) > 1:
-            runs.append((token[:-1], []))
-        elif runs:
-            runs[-1][1].append(token)
-    return runs
-
-
-def _apply_header_key(field_data, key, words):
-    """One entry header key onto the entry (snlc_sim.c:19700-19758,
-    :22126-22192); a key with no handler is kept by name as a single value
-    for the USE_SIMLIB_* overrides."""
+def _apply_header_key(path, field_data, key, words):
+    """One entry header key of the SIMLIB ``path`` onto the entry
+    (snlc_sim.c:19722-19785, :22165-22308); a key with no handler is kept by
+    name as a single value for the USE_SIMLIB_* overrides."""
     if key in _REDSHIFT_KEYS:
         field_data['redshift_keys'] = (*field_data.get('redshift_keys', ()), key)
     if key == 'RA':
-        field_data['ra'] = float(words[0])
+        field_data['ra'] = float(leading_values(path, key, words, 1)[0])
     elif key in ('DEC', 'DECL'):
-        field_data['dec'] = float(words[0])
+        field_data['dec'] = float(leading_values(path, key, words, 1)[0])
     elif key == 'NOBS':
-        field_data['nobs'] = int(words[0])
+        field_data['nobs'] = int(leading_values(path, key, words, 1)[0])
     elif key == 'MWEBV':
-        field_data['mwebv'] = float(words[0])
+        field_data['mwebv'] = float(leading_values(path, key, words, 1)[0])
     elif key == 'PIXSIZE':
-        field_data['pixsize'] = float(words[0])
+        field_data['pixsize'] = float(leading_values(path, key, words, 1)[0])
     elif key == 'FIELD':
-        field_data['field_name'] = words[0]
+        field_data['field_name'] = leading_values(path, key, words, 1)[0]
     elif key in ('GROUPID_HOSTLIB', 'HOSTLIB_GROUPID'):
-        # either spelling (snlc_sim.c:22249); comma- or space-separated
-        field_data['groupid_hostlib'] = tuple(
-            int(x) for x in ' '.join(words).replace(',', ' ').split())
+        # either spelling (snlc_sim.c:22290-22291); comma- or space-separated
+        field_data['groupid_hostlib'] = tuple(int(x) for x in split_names(' '.join(words)))
     elif key in ('CUTWIN_REDSHIFT', 'REDSHIFT_RANGE'):
-        field_data['cutwin_redshift'] = (float(words[0]), float(words[1]))
+        field_data['cutwin_redshift'] = tuple(
+            float(v) for v in leading_values(path, key, words, 2))
     elif key == 'GENRANGE_REDSHIFT':
-        field_data['genrange_redshift'] = (float(words[0]), float(words[1]))
+        field_data['genrange_redshift'] = tuple(
+            float(v) for v in leading_values(path, key, words, 2))
     elif key.startswith(('GENRANGE_', 'GENSIGMA_')):
         name = key.split('_', 1)[1].replace('PKMJD', 'PEAKMJD')
         gengauss = field_data.setdefault('gengauss', {})
         lo, hi, sigma = gengauss.get(name, (float('nan'), float('nan'), 0.0))
         if key.startswith('GENRANGE_'):
-            lo, hi = float(words[0]), float(words[1])
+            lo, hi = tuple(float(v) for v in leading_values(path, key, words, 2))
         else:
-            sigma = float(words[0])
+            sigma = float(leading_values(path, key, words, 1)[0])
         gengauss[name] = (lo, hi, sigma)
     elif key == 'SUBSURVEY':
-        field_data['subsurvey'] = words[0]
+        field_data['subsurvey'] = leading_values(path, key, words, 1)[0]
     elif len(words) == 1:
         field_data.setdefault('header_values', {})[key] = words[0]
 
@@ -299,7 +284,7 @@ def _apply_header_key(field_data, key, words):
 def _sort_simlib_field(field):
     """Sort observations and spectra, updating observation count and seasons."""
     # Appended rows follow the MJD-sorted ones, in file order (SIMLIB_sortbyMJD,
-    # snlc_sim.c:21719).
+    # snlc_sim.c:21759).
     appended = field.append_photflags > 0
     order = np.lexsort((np.where(appended, np.arange(appended.size), field.mjds),
                         appended))
@@ -323,12 +308,13 @@ class SimlibData:
     filter_mapping: Dict[str, int] = field(default_factory=dict)
     filter_names: List[str] = field(default_factory=list)
     survey_name: str = ''
-    # SUBSURVEY_LIST: in the global header (snlc_sim.c:18433)
+    # SUBSURVEY_LIST: in the global header (snlc_sim.c:18450)
     subsurvey_list: tuple = ()
-    # SIMLIB global saturation overrides; None means the SIMLIB did not set one
-    # (snlc_sim.c:18479-18481).
-    global_npe_pixel_saturate: Optional[int] = None
-    global_photflag_saturate: Optional[int] = None
+    # the global header's instrument settings, by Instrument field name, which
+    # apply where the input leaves the default (snlc_sim.c:18390-18393, :18499)
+    instrument_defaults: Dict[str, int] = field(default_factory=dict)
+    # GENSKIP_PEAKMJD ranges, where no peak is drawn (snlc_sim.c:17063-17071)
+    genskip_peakmjd: Tuple[Tuple[float, float], ...] = ()
     fluxerr_cor: FluxErrCorMap = field(default_factory=FluxErrCorMap)
     fluxerr_add: np.ndarray = field(
         default_factory=lambda: np.zeros(0, dtype=np.float32))
@@ -344,7 +330,7 @@ class SimlibData:
 def read_simlib(simlib_file: str, require_docana: bool = True,
                 cache_dir: Optional[Path] = None) -> SimlibData:
     """Read a SIMLIB file, via the HDF5 cache when it is newer than the source."""
-    data = SimlibData(simlib_file=_resolve_simlib_path(simlib_file))
+    data = SimlibData(simlib_file=resolve_fits_path(simlib_file, required=True))
     check_file_docana(data.simlib_file, require_docana)
     cache_dir = Path(cache_dir or default_cache_dir())
     if not _load_from_cache(data, cache_dir):
@@ -390,11 +376,8 @@ def _load_from_cache(data, cache_dir: Path) -> bool:
             data.nea_psf_unit = bool(f.attrs['nea_psf_unit'])
             data.template_texpose_spectrograph = float(
                 f.attrs['template_texpose_spectrograph'])
-            npe_sat = int(f.attrs['global_npe_pixel_saturate'])
-            photflag_sat = int(f.attrs['global_photflag_saturate'])
-            data.global_npe_pixel_saturate = None if npe_sat < 0 else npe_sat
-            data.global_photflag_saturate = (None if photflag_sat < 0
-                                             else photflag_sat)
+            data.instrument_defaults = json.loads(f.attrs['instrument_defaults'])
+            data.genskip_peakmjd = tuple(map(tuple, json.loads(f.attrs['genskip_peakmjd'])))
 
             all_spec_mjds = f['spectrograph/spec_mjds'][:]
             all_spec_texposes = f['spectrograph/spec_texposes'][:]
@@ -558,13 +541,8 @@ def _save_to_cache(data, cache_dir: Path):
                 f.attrs['nea_psf_unit'] = bool(data.nea_psf_unit)
                 f.attrs['template_texpose_spectrograph'] = float(
                     data.template_texpose_spectrograph)
-                # -1 stores None
-                f.attrs['global_npe_pixel_saturate'] = (
-                    -1 if data.global_npe_pixel_saturate is None
-                    else int(data.global_npe_pixel_saturate))
-                f.attrs['global_photflag_saturate'] = (
-                    -1 if data.global_photflag_saturate is None
-                    else int(data.global_photflag_saturate))
+                f.attrs['instrument_defaults'] = json.dumps(data.instrument_defaults)
+                f.attrs['genskip_peakmjd'] = json.dumps(data.genskip_peakmjd)
 
                 obs_grp = f.create_group('observations')
                 field_grp = f.create_group('fields')
@@ -623,244 +601,150 @@ def _save_to_cache(data, cache_dir: Path):
 
 
 def _load_simlib(data):
-    """Load and parse SIMLIB file."""
+    """Parse a SIMLIB file into ``data``. The global header, up to BEGIN, is
+    a stream of keys, any number to a line (SIMLIB_readGlobalHeader_TEXT,
+    snlc_sim.c:18401). Each entry starts at LIBID: and is read a line at a
+    time (SIMLIB_readNextCadence_TEXT, :19532): its header keys, likewise any
+    number to a line, an ``S:`` line per observation, the TEMPLATE_ noise
+    lines and the SPECTROGRAPH: and TAKE_SPECTRUM lines. The entries end at
+    END_OF_SIMLIB: or the end of the file, and a comment may end any line."""
     logger.info(f"Loading SIMLIB file: {data.simlib_file}")
     start_time = time.time()
+    lines = text_lines(data.simlib_file)
 
-    with open_text(data.simlib_file) as f:
-        content = f.read()
-
-    lines = content.split('\n')
-
-    current_field_data = None
-    obs_lists = None
-    previous_mwebv = 0.0
     psf_unit = "PIXEL_SIGMA"
     skysig_unit = "ADU_PER_SQPIXEL"
     global_pixsize = 0.0
-    global_npe_pixel_saturate = None
-    global_photflag_saturate = None
-    filter_order = ""
-    template_by_field = {}
-    current_field_name = global_field = "FIELD_NONAME"
-    in_global_header = True
-    use_nea_unit = False
+    global_field = FIELD_NONAME
     fluxerr_cor_rows = []
     fluxerr_add_line = None
-
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-
-        if line.startswith('LIBID:'):
-            if current_field_data is not None:
-                _create_field_from_lists(data, current_field_data, obs_lists)
-                previous_mwebv = current_field_data['mwebv']
-
-            parts = line.split()
-            libid = int(parts[1])
-            # RA/DEC 9999 fail GENRANGE_RA/DEC; MWEBV carries over; FIELD
-            # starts as the global header's (init_SIMLIB_HEADER)
-            current_field_data = {'libid': libid, 'ra': 9999.0, 'dec': 9999.0,
-                                  'mwebv': previous_mwebv, 'pixsize': 0.0,
-                                  'field_name': global_field}
-            current_append_photflag = 0
-            obs_lists = {key: [] for key in _PARSED_OBS_KEYS}
-            obs_lists.update(spec_mjds=[], spec_texposes=[], take_spectrum=[])
-            for key, words in _header_key_runs(line)[1:]:
-                _apply_header_key(current_field_data, key, words)
-            current_field_name = current_field_data['field_name']
-            continue
-
-        # SURVEY:/FILTERS: may share a line with other keys
-        if 'SURVEY:' in line or 'FILTERS:' in line:
-            tokens = line.split()
-            for i, tok in enumerate(tokens):
-                if tok == 'SURVEY:' and i + 1 < len(tokens):
-                    data.survey_name = tokens[i + 1]
-                elif tok == 'FILTERS:' and i + 1 < len(tokens):
-                    filter_order = tokens[i + 1]
-                    data.filter_mapping = {c: i for i, c in enumerate(filter_order)}
-                    data.filter_names = list(filter_order)
-
-        # a FIELD in the global header, which ends at BEGIN, is every entry's
-        # default (snlc_sim.c:18436, :18529, :21898)
-        if in_global_header and current_field_data is None:
-            tokens = line.split()
-            head = tokens[:tokens.index('BEGIN')] if 'BEGIN' in tokens else tokens
-            if 'FIELD:' in head:
-                global_field = head[head.index('FIELD:') + 1]
-            in_global_header = 'BEGIN' not in tokens
-
-        if line.startswith('PSF_UNIT:'):
-            parts = line.replace(':', ' ').split()
-            unit_idx = parts.index('PSF_UNIT') + 1 if 'PSF_UNIT' in parts else 1
-            psf_unit = parts[unit_idx]
+    for key, values in word_runs(data.simlib_file, header_words(lines, 'BEGIN')):
+        if key == 'LIBID':
+            raise SNANAError(f"{data.simlib_file}: a LIBID comes before BEGIN",
+                             function_name="parse_simlib")
+        if key == 'SURVEY':
+            data.survey_name = leading_values(data.simlib_file, key, values, 1)[0]
+        elif key == 'SUBSURVEY_LIST':
+            # one comma-separated word (snlc_sim.c:18451)
+            data.subsurvey_list = tuple(split_names(leading_values(data.simlib_file, key, values, 1)[0]))
+        elif key == 'FILTERS':
+            filters = leading_values(data.simlib_file, key, values, 1)[0]
+            data.filter_names = list(filters)
+            data.filter_mapping = {c: i for i, c in enumerate(filters)}
+        # a FIELD in the global header is every entry's default
+        # (snlc_sim.c:18454, :21938)
+        elif key == 'FIELD':
+            global_field = leading_values(data.simlib_file, key, values, 1)[0]
+        elif key == 'PIXSIZE':
+            global_pixsize = float(leading_values(data.simlib_file, key, values, 1)[0])
+        elif key == 'PSF_UNIT':
+            psf_unit = leading_values(data.simlib_file, key, values, 1)[0]
             if psf_unit not in ('PIXEL_SIGMA', 'ARCSEC_FWHM', 'NEA_PIXEL', 'NEA_ARCSECSQ'):
                 raise SNANAError(f"Invalid PSF_UNIT '{psf_unit}' in SIMLIB header")
-            use_nea_unit = psf_unit in ('NEA_PIXEL', 'NEA_ARCSECSQ')
-            data.nea_psf_unit = use_nea_unit
-            continue
-
-        if line.startswith('SKYSIG_UNIT:'):
-            parts = line.replace(':', ' ').split()
-            unit_idx = parts.index('SKYSIG_UNIT') + 1 if 'SKYSIG_UNIT' in parts else 1
-            skysig_unit = parts[unit_idx]
+            data.nea_psf_unit = psf_unit in ('NEA_PIXEL', 'NEA_ARCSECSQ')
+        elif key == 'SKYSIG_UNIT':
+            skysig_unit = leading_values(data.simlib_file, key, values, 1)[0]
             if skysig_unit not in ('ADU_PER_SQPIXEL', 'ADU_PER_SQARCSEC'):
                 raise SNANAError(f"Invalid SKYSIG_UNIT '{skysig_unit}' in SIMLIB header")
-            continue
-
-        if line.startswith('PIXSIZE:'):
-            parts = line.replace(':', ' ').split()
-            pix_idx = parts.index('PIXSIZE') + 1 if 'PIXSIZE' in parts else 1
-            global_pixsize = float(parts[pix_idx])
-            continue
-
-        if line.startswith('SUBSURVEY_LIST:'):
-            data.subsurvey_list = tuple(line.split(':', 1)[1].replace(',', ' ').split())
-            continue
-
-        if line.startswith('TEXPOSE('):
+        elif key == 'TEMPLATE_TEXPOSE_SPECTROGRAPH':
+            data.template_texpose_spectrograph = float(leading_values(data.simlib_file, key, values, 1)[0])
+        elif key.startswith('TEXPOSE'):
             raise SNANAError(
-                f"SIMLIB header key {line.split(':', 1)[0]} is not implemented: SNANA "
-                f"writes these per-band exposure times to the PHOT TEXPOSE column and "
-                f"feeds them to NONLINEARITY; jax writes TEXPOSE 0.",
+                f"SIMLIB header key {key} is not implemented: SNANA writes these "
+                f"per-band exposure times to the PHOT TEXPOSE column and feeds "
+                f"them to NONLINEARITY; jax writes TEXPOSE 0.",
                 function_name="parse_simlib")
+        elif key in SIMLIB_INSTRUMENT_KEYS:
+            # either spelling, read while the value is still 0 (snlc_sim.c:18498-18516)
+            name = SIMLIB_INSTRUMENT_KEYS[key]
+            if not data.instrument_defaults.get(name):
+                data.instrument_defaults[name] = int(
+                    leading_values(data.simlib_file, key, values, 1)[0])
+        elif key == 'GENSKIP_PEAKMJD':
+            lo, hi = leading_values(data.simlib_file, key, values, 2)
+            data.genskip_peakmjd += ((float(lo), float(hi)),)
+        elif key == 'FLUXERR_COR':
+            bands = leading_values(data.simlib_file, key, values, 1)[0]
+            scales = leading_values(data.simlib_file, key, values, 2 + len(bands))
+            fluxerr_cor_rows.append((bands, float(scales[1]),
+                                     np.array(scales[2:], dtype=np.float32)))
+        elif key == 'FLUXERR_ADD':
+            bands = leading_values(data.simlib_file, key, values, 1)[0]
+            adds = leading_values(data.simlib_file, key, values, 1 + len(bands))
+            fluxerr_add_line = (bands, [float(x) for x in adds[1:]])
 
-        if line.startswith('NPE_PIXEL_SATURATE:'):
-            parts = line.replace(':', ' ').split()
-            idx = parts.index('NPE_PIXEL_SATURATE') + 1
-            global_npe_pixel_saturate = int(parts[idx])
-            continue
-
-        if line.startswith('PHOTFLAG_SATURATE:'):
-            parts = line.replace(':', ' ').split()
-            idx = parts.index('PHOTFLAG_SATURATE') + 1
-            global_photflag_saturate = int(parts[idx])
-            continue
-
-        if line.startswith('FLUXERR_COR:'):
-            parts = line.split()
-            filt_chars = parts[1]
-            log10snr = float(parts[2])
-            scales = np.array([float(x) for x in parts[3:3 + len(filt_chars)]],
-                              dtype=np.float32)
-            fluxerr_cor_rows.append((filt_chars, log10snr, scales))
-            continue
-
-        if line.startswith('FLUXERR_ADD:'):
-            parts = line.split()
-            filt_chars = parts[1]
-            values = [float(x) for x in parts[2:2 + len(filt_chars)]]
-            fluxerr_add_line = (filt_chars, values)
-            continue
-
-        # entry header keys, from the token stream as SNANA walks it: any key
-        # may share a line with any other (snlc_sim.c:19690-19758)
-        if (current_field_data is not None and ':' in line
-                and not line.startswith(('S:', 'TEMPLATE_', 'SPECTROGRAPH:',
-                                         'TAKE_SPECTRUM', 'WARP_SPECTRUM',
-                                         'END_LIBID:'))):
-            for key, words in _header_key_runs(line):
-                if key == 'APPEND':
-                    # the flag for every row that follows in this entry
-                    current_append_photflag = int(words[0])
-                else:
-                    _apply_header_key(current_field_data, key, words)
-            current_field_name = current_field_data['field_name']
-            continue
-
-        if line.startswith('TEMPLATE_'):
-            if not filter_order:
-                raise SNANAError("SIMLIB TEMPLATE_* encountered before FILTERS")
-            parts = line.replace(':', ' ').split()
-            key = parts[0]
-            values = parts[1:]
-            if key == 'TEMPLATE_TEXPOSE_SPECTROGRAPH':
-                # single global value (SNANA SIMLIB_TEMPLATE, snlc_sim.c:19769)
-                data.template_texpose_spectrograph = float(values[0])
+    field_data = obs_lists = n_words = None
+    previous_mwebv = 0.0
+    append_photflag = 0
+    template_by_field = {}
+    for words in lines:
+        key = words[0]
+        if key == 'END_OF_SIMLIB:':
+            break
+        if key == 'S:':
+            if obs_lists is None:
                 continue
-            if len(values) < len(filter_order):
-                continue  # not a per-filter template key
-            if current_field_name not in template_by_field:
-                n_filt = len(data.filter_mapping)
-                template_by_field[current_field_name] = {
-                    'skysig': np.zeros(n_filt, dtype=np.float32),
-                    'readnoise': np.zeros(n_filt, dtype=np.float32),
-                    'zpt': np.zeros(n_filt, dtype=np.float32),
-                }
-            target = template_by_field[current_field_name]
-            for ifilt, fchar in enumerate(filter_order):
-                if fchar not in data.filter_mapping:
-                    raise SNANAError(f"Unknown filter '{fchar}' in SIMLIB FILTERS")
-                idx = data.filter_mapping[fchar]
-                val = float(values[ifilt])
-                if key == 'TEMPLATE_SKYSIG':
-                    target['skysig'][idx] = val
-                elif key == 'TEMPLATE_CCDSIG':
-                    target['readnoise'][idx] = val
-                elif key == 'TEMPLATE_ZPT':
-                    target['zpt'][idx] = val
-            continue
+            # MAG, the last column, is optional, but every S: line of an
+            # entry has the same columns (snlc_sim.c:19835)
+            if len(words) < (10 if data.nea_psf_unit else 12):
+                raise SNANAError(f"{data.simlib_file}: LIBID {field_data['libid']} line "
+                                 f"'{' '.join(words)}' lacks columns",
+                                 function_name="parse_simlib")
+            if n_words is None:
+                n_words = len(words)
+            if len(words) != n_words:
+                raise SNANAError(f"{data.simlib_file}: LIBID {field_data['libid']} line "
+                                 f"'{' '.join(words)}' has {len(words)} words, its first "
+                                 f"S: line {n_words}", function_name="parse_simlib")
+            mjd = float(words[1])
+            _, nexpose = _parse_idexpt_token(words[2])
+            # a band is the last character of its name (INTFILTER, sntools.c:10884)
+            band = words[3][-1]
+            if band not in data.filter_mapping:
+                raise SNANAError(f"{data.simlib_file}: LIBID {field_data['libid']} band "
+                                 f"{words[3]} is not in FILTERS", function_name="parse_simlib")
+            gain, readnoise, skysig = (float(w) for w in words[4:7])
 
-        if line.startswith('S:') and obs_lists is not None:
-            parts = line.split()
-            min_cols = 11 if use_nea_unit else 13
-            if len(parts) < min_cols:
-                raise SNANAError("SIMLIB S: line missing required columns")
-            idx = 1
-            mjd = float(parts[idx]); idx += 1
-            _, nexpose = _parse_idexpt_token(parts[idx]); idx += 1
-            filter_char = parts[idx]; idx += 1
-            gain = float(parts[idx]); idx += 1
-            readnoise = float(parts[idx]); idx += 1
-            skysig = float(parts[idx]); idx += 1
-
-            pixsize = current_field_data['pixsize']
+            pixsize = field_data['pixsize']
             if pixsize <= 0.0:
                 pixsize = global_pixsize
             if pixsize <= 0.0:
                 raise SNANAError("SIMLIB missing PIXSIZE for SKYSIG/PSF conversions")
 
-            if use_nea_unit:
-                nea = float(parts[idx]); idx += 1
+            if data.nea_psf_unit:
+                nea = float(words[7])
                 if psf_unit == 'NEA_ARCSECSQ':
                     nea /= (pixsize * pixsize)
                 psf1 = np.sqrt(nea / (2.0 * TWOPI))
                 psf2 = 0.0
                 psf_ratio = 0.0
+                zptavg, zpterr = float(words[8]), float(words[9])
             else:
-                psf1 = float(parts[idx]); idx += 1
-                psf2 = float(parts[idx]); idx += 1
-                psf_ratio = float(parts[idx]); idx += 1
+                psf1, psf2, psf_ratio = (float(w) for w in words[7:10])
                 if psf_unit == 'ARCSEC_FWHM':
                     psf1 /= (pixsize * FWHM_SIGMA_RATIO)
                     psf2 /= (pixsize * FWHM_SIGMA_RATIO)
-            zptavg = float(parts[idx]); idx += 1
-            zpterr = float(parts[idx]); idx += 1
-            _ = float(parts[idx]); idx += 1
+                zptavg, zpterr = float(words[10]), float(words[11])
 
             if skysig_unit == 'ADU_PER_SQARCSEC':
                 skysig *= pixsize
 
-            template_values = template_by_field.get(current_field_name)
+            template_values = template_by_field.get(field_data['field_name'],
+                                                    template_by_field.get("ALLFIELDS"))
+            fidx = data.filter_mapping[band]
             if template_values is None:
-                template_values = template_by_field.get("ALLFIELDS")
-            if template_values is None:
-                template_skysig = 0.0
-                template_readnoise = 0.0
-                template_zpt = 0.0
+                template_skysig = template_readnoise = template_zpt = 0.0
             else:
-                if filter_char not in data.filter_mapping:
-                    raise SNANAError(f"Unknown filter '{filter_char}' in SIMLIB S: line")
-                fidx = data.filter_mapping[filter_char]
                 template_skysig = float(template_values['skysig'][fidx])
                 template_readnoise = float(template_values['readnoise'][fidx])
                 template_zpt = float(template_values['zpt'][fidx])
+                if np.isnan([template_skysig, template_readnoise, template_zpt]).any():
+                    raise SNANAError(f"{data.simlib_file}: LIBID {field_data['libid']} "
+                                     f"observes band {band}, for which its TEMPLATE_ "
+                                     f"lines give no value", function_name="parse_simlib")
 
             obs_lists['mjds'].append(mjd)
-            obs_lists['filter_indices'].append(data.filter_mapping.get(filter_char, -1))
+            obs_lists['filter_indices'].append(fidx)
             obs_lists['gains'].append(gain)
             obs_lists['readnoises'].append(readnoise)
             obs_lists['nexposes'].append(nexpose)
@@ -873,30 +757,67 @@ def _load_simlib(data):
             obs_lists['template_skysigs'].append(template_skysig)
             obs_lists['template_readnoises'].append(template_readnoise)
             obs_lists['template_zpts'].append(template_zpt)
-            obs_lists['append_photflags'].append(current_append_photflag)
+            obs_lists['append_photflags'].append(append_photflag)
 
-        elif line.startswith('SPECTROGRAPH:') and obs_lists is not None:
-            parts = line.split()
-            obs_lists['spec_mjds'].append(float(parts[1]))
-            obs_lists['spec_texposes'].append(float(parts[2]))
+        elif key == 'TEMPLATE_TEXPOSE_SPECTROGRAPH:':
+            # single global value (SNANA SIMLIB_TEMPLATE, snlc_sim.c:19799-19803)
+            data.template_texpose_spectrograph = float(
+                leading_values(data.simlib_file, key, words[1:], 1)[0])
 
-        elif (line.startswith('TAKE_SPECTRUM') or line.startswith('WARP_SPECTRUM')) \
-                and obs_lists is not None:
-            # raw text, parsed by the consumer (parse_input_TAKE_SPECTRUM, snlc_sim.c:22269)
-            obs_lists['take_spectrum'].append(line.strip())
+        elif key in _TEMPLATE_NOISE_KEYS:
+            # a value per FILTERS band, in order (SIMLIB_read_templateNoise,
+            # snlc_sim.c:19280); a band the line stops short of has none
+            if not data.filter_names:
+                raise SNANAError("SIMLIB TEMPLATE_* encountered before FILTERS")
+            target = template_by_field.setdefault(
+                field_data['field_name'] if field_data else global_field,
+                {name: np.zeros(len(data.filter_names), dtype=np.float32)
+                 for name in _TEMPLATE_NOISE_KEYS.values()})
+            noise = target[_TEMPLATE_NOISE_KEYS[key]]
+            given = [float(v) for v in words[1:1 + len(data.filter_names)]]
+            noise[:] = np.nan
+            noise[:len(given)] = given
 
-        elif line.startswith('END_LIBID:'):
-            continue
+        elif key == 'SPECTROGRAPH:':
+            if obs_lists is not None:
+                mjd, texpose = leading_values(data.simlib_file, 'SPECTROGRAPH', words[1:], 2)
+                obs_lists['spec_mjds'].append(float(mjd))
+                obs_lists['spec_texposes'].append(float(texpose))
 
-    if current_field_data is not None:
-        _create_field_from_lists(data, current_field_data, obs_lists)
+        elif key.startswith(('TAKE_SPECTRUM', 'WARP_SPECTRUM')):
+            # raw text, parsed by the consumer (parse_input_TAKE_SPECTRUM, snlc_sim.c:22314)
+            if obs_lists is not None:
+                obs_lists['take_spectrum'].append(' '.join(words))
 
-    data.global_npe_pixel_saturate = global_npe_pixel_saturate
-    data.global_photflag_saturate = global_photflag_saturate
-    data.fluxerr_cor = _build_fluxerr_cor_map(
-        fluxerr_cor_rows, data.filter_mapping)
-    data.fluxerr_add = _build_fluxerr_add(
-        fluxerr_add_line, data.filter_mapping)
+        elif key != 'END_LIBID:':
+            # entry header keys, any number to a line (snlc_sim.c:19722-19785)
+            for name, values in word_runs(data.simlib_file, words):
+                if name == 'LIBID':
+                    if field_data is not None:
+                        _create_field_from_lists(data, field_data, obs_lists)
+                        previous_mwebv = field_data['mwebv']
+                    # RA/DEC 9999 fail GENRANGE_RA/DEC; MWEBV carries over;
+                    # FIELD starts as the global header's (init_SIMLIB_HEADER)
+                    libid = int(leading_values(data.simlib_file, name, values, 1)[0])
+                    field_data = {'libid': libid, 'ra': 9999.0, 'dec': 9999.0,
+                                  'mwebv': previous_mwebv, 'pixsize': 0.0,
+                                  'field_name': global_field}
+                    obs_lists = {name: [] for name in _PARSED_OBS_KEYS}
+                    obs_lists.update(spec_mjds=[], spec_texposes=[], take_spectrum=[])
+                    append_photflag = 0
+                    n_words = None
+                elif field_data is None:
+                    continue
+                elif name == 'APPEND':
+                    # the flag for every row that follows in this entry
+                    append_photflag = int(leading_values(data.simlib_file, name, values, 1)[0])
+                else:
+                    _apply_header_key(data.simlib_file, field_data, name, values)
+
+    if field_data is not None:
+        _create_field_from_lists(data, field_data, obs_lists)
+    data.fluxerr_cor = _build_fluxerr_cor_map(fluxerr_cor_rows, data.filter_mapping)
+    data.fluxerr_add = _build_fluxerr_add(fluxerr_add_line, data.filter_mapping)
 
     elapsed = time.time() - start_time
     log.line(logger, f"Loaded {len(data.fields)} fields from SIMLIB in {elapsed:.3f}s")
@@ -1111,14 +1032,14 @@ def schedule_one_sn(field_idx, mjd_min, mjd_max, peak_mjd, redshift_helio,
     else:
         mask = (fmjds >= mjd_min) & (fmjds <= mjd_max)
 
-    # outside the surviving seasons: no epochs (set_SIMLIB_MJDrange, snlc_sim.c:21411)
+    # outside the surviving seasons: no epochs (set_SIMLIB_MJDrange, snlc_sim.c:21451-21456)
     survey_min = jnp.min(field_season_starts[field_idx])
     survey_max = jnp.max(field_season_ends[field_idx])
     outside = ((mjd_max < survey_min + tobs_pad)
                | (mjd_min > survey_max - tobs_pad))
     mask = mask & ~outside
 
-    # SIMLIB_NSKIPMJD after the window cut (keep_SIMLIB_MJD, snlc_sim.c:21250)
+    # SIMLIB_NSKIPMJD after the window cut (keep_SIMLIB_MJD, snlc_sim.c:21292)
     if nskip_ps.shape[0] > 0:
         # heliocentric Trest; SNANA uses zCMB
         trest = (fmjds - peak_mjd) / (1.0 + redshift_helio)
@@ -1163,7 +1084,7 @@ def schedule_all(tables, field_indices, mjd_mins, mjd_maxs, peak_mjds,
 
 
 def survey_id(name: str) -> int:
-    """SURVEY.DEF integer ID for ``name`` (get_IDSURVEY, snlc_sim.c:18574).
+    """SURVEY.DEF integer ID for ``name`` (get_IDSURVEY, snlc_sim.c:18593).
 
     Includes surveys with no observatory coordinates. SNANA aborts on an unmatched name
     (SIMLIB_prepGlobalHeader), so this raises.
@@ -1179,7 +1100,7 @@ def survey_id(name: str) -> int:
 def resolve_survey(header_name: str, override: str) -> tuple:
     """(name, IDSURVEY): the SIMLIB header SURVEY after the SIMLIB_SURVEY
     override. SNANA applies the override while reading the SIMLIB header
-    (snlc_sim.c:18428) and takes the ID from the overridden name (:18576), so
+    (snlc_sim.c:18447) and takes the ID from the overridden name (:18593), so
     both come from one resolution.
     """
     name = override or header_name
@@ -1190,12 +1111,12 @@ def survey_from_simlib_file(simlib_file: str, override: str) -> tuple:
     """:func:`resolve_survey` for callers that run before the SIMLIB is
     loaded. Opens through the gzip-aware SIMLIB path resolution, so a
     gzipped SIMLIB reads the same as in the main reader."""
+    path = resolve_fits_path(os.path.expandvars(simlib_file))
     header_name = None
-    with open_text(resolve_fits_path(os.path.expandvars(simlib_file))) as fh:
-        for line in fh:
-            if line.startswith('SURVEY:'):
-                header_name = line.split()[1]
-                break
+    for key, values in word_runs(path, header_words(text_lines(path), 'BEGIN')):
+        if key == 'SURVEY':
+            header_name = leading_values(path, key, values, 1)[0]
+            break
     return resolve_survey(header_name, override)
 
 
@@ -1205,7 +1126,7 @@ def prepare_season_boundaries(resources):
     Seasons come from the SIMLIB reader's `_compute_seasons`
     (TGAP_SEASON_SIMLIB=90, snlc_sim.h:72) with SIMLIB_MINSEASON pruning
     already applied by the builder, matching SNANA, which removes short
-    seasons before computing DTSEASON_PEAK (snlc_sim.c:21538-21559).
+    seasons before computing DTSEASON_PEAK (snlc_sim.c:21576-21599).
     Pruned or padded slots carry +inf/-inf and are never selected.
     ``resources`` is the built LightCurveSimulator, carrying .fields.
 
@@ -1221,7 +1142,7 @@ def compute_dtseason_peak(peak_mjds, field_indices, season_starts,
                           season_ends):
     """DTSEASON_PEAK inside JIT: the season-edge distance of smallest
     magnitude, with SNANA's sign convention: positive if in season
-    (snlc_sim.c:21542-21559). Per season the candidates are
+    (snlc_sim.c:21589-21599). Per season the candidates are
     PEAKMJD - MJD_MIN and MJD_MAX - PEAKMJD; the one with the smallest ``|DT|`` wins,
     first candidate on ties as in SNANA's strict `<` update loop. A field
     with no surviving season keeps SNANA's DT_MIN init 999999.9.
@@ -1270,9 +1191,9 @@ def simlib_redshift_windows(simlib, z_range):
 def _prune_short_seasons(field, min_season: float):
     """SIMLIB_MINSEASON: drop seasons shorter than `min_season` from the entry's
     season bookkeeping, leaving its epochs in place (remove_short_SIMLIB_SEASON,
-    snlc_sim.c:21584). The entry stays in the library even when no season
+    snlc_sim.c:21624). The entry stays in the library even when no season
     survives: SNANA leaves the LIBID in the cycle with an empty MJD range
-    (:21649), and the scheduler rejects its events.
+    (:21689), and the scheduler rejects its events.
     """
     if min_season <= 0.0:
         return field
@@ -1286,7 +1207,7 @@ def _prune_short_seasons(field, min_season: float):
 
 def apply_zpt_shift(simlib: SimlibData, shifts: Dict[str, float]) -> None:
     """FUDGESHIFT_ZPT: add per-filter shifts to every epoch's SIMLIB ZPT,
-    search and template alike (snlc_sim.c get_SIMLIB_SCALES, :20835)."""
+    search and template alike (snlc_sim.c get_SIMLIB_SCALES, :20826, :20878)."""
     per_idx = np.array([shifts.get(name, 0.0) for name in simlib.filter_names],
                        dtype=np.float32)
     for f in simlib.fields:
@@ -1301,7 +1222,7 @@ def apply_zpt_shift(simlib: SimlibData, shifts: Dict[str, float]) -> None:
 def apply_noise_scales(simlib: SimlibData, psf: float, sky: float,
                         read: float, template: float) -> None:
     """FUDGESCALE_PSF / NOISE_SKY / NOISE_READ / NOISE_TEMPLATE: scale every
-    epoch's SIMLIB noise terms (snlc_sim.c:20777-20783, :20827-20832).
+    epoch's SIMLIB noise terms (snlc_sim.c:20819-20825, :20869-20874).
     Template noise carries the product of the search scale and the template
     scale; NEA scales as psf^2."""
     for field in simlib.fields:
@@ -1321,7 +1242,7 @@ def apply_noise_scales(simlib: SimlibData, psf: float, sky: float,
 
 def apply_ignore_template_noise(simlib: SimlibData) -> None:
     """SIMLIB_MSKOPT bit 16 (IGNORE_TEMPLATENOISE): SNANA's reader returns
-    before storing any correlated template-noise key (snlc_sim.c:19288-19289),
+    before storing any correlated template-noise key (snlc_sim.c:19307-19308),
     so no template variance ever reaches an error term. Zeroing the parsed
     template arrays reproduces that at the same boundary."""
     for f in simlib.fields:
@@ -1334,10 +1255,10 @@ def validate_simlib_observations(simlib) -> None:
     """One construction-time validation pass over every parsed SIMLIB
     observation.
 
-    Mirrors SNANA's reader sanity ranges (snlc_sim.c:20573-20580), the fatal
+    Mirrors SNANA's reader sanity ranges (snlc_sim.c:20612-20620), the fatal
     per-epoch observing-condition bounds in gen_fluxNoise_calc
-    (snlc_sim.c:27753-27764) and its template-ZPT requirement
-    (snlc_sim.c:27808-27813). The noise kernels consume these arrays
+    (snlc_sim.c:27814-27824) and its template-ZPT requirement
+    (snlc_sim.c:27867-27872). The noise kernels consume these arrays
     unguarded, so every observation is checked here, once.
     """
     flat = simlib.flat_obs_data
@@ -1413,7 +1334,7 @@ def validate_simlib_observations(simlib) -> None:
 
 def apply_noise_scales_per_filter(simlib: SimlibData, sky_scale: Dict[str, float],
                                    read_scale: Dict[str, float]) -> None:
-    """EXPOSURE_TIME per-band sky/read noise scaling (snlc_sim.c:20778, :20827-20832);
+    """EXPOSURE_TIME per-band sky/read noise scaling (snlc_sim.c:20820, :20869-20874);
     template sky/read carry the same per-band scale."""
     sky = np.array([sky_scale.get(name, 1.0) for name in simlib.filter_names],
                    dtype=np.float32)
@@ -1461,7 +1382,7 @@ class InputGenranges(NamedTuple):
 
 
 def _clip_to_genrange(window, genrange):
-    """check_SIMLIB_GENRANGE (snlc_sim.c:22288): ``window`` clipped onto
+    """check_SIMLIB_GENRANGE (snlc_sim.c:22327): ``window`` clipped onto
     ``genrange``, or None when they do not overlap. The comparisons are
     strict, so a single value on either edge fails."""
     lo, hi = window
@@ -1473,7 +1394,7 @@ def _clip_to_genrange(window, genrange):
 def _entry_redshift_window(f, s, distance_z):
     """The window set by the last of the entry's REDSHIFT, DISTANCE and
     GENRANGE_REDSHIFT keys that applies, a value as a zero-width window
-    (parse_SIMLIB_GENRANGES, snlc_sim.c:22138-22165)."""
+    (parse_SIMLIB_GENRANGES, snlc_sim.c:22179-22198)."""
     window = (np.nan, np.nan)
     for key in f.redshift_keys:
         if key == 'REDSHIFT' and s.use_simlib_redshift:
@@ -1492,8 +1413,8 @@ def _entry_genranges_pass(f, s, genranges, distance_z) -> bool:
     (each under its USE_SIMLIB flag) and GENRANGE_REDSHIFT keys, a value
     as a zero-width window; a PEAKMJD value under
     USE_SIMLIB_PEAKMJD, else GENRANGE_PEAKMJD, which is read whatever the
-    flag (parse_SIMLIB_GENRANGES, snlc_sim.c:22135-22185). SNANA skips an
-    entry that fails and reads the next (:20152-20180)."""
+    flag (parse_SIMLIB_GENRANGES, snlc_sim.c:22179-22231). SNANA skips an
+    entry that fails and reads the next (:20193-20220)."""
     window = _entry_redshift_window(f, s, distance_z)
     if window[0] > 0.0:
         window = _clip_to_genrange(window, genranges.redshift)
@@ -1571,7 +1492,7 @@ def apply_simlib_filters(simlib: SimlibData, s, genranges: InputGenranges) -> No
     _apply_genrange_mjd_exclude(s.genrange_mjd_exclude, surviving)
     simlib.fields = surviving
     # SIMLIB_FIELDLIST rejects the event rather than the entry (SKIP_SIMLIB_FIELD,
-    # snlc_sim.c:22587), so the cycle keeps every LIBID and the test is per-SN.
+    # snlc_sim.c:22626), so the cycle keeps every LIBID and the test is per-SN.
     simlib.field_prescales = np.array(
         [_field_prescale(f.field_name, prescales) for f in surviving],
         dtype=np.int64)
@@ -1579,7 +1500,7 @@ def apply_simlib_filters(simlib: SimlibData, s, genranges: InputGenranges) -> No
 
 
 def _apply_genrange_mjd_exclude(window, fields) -> None:
-    """Drop observations inside GENRANGE_MJD_EXCLUDE (snlc_sim.c:19824)."""
+    """Drop observations inside GENRANGE_MJD_EXCLUDE (snlc_sim.c:19851-19852)."""
     if window is None or window[0] >= window[1]:
         return
     lo, hi = float(window[0]), float(window[1])
@@ -1594,7 +1515,7 @@ def _apply_genrange_mjd_exclude(window, fields) -> None:
 
 
 def apply_forceval_psf(simlib, value: float) -> None:
-    """SNANA FORCEVAL_PSF (snlc_sim.c:19864): overwrite every per-obs PSF sigma
+    """SNANA FORCEVAL_PSF (snlc_sim.c:19898-19899): overwrite every per-obs PSF sigma
     (PSFSIG1) with a constant."""
     for field in simlib.fields:
         field.psf1s[:] = value
@@ -1626,7 +1547,7 @@ def prepare_field_data(simlib, population_names):
 def simlib_job_start(config, n_fields: int) -> int:
     """LIBID offset giving this submit_batch_jobs job its own SIMLIB slice.
 
-    SIMLIB_findStart (snlc_sim.c:19092-19121): job k starts
+    SIMLIB_findStart (snlc_sim.c:19110-19141): job k starts
     ``(JOBID_SHIFT-1) * NLIBID/NJOBTOT`` entries in, so N parallel jobs read
     disjoint slices instead of all starting at the first entry. The GENTYPE term
     staggers which job reads which slice across models. Applied only for a
@@ -1663,7 +1584,7 @@ def simlib_field_index(key, global_indices, n_fields: int,
     """Per-SN SIMLIB entry index from the global SN index.
 
     With no start option the cycle begins at the first LIBID
-    (SIMLIB_findStart, snlc_sim.c:19139-19147); MAXRANSTART draws a random
+    (SIMLIB_findStart, snlc_sim.c:19157-19163); MAXRANSTART draws a random
     start off the root ``key``, and IDSTART/batch handling arrives via
     ``batch_start``.
     """
@@ -1697,7 +1618,7 @@ def schedule_observations(simulator, tables, field_indices,
 
     The epochs are windowed on the drawn peak and redshift, as SNANA reads
     the SIMLIB before the host can change either (set_SIMLIB_MJDrange,
-    snlc_sim.c:21300); ``redshifts_helio`` sets the window because it is an
+    snlc_sim.c:21340); ``redshifts_helio`` sets the window because it is an
     observer-frame Doppler effect. Phases come later, from the final values
     (:func:`epoch_phases`).
     """
@@ -1732,7 +1653,7 @@ def schedule_observations(simulator, tables, field_indices,
 
 def epoch_phases(obs_schedule, params):
     """Rest-frame phase of every epoch, from the final peak MJD and zHEL
-    once the host has had its say over both (LOAD_TOBS, snlc_sim.c:13005);
+    once the host has had its say over both (LOAD_TOBS, snlc_sim.c:13023);
     NaN on padded epochs."""
     return ((obs_schedule['mjds'] - params['peakmjd'][:, None])
             / (1.0 + params['sim_redshift_helio'][:, None]))

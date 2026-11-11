@@ -25,7 +25,7 @@ from jax_snlc_core.logging import SNANAError
 from .input_keys import FIT_ONLY, SIM_ONLY
 
 
-# FITINI_PKMJDPRIOR grid and flare (snlc_fit.F90:388, :11784-11787)
+# FITINI_PKMJDPRIOR grid and flare (snlc_fit.F90:397, :11939-11942)
 _PKMJD_PRIOR_NBIN = 5000
 PKMJD_PRIOR_FLARE = 28.0
 PKMJD_PRIOR_GRID = (-30.0 + 60.0 / _PKMJD_PRIOR_NBIN, 30.0)
@@ -54,7 +54,7 @@ class FittedModel(ABC):
     #: Width in days of the Gaussian prior on the time of peak.
     prior_mjdsig: Annotated[float, FIT_ONLY] = 20.0
 
-    # phases the pre-fit flux ratio is taken over (snlc_fit.F90:9401)
+    # phases the pre-fit flux ratio is taken over (snlc_fit.F90:9524)
     grid_trest_range = (-10.0, 40.0)
 
     # whether the covariance carries the Woodbury off-diagonal term
@@ -101,7 +101,7 @@ class FittedModel(ABC):
         fitting.
         """
         return {'PKMJD': {
-            # INIBND: the peak estimate +-100 d (snlc_fit.F90:7981)
+            # INIBND: the peak estimate +-100 d (snlc_fit.F90:8031)
             'bounds_about_peak_estimate': (-100.0, 100.0), 'scale': 1.0,
             'sim_truth': 'SIM_PEAKMJD', 'inistp': 2.0,
             'errmax_bad': 1.0e-4, 'error_bounds': (1.0e-8, 10.0),
@@ -109,7 +109,7 @@ class FittedModel(ABC):
                         {'centre': T0_CENTRE, 'sigma': self.prior_mjdsig,
                          'grid': PKMJD_PRIOR_GRID,
                          'flare': PKMJD_PRIOR_FLARE}),),
-            # offsets, SNANA's default (snlc_fit.F90:6812); other axes absolute
+            # offsets, SNANA's default (snlc_fit.F90:6862); other axes absolute
             'grid_search': (-4.0, -2.0, 0.0, 2.0, 4.0),
             'photoz_grid_search': (-4.0, -2.0, 0.0, 2.0, 4.0)}}
 
@@ -256,7 +256,7 @@ class SimulatedModel(ABC):
     uses_nonia_rates = False
 
     # events drawn from a NON1A template catalogue (NON1A_MODELFLAG,
-    # snlc_sim.c:4806)
+    # snlc_sim.c:4818)
     non1a_templates = False
 
     #: Whether MJD_EXPLODE can be used with this model. Under 'none' it
@@ -283,7 +283,7 @@ class SimulatedModel(ABC):
     # (canonical, *alternates) key spellings, merged into the alias table
     INPUT_KEY_ALIASES: ClassVar[Tuple[Tuple[str, ...], ...]] = ()
 
-    # keys SNANA takes from a sim-input file only (parse_input_NON1ASED, snlc_sim.c:3480-3485)
+    # keys SNANA takes from a sim-input file only (parse_input_NON1ASED, snlc_sim.c:3486-3491)
     FILE_ONLY_INPUT_KEYS: ClassVar[Tuple[str, ...]] = ()
 
     #: The model's own columns appended to every SIMGEN_DUMP and, where
@@ -305,7 +305,7 @@ class SimulatedModel(ABC):
     #: reads it back; 0 for a model SNANA does not have.
     sim_model_index = 0
 
-    # prefix stripped from GENMODEL for SIM_TYPE_NAME (snlc_sim.c:29450)
+    # prefix stripped from GENMODEL for SIM_TYPE_NAME (snlc_sim.c:29508)
     sim_type_name_prefix = ''
 
     #: Whether WRFLAG_MODELPAR controls the model's parameter columns in the
@@ -316,7 +316,7 @@ class SimulatedModel(ABC):
     writes_model_params = False
 
     # The primary FITS header names those columns under this prefix, as
-    # SNANA does for SIMSED and LCLIB alone (sntools_dataformat_fits.c:1316-1346).
+    # SNANA does for SIMSED and LCLIB alone (sntools_dataformat_fits.c:1320-1350).
     fits_param_block = ''
 
     #: File of double-exponential decay parameters continuing the SED beyond

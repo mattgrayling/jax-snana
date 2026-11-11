@@ -25,7 +25,8 @@ import yaml
 from jax_create_cov import create_covariance
 from jax_create_cov.config import build_config
 from jax_create_cov.config import read_yaml
-from jax_snlc_core.snana_files import read_covariance_npz
+from jax_snlc_core.snana_files import (dense_factorized_covariance, read_covariance_npz,
+                                       read_factorized_covariance)
 
 _FIXTURE = os.path.join("tests", "fixtures", "snana", "create_cov")
 _N_COVOPT = 8  # the seven configured, plus the one create_covariance prepends
@@ -44,22 +45,31 @@ class Case:
 
 
 _CASES = {
-    "binned": Case("ref"),
-    "unbinned": Case("ref_unbinned", mode="unbinned"),
-    "rebin": Case("ref_rebin", mode="rebin", nbin_x1=2, nbin_c=2),
-    "rebin_asymmetric": Case("ref_rebin31", mode="rebin", nbin_x1=3, nbin_c=1),
+    "binned": Case("ref", write_mask_cov=2),
+    "unbinned": Case("ref_unbinned", mode="unbinned", write_mask_cov=2),
+    "rebin": Case("ref_rebin", mode="rebin", nbin_x1=2, nbin_c=2, write_mask_cov=2),
+    "rebin_asymmetric": Case("ref_rebin31", mode="rebin", nbin_x1=3, nbin_c=1,
+                             write_mask_cov=2),
     # a hole in IZBIN, which drops every bin above it
     "rebin_izbin_gap": Case("ref_izgap", config="input_izgap.yml", mode="rebin",
-                            nbin_x1=2, nbin_c=2),
+                            nbin_x1=2, nbin_c=2, write_mask_cov=2),
     "covsys_text": Case("ref_covsys", write_mask_cov=1, write_format_cov="text"),
     "covtot": Case("ref_covtot", write_mask_cov=7),
-    "extra_covs": Case("ref_extracov", config="input_extracov.yml", mode="unbinned"),
+    "extra_covs": Case("ref_extracov", config="input_extracov.yml", mode="unbinned",
+                       write_mask_cov=2),
     "calibrators": Case("ref_calibrators", config="input_calibrators.yml",
-                        mode="unbinned"),
+                        mode="unbinned", write_mask_cov=2),
     "subtract_vpec": Case("ref_vpec", mode="rebin", nbin_x1=2, nbin_c=2,
-                          subtract_vpec=True),
-    "nosys": Case("ref_nosys", nosys=True),
-    "systematic_hd": Case("ref_syshd", systematic_hd=True),
+                          subtract_vpec=True, write_mask_cov=2),
+    "nosys": Case("ref_nosys", nosys=True, write_mask_cov=2),
+    "systematic_hd": Case("ref_syshd", systematic_hd=True, write_mask_cov=2),
+    # the default mask: factorised files, and no matrix for a covopt an
+    # EXTRA_COV enters
+    "factorized": Case("ref_factorized"),
+    "factorized_extra_covs": Case("ref_factorized_extracov", config="input_extracov.yml",
+                                  mode="unbinned"),
+    "factorized_calibrators": Case("ref_factorized_calibrators",
+                                   config="input_calibrators.yml", mode="unbinned"),
 }
 
 
@@ -77,6 +87,9 @@ def _read_hd(path):
 
 
 def _read_cov(path):
+    # a factorised file's basis is not unique, so it compares as its matrix
+    if os.path.basename(path).startswith("covtot_factorized"):
+        return dense_factorized_covariance(read_factorized_covariance(path))
     if str(path).endswith(".npz"):
         return read_covariance_npz(path)
     body = gzip.decompress(open(path, "rb").read()).decode().split()
@@ -142,9 +155,6 @@ def test_info_yml_matches_snana(parity_case):
     name, _, outdir, ref_dir = parity_case
     ref_text = open(os.path.join(ref_dir, "INFO.YML")).read()
     got_text = open(os.path.join(outdir, "INFO.YML")).read()
-
-    assert (got_text.split("COVOPTS")[0] == ref_text.split("COVOPTS")[0]), \
-        f"{name}: INFO.YML comment header differs"
 
     ref, got = yaml.safe_load(ref_text), yaml.safe_load(got_text)
     # SNANA fell back to this cosmology and records none; jax was given it

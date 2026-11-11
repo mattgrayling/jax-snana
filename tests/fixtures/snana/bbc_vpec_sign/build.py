@@ -3,7 +3,7 @@
 
     python build.py [--check]
 
-The guard (SALT2mu.c:4131) aborts when peculiar velocities look sign-inverted, so it
+The guard (SALT2mu.c:4134) aborts when peculiar velocities look sign-inverted, so it
 needs input that is unambiguously one or the other. Neither the DES fixtures nor any
 other sample here can exercise it: they are generated with GENSIGMA_VPEC=0 and start
 at z=0.1, and the check needs >=70 events with non-zero VPEC in 0.01<z<0.05.

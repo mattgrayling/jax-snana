@@ -133,7 +133,7 @@ def test_analysis_input_forms_run_without_writing(stage, form, repo_root, tmp_pa
         assert result.fit.nsnfit > 0
         assert len(result.hubble_diagram) == 10
     elif stage == 'covariance':
-        np.testing.assert_allclose(result.covariances['ALL']['matrix'],
+        np.testing.assert_allclose(result.covsys('ALL'),
                                    [[.0016, -.0024], [-.0024, .0036]])
     else:
         assert np.isfinite(result[0]['point_estimate']['omega_m'])

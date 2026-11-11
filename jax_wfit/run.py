@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 def hd_seed(diagrams) -> int:
     """Per-dataset seed for -ranseed_Rcmb 1: SNANA seeds from the data so the
-    shift is reproducible per dataset (ISEED_UNIQUE, wfit.c:2539). This seed
+    shift is reproducible per dataset (ISEED_UNIQUE, wfit.c:2805). This seed
     cannot reproduce SNANA's value, only its per-dataset determinism."""
     digest = hashlib.sha256(
         b"".join(np.asarray(d.mu).tobytes() for d in diagrams)
@@ -71,8 +71,7 @@ def run_wfit(
              f"{'s' if len(diagrams) > 1 else ''} by {config.method}")
     priors = prepare_priors(config, [d.truth for d in diagrams],
                             bao_root() if config.bao else None)
-    # External covariance fallbacks may coexist with compact COVOPTs. Batch
-    # within each representation, preserving the caller's order in outputs.
+    # dense and factorized covariances batch separately, outputs in the caller's order
     groups = {}
     for index, diagram in enumerate(diagrams):
         groups.setdefault(diagram.covariance_kind, []).append(index)

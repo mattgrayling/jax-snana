@@ -142,7 +142,7 @@ def _marker_values(head_path, table_path, ext, lo, hi, columns=None):
 @pytest.mark.parametrize("mode", MODES)
 def test_phot_marker_rows_match_snana(written, mode):
     """A marker row closes each light curve, as SNANA's writer adds one after
-    every event (sntools_dataformat_fits.c:1509): -777 in MJD and the flux
+    every event (sntools_dataformat_fits.c:1514): -777 in MJD and the flux
     columns, '-' and 'XXXX' in BAND and FIELD, and PTROBS steps over it.
     SuperNNova splits the PHOT table at these rows, so without them it reads
     a whole file as one light curve. SNANA's other columns on the row hold
@@ -159,7 +159,7 @@ def test_phot_marker_rows_match_snana(written, mode):
 
 def test_spec_marker_rows_match_snana(written):
     """A marker row of -777 in every flux column closes each spectrum, and
-    PTRSPEC steps over it (sntools_dataformat_fits.c:2895)."""
+    PTRSPEC steps over it (sntools_dataformat_fits.c:2906)."""
     spec = next(Path(written("host_spectra_replay")).glob("J*SPEC*"))
     reference = _FIXTURES / "host_spectra_replay" / "SPEC.FITS"
     assert (_marker_values(spec, spec, (1, 2), "PTRSPEC_MIN", "PTRSPEC_MAX")
@@ -200,7 +200,7 @@ def test_primary_header_matches_snana(written, mode):
             assert j == pytest.approx(s, rel=1e-6), key
         elif key == 'DETINFO_FLAG':
             # SNANA hands cfitsio a bool as a 4-byte int
-            # (sntools_dataformat_fits.c:1155), so the flag arrives in the
+            # (sntools_dataformat_fits.c:1159), so the flag arrives in the
             # low byte with the next flag's byte above it
             assert j == s & 0xFF, key
         else:
@@ -246,7 +246,7 @@ def test_dump_columns_match_snana(written, mode):
             for n in jax_names]
     assert bare == _dump_varnames(reference)
     # the decoration is the declaring keyword, as the data files write it;
-    # an undeclared parameter is baggage (snlc_sim.c:23775)
+    # an undeclared parameter is baggage (snlc_sim.c:23828)
     assert all(n.startswith(("SIMSED_PARAM(", "SIMSED_GRIDONLY(",
                              "SIMSED_param(", "SHAPEPAR(", "COLORPAR(",
                              "COLORLAW("))
@@ -350,7 +350,7 @@ def test_text_header_keys_match_snana(text_written, mode):
     snana = _union(sorted(ref_dir.glob("SN*.DAT")), 0)
     jax = _union(sorted(Path(text_written(mode)).glob("T_*.DAT")), 0)
     # SNANA writes SIM_THETA for every model, never having initialised the
-    # BayeSN parameter (snlc_sim.c:25499); jax writes it where the model has it
+    # BayeSN parameter (snlc_sim.c:25552); jax writes it where the model has it
     assert jax - _SNANA_ALWAYS == snana - _SNANA_ALWAYS
     assert ("SIM_THETA" in jax) == ("bayesn" in mode)
 
@@ -404,7 +404,7 @@ def test_text_zphot_q_block_matches_snana(text_written, mode):
     """The quantile block names the percentiles and holds one z per bin.
 
     SNANA labels the quantiles uniformly from their count
-    (compute_implicit_percentiles, sntools.c:9513); jax reads the label from
+    (compute_implicit_percentiles, sntools.c:9208); jax reads the label from
     the HOSTLIB column name. Both catalogues declare the eleven decades, so
     the two blocks agree exactly.
     """
@@ -458,7 +458,7 @@ def test_indexed_quantile_columns_write_the_same_block(text_written, tmp_path):
 
 def test_text_third_host_block_is_the_third_neighbour(text_written):
     """A third matched host fills the HOSTGAL3 block, as SNANA writes for
-    the third galaxy by DDLR (MXHOSTGAL = 3, sndata.h:42): its quantile
+    the third galaxy by DDLR (MXHOSTGAL = 3, sndata.h:44): its quantile
     block is its own, and the three galaxies are one NBR_LIST triplet in
     DDLR order. hostlib_nbr3's catalogue groups galaxies in threes, so
     most of SNANA's reference events carry all three blocks."""
@@ -653,7 +653,7 @@ _EXACT_VALUE_COLUMNS = [
 ]
 
 # LENSDMU is the truth plus a Gaussian of width LENSDMU_ERR
-# (gen_lensDMU_smear, snlc_sim.c:12938), an independent draw in each code.
+# (gen_lensDMU_smear, snlc_sim.c:12956), an independent draw in each code.
 # Its width is checked through LENSDMU_ERR above.
 _INDEPENDENT_DRAW = {'LENSDMU'}
 
@@ -672,16 +672,8 @@ _SELECTION_DERIVED = {'HOSTGAL_DDLR',
                       'HOSTGAL_LOGMASS', 'HOSTGAL_LOGsSFR'}
 _SELECTION_DERIVED_PREFIXES = ()
 
-# The SN's offset from its host is reconstructed from HOSTGAL_RA/DEC, which the
-# header stores as float32, so these two carry that rounding rather than an
-# exact value. They are checked because they were badly wrong before the
-# reconstruction: SB_FLUXCAL ran a median 1.94x SNANA with a tail to 273x.
-# (rtol, atol). The SN-host offset is reconstructed from the header: its
-# direction from HOSTGAL_RA/DEC and its magnitude from SIM_SNHOST_SEP. Taking
-# the magnitude from the separation column rather than differencing two ~30
-# degree coordinates is what makes these tight -- coordinate differencing
-# leaves ~0.01 arcsec, since the float32 step scales with the coordinate and
-# not with the separation. Only the direction still carries that error.
+# (rtol, atol) of the two values carrying the rounding of the SN-host offset,
+# rebuilt from HOSTGAL_RA/DEC and SIM_SNHOST_SEP
 _POSITION_DERIVED_TOL = {'HOSTGAL_SNSEP': (1e-5, 1e-5),
                          'HOSTGAL_SB_FLUXCAL': (0.02, 0.05)}
 
@@ -769,7 +761,7 @@ def test_head_sentinel_values_match_snana(mode):
     did (MAGERR 999 vs -9, ELLIPTICITY -9999 vs 999, OBJID2 0 vs -9), so a
     single fixture pins only half of each pair. hostlib_mwebv is the only one
     with OPT_MWEBV on, so it is the only place HOSTGAL_MAG carries the Milky
-    Way extinction SNANA adds to every reported host (sntools_host.c:9287),
+    Way extinction SNANA adds to every reported host (sntools_host.c:9684),
     and weaklens_probmap the only one with a lensing map, so it is the only
     place SIM_LENSDMU and LENSDMU_ERR are anything but zero.
     """

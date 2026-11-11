@@ -138,9 +138,9 @@ def test_mwdust_somm26_per_event_curves(snana_fixture, tmp_path):
 
 def test_opt_mwcolorlaw_zero_simulates_no_extinction(snana_fixture, tmp_path):
     """OPT_MWCOLORLAW 0 turns Milky Way extinction off (MWEBV_FLAG = 0,
-    snlc_sim.c:7179-7181), so gen_MWEBV returns before touching MWEBV
-    (:13629): the true MWEBV and its error stay 0, and the reported MWEBV is
-    the SIMLIB value under OPT_MWEBV 1 (:20525) and 0 otherwise.
+    snlc_sim.c:7191-7193), so gen_MWEBV returns before touching MWEBV
+    (:13647): the true MWEBV and its error stay 0, and the reported MWEBV is
+    the SIMLIB value under OPT_MWEBV 1 (:20565) and 0 otherwise.
 
     The photometry equals that of the same input with GENSCALE_MWEBV 0, as it
     does in SNANA. SNANA's own OPT_MWEBV 1 simulation of the same SIMLIB gives
@@ -192,7 +192,7 @@ def test_peakmag_null_filters_match_snana(snana_fixture, tmp_path):
     """SIM_PEAKMAG is -9 for filters with no kept epoch, as in SNANA.
 
     SNANA leaves peakmag_obs at NULLFLOAT unless the filter appears in the
-    SIMLIB entry (snlc_sim.c:9639, :12971-12974). jax masks on the same
+    SIMLIB entry (snlc_sim.c:9650, :12989-12992). jax masks on the same
     predicate, so the two sentinel patterns agree except where the CMB-vs-
     heliocentric MJD window disagrees at its edge;
     that costs a handful of cells out of 9000, so the bound is on the count.

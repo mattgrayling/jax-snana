@@ -1,6 +1,6 @@
 """The host's say over the SN's velocity and redshift:
 ``transfer_host_redshift`` against SNANA's GEN_SNHOST_VPEC and
-TRANSFER_SNHOST_REDSHIFT (sntools_host.c:7464, :9113).
+TRANSFER_SNHOST_REDSHIFT (sntools_host.c:7902, :9510).
 
 Loads a simulator built from the bundled ``hostlib_e2e`` fixture (HOSTLIB +
 SALT3 + LSST SIMLIB + LSST kcor) and drives the transfer with synthetic
@@ -89,7 +89,7 @@ def test_usevpec_alone_moves_only_the_velocity(sim_setup):
     """USEVPEC takes the true VPEC and its error from the host and smears
     the measured one, but without SN2GAL_Z or SN2GAL_RADEC the transfer
     returns before touching the redshift or the distance
-    (sntools_host.c:9146)."""
+    (sntools_host.c:9543)."""
     simulation, resources, _ = sim_setup
     simulation = _with_mskopt(simulation, 512)
     params = _build_synthetic_params(simulation, resources)
@@ -164,7 +164,7 @@ def _usevpec_input(fixture_root, out_dir, hostlib):
 
 
 def test_usevpec_without_a_vpec_column_aborts(fixture_root, tmp_path):
-    """USEVPEC needs a VPEC column (sntools_host.c:2799-2805)."""
+    """USEVPEC needs a VPEC column (sntools_host.c:2817-2823)."""
     from jax_snlc_sim import run as sim_run
 
     hostlib = fixture_root / "data" / "hostlib" / "JAX_TEST.HOSTLIB"
@@ -175,7 +175,7 @@ def test_usevpec_without_a_vpec_column_aborts(fixture_root, tmp_path):
 
 def test_usevpec_without_a_vpec_err_aborts(fixture_root, tmp_path):
     """USEVPEC needs the error as a column or a header key
-    (sntools_host.c:2807-2812)."""
+    (sntools_host.c:2825-2830)."""
     from jax_snlc_sim import run as sim_run
 
     hostlib = _hostlib_with_vpec(fixture_root, tmp_path)
@@ -186,7 +186,7 @@ def test_usevpec_without_a_vpec_err_aborts(fixture_root, tmp_path):
 
 def test_usevpec_takes_the_header_vpec_err(fixture_root, tmp_path):
     """Without a VPEC_ERR column every host carries the header's value
-    (GEN_SNHOST_VPEC, sntools_host.c:7477-7483)."""
+    (GEN_SNHOST_VPEC, sntools_host.c:7915-7921)."""
     from jax_snlc_sim import run as sim_run
 
     hostlib = _hostlib_with_vpec(fixture_root, tmp_path, header_vpec_err=250.0)

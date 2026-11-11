@@ -68,7 +68,7 @@ def test_genav_wv07_distribution_live(tmp_path):
 
 def test_mushift_under_a_rewgt_polynomial_live(tmp_path):
     """A MUSHIFT range under DNDZ_ZPOLY_REWGT is drawn from the reweight's CDF
-    against MU (gen_MUSHIFT, snlc_sim.c:17542), pulling it above the flat
+    against MU (gen_MUSHIFT, snlc_sim.c:17560), pulling it above the flat
     mean of 0.1; the distributions agree with SNANA's."""
     gv = "JAX_LIVE_MUSHIFT"
     n = 4000
@@ -490,7 +490,7 @@ def _relerr_by_cid(head, phot):
 def test_genperfect_live(tmp_path):
     """GENPERFECT: 1 collapses the sim to ideal mode: SNANA and jax both produce
     near-noiseless photometry (median FLUXCALERR/|FLUXCAL| tiny), vs a noisy
-    baseline (genperfect_override, snlc_sim.c:8582)."""
+    baseline (genperfect_override, snlc_sim.c:8597)."""
     env = os.environ.copy()
     base_src = re.sub(r"NGENTOT_LC:\s+\d+", "NGENTOT_LC:  200",
                       (PROJECT_ROOT / "tests" / "fixtures" / "snana" / _FIXTURE
@@ -784,7 +784,7 @@ def test_hostlib_hostgal_specz_live(hostgal_baseline):
 
 def test_hostlib_hostgal_photoz_formula_live(hostgal_baseline):
     """Per-SN HOSTGAL_PHOTOZ parity: SNANA and jax both report catalog ZPHOT +
-    (ZGEN - host ZTRUE) (GEN_SNHOST_ZPHOT_from_HOSTLIB, sntools_host.c:7136),
+    (ZGEN - host ZTRUE) (GEN_SNHOST_ZPHOT_from_HOSTLIB, sntools_host.c:7574),
     reconstructed from each engine's own assigned GALID + SIM_REDSHIFT_HELIO."""
     out = hostgal_baseline
     cat = _catalog_ztrue_zphot()
@@ -798,7 +798,7 @@ def test_hostlib_hostgal_photoz_formula_live(hostgal_baseline):
 
 
 def test_hostlib_genzphot_bias_live(tmp_path):
-    """HOSTLIB_GENZPHOT_BIAS routes photo-z through GENZPHOT synthesis (snlc_sim.c:6846);
+    """HOSTLIB_GENZPHOT_BIAS routes photo-z through GENZPHOT synthesis (snlc_sim.c:6858);
     the HOSTGAL_PHOTOZ − HOSTGAL_SPECZ mean/scatter match SNANA (distribution level,
     since the calc path is a per-SN stochastic draw)."""
     out = _snana_jax_head(tmp_path, "JAX_LIVE_ZBIAS",
@@ -857,7 +857,7 @@ def test_hostlib_maxread_live(tmp_path):
 def test_hostlib_snr_store_live(tmp_path):
     """HOSTLIB_SNR_STORE drops a galaxy from the pool at read time when its
     brightest bands miss the signal-to-noise ladder, identically in SNANA
-    and jax (passCuts_HOSTLIB, sntools_host.c:3403). The bundled HOSTLIB
+    and jax (passCuts_HOSTLIB, sntools_host.c:3429). The bundled HOSTLIB
     carries no error columns, so g_obs_err and r_obs_err are added here:
     0.02 mag on even GALIDs (S/N 54) and 0.5 mag on odd ones (S/N 2.2), and
     a ladder of 10 then keeps only the even galaxies as hosts."""
@@ -979,7 +979,7 @@ def test_hostlib_dmucor_live(tmp_path):
 def test_hostlib_hostgal2_specz_photoz_live(tmp_path):
     """SNANA and jax both report HOSTGAL/HOSTGAL2 photo-z with the same ZDIF shift
     and each spec-z as the measured SN z (true-match host) or that host's catalog
-    ZTRUE (GEN_SNHOST_ZPHOT / snlc_sim.c:26071-26078)."""
+    ZTRUE (GEN_SNHOST_ZPHOT / snlc_sim.c:26128-26135)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "nbr_builder", PROJECT_ROOT / "tests" / "integration" / "test_hostlib_nbr_list.py")
@@ -1313,7 +1313,7 @@ def test_anisotropy_v04_matches_snana_live(tmp_path):
 def test_hzfun_expected_count_matches_snana_live(tmp_path):
     """H(z) sets the season count, so NGEN_SEASON must resolve identically.
 
-    SNcount_model integrates dVdz(z, &INPUTS.HzFUN_INFO) (snlc_sim.c:17918).
+    SNcount_model integrates dVdz(z, &INPUTS.HzFUN_INFO) (snlc_sim.c:17936).
     INIT_ONLY stops after the rate summary, which turns this into an exact
     integer comparison against SNANA's own NGENTOT_LC.
     """

@@ -229,7 +229,7 @@ class RedbackModel(SNModel, SimulatedModel, FittedModel):
     redback_photosphere_smooth_width: float = field(
         default=0.003, metadata={"static": True})
 
-    # bright transients get SIMSED's headroom (snlc_sim.c:28686)
+    # bright transients get SIMSED's headroom (snlc_sim.c:28744)
     crazyflux_factor = 10.0
 
     # Numerical state is passed through JAX. Functions and parameter names

@@ -26,7 +26,7 @@ def test_host_noise_maps():
 def test_errcalc_host_term_needs_a_sky_noise():
     """SNANA's ERRCALC host term scales the sky noise by SBFLUXADU/SKY_AVG_ADU
     with SKY_AVG_ADU = GAIN*SQ1, so it vanishes with the sky noise
-    (snana.F90:20476-20477, :20549-20552); with sky noise it adds a variance
+    (snana.F90:20568-20569, :20641-20644); with sky noise it adds a variance
     in proportion to the host's surface brightness."""
     def errcalc(skysig, sb):
         return fluxcal_errcalc(fluxcal=100.0, fluxcal_err=10.0, zeropt=30.0, zpterr=0.0,

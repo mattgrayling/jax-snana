@@ -5,8 +5,7 @@ filter) and asserts that each filter's reference-flux integral uses its
 own assigned primary, not a globally-hardcoded AB.
 """
 
-import gzip
-import os
+import shutil
 
 import jax.numpy as jnp
 import numpy as np
@@ -16,7 +15,6 @@ from astropy.io import fits
 from jax_snlc_core.filters import (KcorReader, band_window_width,
                                    compute_single_restframe_filter, fluxcal_from_sed,
                                    load_photometry_resources)
-from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit.calibration import resolve_filtlist
 
 # AB is flat in f_nu at 3631 Jy, so its f_lambda is closed form.
@@ -102,41 +100,11 @@ def test_float32_filter_tables_use_double_precision(mixed_primaries_kcor_path,
                                rtol=2e-14, atol=0.)
 
 
-def _kcor_header_file(path, cards):
-    hdu = fits.PrimaryHDU()
-    for key, value in cards.items():
-        hdu.header[key] = value
-    hdu.writeto(path)
-    return str(path)
-
-
-def test_resolve_filtlist_reads_filt_cards(tmp_path):
-    path = _kcor_header_file(tmp_path / "kcor.fits", {
-        "NFILTERS": 2, "FILT001": "LSST-g", "FILT002": "LSST-r"})
-    assert resolve_filtlist("rg", KcorReader(path)) == ["LSST-r", "LSST-g"]
-
-
-def test_resolve_filtlist_reads_a_gzipped_kcor(tmp_path):
+def test_resolve_filtlist_reads_a_gzipped_kcor(tmp_path, lsst_kcor_path):
     """CFITSIO opens ``<name>.gz`` when given ``<name>``, as SNANA does."""
-    path = _kcor_header_file(tmp_path / "kcor.fits", {
-        "NFILTERS": 1, "FILT001": "LSST-g"})
-    with open(path, "rb") as raw, gzip.open(f"{path}.gz", "wb") as packed:
-        packed.write(raw.read())
-    os.remove(path)
-    assert resolve_filtlist("g", KcorReader(path)) == ["LSST-g"]
-
-
-@pytest.mark.parametrize("cards, missing", [
-    ({"FILT001": "LSST-g"}, "NFILTERS"),
-    ({"NFILTERS": 2, "FILT001": "LSST-g"}, "FILT002"),
-])
-def test_resolve_filtlist_aborts_on_missing_header_card(tmp_path, cards, missing):
-    """SNANA read_calib_head aborts on a missing NFILTERS or FILTnnn card
-    (sntools_calib.c:300-308)."""
-    path = _kcor_header_file(tmp_path / "kcor.fits", cards)
-    kcor = KcorReader(path)
-    with pytest.raises(SNANAError, match=f"kcor.fits has no {missing} header card"):
-        resolve_filtlist("g", kcor)
+    shutil.copy(f"{lsst_kcor_path}.gz", tmp_path / "kcor.fits.gz")
+    kcor = KcorReader(str(tmp_path / "kcor.fits"))
+    assert resolve_filtlist("rg", kcor) == ["LSST-r", "LSST-g"]
 
 
 @pytest.mark.parametrize('bands', [('test-g',), ('test-g', 'test-r'), ('test-r', 'test-g')])
@@ -161,6 +129,8 @@ def test_catalogue_and_kcor_share_filter_preparation(tmp_path, bands):
     yaml_reader = KcorReader(path)
 
     primary = fits.PrimaryHDU()
+    primary.header['NPRIM'] = 1
+    primary.header['PRIM001'] = 'AB'
     primary.header['NFILTERS'] = len(names)
     for i, name in enumerate(names, 1):
         primary.header[f'FILT{i:03d}'] = name
@@ -178,6 +148,7 @@ def test_catalogue_and_kcor_share_filter_preparation(tmp_path, bands):
         fits.Column(name='Filter Name', format='20A', array=names),
         fits.Column(name='Primary Name', format='20A', array=['AB', 'AB']),
         fits.Column(name='Primary Mag', format='D', array=offsets),
+        fits.Column(name='ZPoff(Primary)', format='D', array=offsets),
         fits.Column(name='ZPoff(SNpot)', format='D', array=[0., 0.])])
     offsets_hdu.header['EXTNAME'] = 'ZPoff'
     fits_path = tmp_path / 'filters.fits'

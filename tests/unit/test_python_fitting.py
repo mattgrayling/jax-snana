@@ -297,7 +297,7 @@ def test_python_redshift_is_heliocentric(tables, coordinates):
     metadata = {'ra': 0., 'dec': 0.} if coordinates else {}
     kwargs = dict(mjd=[60000., 60010.], flux=[100., 80.], flux_err=[5., 5.],
                   band='g_PS1', redshift=.05, mwebv=0., snid='SN1', flux_unit='fluxcal',
-                  zp=None, redshift_cmb=.06, metadata=metadata,
+                  zp=None, redshift_cmb=.049, metadata=metadata,
                   photometry=None, objects=None, column_map=None)
     if tables:
         kwargs.update(mjd=None, flux=None, flux_err=None, band=None, redshift=None,
@@ -305,7 +305,7 @@ def test_python_redshift_is_heliocentric(tables, coordinates):
                       photometry=dict(snid=['SN1']*2, mjd=[60000., 60010.],
                                       flux=[100., 80.], flux_err=[5., 5.], band=['g_PS1']*2),
                       objects={k: [v] for k,v in dict(snid='SN1', redshift=.05,
-                                                     redshift_cmb=.06, **metadata).items()})
+                                                     redshift_cmb=.049, **metadata).items()})
     obs, obj = input_tables(**kwargs)
     _, epoch_cuts, _ = cut_windows(cfg)
     batch = batch_from_tables(obs, obj, fitter, cfg, epoch_cuts,

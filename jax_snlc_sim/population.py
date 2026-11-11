@@ -250,7 +250,7 @@ def _assert_domain(param_name, dist, shifts, ranges) -> None:
 
     SNANA fatals on invalid active widths (checkVal_GENGAUSS,
     sntools_genGauss_asym.c:607-639; getRan_skewGauss aborts on a non-positive
-    effective skew sigma, sntools.c:7513). The traced samplers carry no
+    effective skew sigma, sntools.c:7208). The traced samplers carry no
     numerical floors, so this domain guarantee is what keeps every selected
     lane valid. A width whose base is positive must stay positive, the grid
     and branch decisions being made from the base sign class.

@@ -53,14 +53,14 @@ def test_bbc_bayesn_1dzwgt():
 
 def test_bbc_bayesn_rejects_mucovadd():
     """muCOVADD tunes the error per alpha/beta node, so SALT2mu refuses it outright
-    for a model that has no standardisation coefficients (SALT2mu.c:11332)."""
+    for a model that has no standardisation coefficients (SALT2mu.c:11342)."""
     with pytest.raises(SNANAError, match="standardisation coefficients"):
         run_bbc_fit(_cfg(opt_biascor=144 | 4096))
 
 
 def test_bbc_bayesn_chi2max():
     """applyCut_chi2max on a model with no fitted nuisance parameters: the cut runs
-    off whatever exec_mnparm clamped into bounds (SALT2mu.c:2621), which for BayeSN
+    off whatever exec_mnparm clamped into bounds (SALT2mu.c:2624), which for BayeSN
     is nothing at all."""
     cfg = _cfg()
     cfg.chi2max = 0.5
@@ -78,7 +78,7 @@ def test_bbc_bayesn_chi2max():
 ])
 def test_cut_shorthands_set_the_biascor_binning(var, lo, hi, ref, nsnfit):
     """avmin/avmax/thetamin/thetamax are BayeSN's half of the range inputs that set
-    both the cut and the biasCor cell ranges (SALT2mu.c:18816-18823, :18876-18880).
+    both the cut and the biasCor cell ranges (SALT2mu.c:18830-18837, :18890-18894).
 
     The fixture includes events above avmax=0.4 that pass the default AV range;
     the explicit limit must affect both selection and bias-correction binning.
@@ -100,7 +100,7 @@ def test_cut_shorthands_set_the_biascor_binning(var, lo, hi, ref, nsnfit):
     (0.4, "SALT2mu_bayesn_mucovscale_avmax", 363),
 ])
 def test_avmax_sets_the_mucovscale_colour_axis(avmax, ref, nsnfit):
-    """muCOVscale bins its colour axis on the range inputs (SALT2mu.c:6987), which
+    """muCOVscale bins its colour axis on the range inputs (SALT2mu.c:6997), which
     for BayeSN are avmin/avmax. opt_biascor=176 sets MASK_BIASCOR_MUCOVSCALE, which
     the 144 used elsewhere here does not, so this is the config that reaches them.
     """

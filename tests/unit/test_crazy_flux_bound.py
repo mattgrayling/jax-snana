@@ -1,4 +1,4 @@
-"""Unit tests for the SNANA crazy-flux bound (check_crazyFlux, snlc_sim.c:28628).
+"""Unit tests for the SNANA crazy-flux bound (check_crazyFlux, snlc_sim.c:28686).
 
 The jax bound is SNANA's ADU expression divided by 10^(0.4(ZPADU-ZP_FLUXCAL)),
 which cancels ZPADU; these tests pin that algebra and the guards around it.

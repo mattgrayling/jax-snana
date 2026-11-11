@@ -115,7 +115,7 @@ def test_compute_fitprob_chi2_survival():
 def test_flat_prior_chi2_shape():
     """PRIOR_<p>_RANGE/_SIGMA: flat inside the range, rolling off outside as the
     fourth power of the offset in sigma -- SNANA forms (dif/sigma)**2 and stores
-    its square (FITINI_FLATPRIOR, snlc_fit.F90:12062)."""
+    its square (FITINI_FLATPRIOR, snlc_fit.F90:12217)."""
 
     def chi2(value):
         return float(FORMS['flat_rolloff'](jnp.array(value),
@@ -463,7 +463,7 @@ def test_salt_errmap_single_phase_map_is_always_judged():
 @pytest.mark.parametrize("line", ["5000.0\n", "5000.0 high\n"])
 def test_two_column_line_without_two_numbers_aborts(tmp_path, line):
     """A two-column data line must hold two numbers; rd2columnFile has no
-    defined reading of one that does not (sntools.c:7280-7312)."""
+    defined reading of one that does not (sntools.c:6975-7007)."""
     p = tmp_path / "salt3_color_dispersion.dat"
     p.write_text("# lam disp\n2000.0 0.1\n" + line)
     with pytest.raises(SNANAError, match="is not two numbers"):
@@ -471,20 +471,20 @@ def test_two_column_line_without_two_numbers_aborts(tmp_path, line):
 
 
 def test_two_column_skips_what_rd2columnfile_skips(tmp_path):
-    """rd2columnFile skips a line of two characters or fewer, a line opening
-    with any of SNANA's comment characters (commentchar, sntools.c:7341)
-    and the DOCUMENTATION block (sntools.c:7280-7302)."""
+    """rd2columnFile skips comments, which start at a word opening with any
+    of SNANA's comment characters (commentchar, sntools.c:7036), blank lines
+    and the DOCUMENTATION block (sntools.c:6975-6997)."""
     p = tmp_path / "table.dat"
     p.write_text("DOCUMENTATION:\n  note: x y\nDOCUMENTATION_END:\n"
-                 "! comment\n# 9.0 9.0\n% 9.0 9.0\n@ 9.0 9.0\n7\n\n"
-                 "0.1 2.0 extra\n0.2 3.0\n")
+                 "! comment\n# 9.0 9.0\n% 9.0 9.0\n@ 9.0 9.0\n\n"
+                 "0.1 2.0 extra\n0.2 3.0 # 9.0\n")
     x, y = read_two_column_file(p)
     np.testing.assert_array_equal(x, [0.1, 0.2])
     np.testing.assert_array_equal(y, [2.0, 3.0])
 
 
 def test_salt_errmap_nan_is_read_as_zero(data_root, tmp_path):
-    """rd_sedFlux reads a NaN value as zero (sntools.c:8520), so a NaN in an
+    """rd_sedFlux reads a NaN value as zero (sntools.c:8215), so a NaN in an
     error map never reaches the bad-value check."""
 
     src = data_root / "models" / "SALT3.K21"

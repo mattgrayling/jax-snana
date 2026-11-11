@@ -36,8 +36,11 @@ def test_shared_preparation_matches_independent_loading(
     for name in ('first', 'second'):
         directory = tmp_path / name
         directory.mkdir()
+        # under the simulation's names, which its HEAD names its PHOT file by
         for table in ('HEAD', 'PHOT'):
-            (directory / f'{name}_{table}.FITS.gz').symlink_to(fixture / f'{table}.FITS.gz')
+            (directory / f'JAX_TEST_SALT3_FIT_SELECT_{table}.FITS.gz').symlink_to(
+                fixture / f'{table}.FITS.gz')
+        (directory / f'{name}.LIST').write_text('JAX_TEST_SALT3_FIT_SELECT_HEAD.FITS\n')
         directories.append(directory)
     stage = Fit('prepare', fixture / 'fit.nml',
         overrides={'BATCH_SIZE': 8, 'OPT_SNCID_LIST': int(synchronise),

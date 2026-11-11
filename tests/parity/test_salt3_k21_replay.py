@@ -158,8 +158,8 @@ def test_salt3_hostdust_simmagobs_parity(snana_fixture, tmp_path):
 
 
 def test_replay_takes_the_distance_from_head_when_dump_lacks_mu(snana_fixture):
-    """DUMP MU and HEAD SIM_DLMU are both GENLC.DLMU (snlc_sim.c:16090,
-    :25471), so a dump written without MU replays from the HEAD; the dump
+    """DUMP MU and HEAD SIM_DLMU are both GENLC.DLMU (snlc_sim.c:16108,
+    :25524), so a dump written without MU replays from the HEAD; the dump
     carries four decimals, hence the tolerance. A HEAD that does not cover
     every dump event cannot stand in."""
     fx = snana_fixture("salt3_k21_replay")
@@ -194,7 +194,7 @@ def test_replay_takes_the_distance_from_head_when_dump_lacks_mu(snana_fixture):
 def test_population_weight_matches_snana(snana_fixture):
     """SIM_WGT_POPULATION under GENPDF_EXPON_REWGT is SNANA's
     prob(nominal)/prob(sharpened) at the drawn stretch and colour
-    (rewgt_genPDF, snlc_sim.c:31492). The fixture's populations have
+    (rewgt_genPDF, snlc_sim.c:31552). The fixture's populations have
     asymmetric widths, a peakrange plateau and a second colour peak, so every
     branch of funVal_GENGAUSS_ASYM meets SNANA's own numbers."""
     fx = snana_fixture("population_rewgt")

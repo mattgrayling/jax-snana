@@ -1,7 +1,7 @@
 """SNANA-vs-jax parity for NGEN_SEASON → NGENTOT_LC resolution.
 
 Both codes apply the same `(int)(NGEN_SEASON × rate × NGEN_SCALE)` formula
-(SNANA snlc_sim.c:9201-9221). This test runs SNANA and jax on the same
+(SNANA snlc_sim.c:9216-9236). This test runs SNANA and jax on the same
 NGEN_SEASON input and asserts the resolved counts match exactly.
 
 Live-only: requires `--live-snana` (or `RUN_LIVE_SNANA=1`) and

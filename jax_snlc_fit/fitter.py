@@ -412,7 +412,7 @@ def _frozen_weights(settings, model, photometry, z_weights, params, scales, mjd,
     at: ``(1/sigma^2,)``, or where the fit carries the full epoch
     covariance ``(1/sigma^2, d_inv, V, M_inv)`` with its Woodbury factors,
     built at the fitted redshift under photo-z as SNANA builds it at
-    REDSHIFT_FIT (snlc_fit.F90:10588, :13911-13913). ``1/sigma^2`` is the
+    REDSHIFT_FIT (snlc_fit.F90:10711, :14072-14074). ``1/sigma^2`` is the
     full diagonal in both, the sigma term's sigma_last (JEP_FLUX_ERRTOT,
     :5100).
 
@@ -423,7 +423,7 @@ def _frozen_weights(settings, model, photometry, z_weights, params, scales, mjd,
     error to the diagonal instead (snlc_fit.F90:11084). Its model error
     is the model's own under OPT_COVAR_FLUX, which FUDGE_MAGERR_MODEL
     turns off only at 0, and the fudged diagonal one without it
-    (snlc_fit.F90:10668-10691).
+    (snlc_fit.F90:10791-10814).
     """
     cfg = settings['config']
     photo = cfg.photoz.dofit_photoz
@@ -455,7 +455,7 @@ def _frozen_weights(settings, model, photometry, z_weights, params, scales, mjd,
         elif cfg.model.fudge_magerr_model == 0.0:
             err_flux = jnp.zeros_like(flux)
         else:
-            # scaled by FUDGE_MODELERR_SCALE (snlc_fit.F90:10642)
+            # scaled by FUDGE_MODELERR_SCALE (snlc_fit.F90:10765)
             err_flux = flux_error_from_fracerr(
                 cfg.model.fudge_modelerr_scale * jnp.maximum(jnp.abs(flux), 1e-30), fracerr)
         kcor_ratio = jnp.minimum(
@@ -569,7 +569,7 @@ def _pre_fit_adjust(settings, model, photometry, z_weights, params, scales, mjd,
                     mask, fluxcals, fluxcalerrs, z_data, bw, n_obs, z_priors, mw_attenuation,
                     reference_mjds=0., limits=None):
     """FITINI_ADJUST: move the starting parameters towards the data
-    (snlc_fit.F90:9471).
+    (snlc_fit.F90:9594).
 
     The model declares the axes, where the t0 axis is offsets in days and
     every other axis absolute values; a photo-z fit searches its own,
@@ -917,7 +917,7 @@ def compiled_functions(settings, cache, model):
 def _prob_ndof(ndof, prior_chi2):
     """The NDOF a fit probability is taken at: the fit's ``ndof`` plus one
     where the prior's chi2 exceeds 0.01, as the chi2 it is taken of includes
-    the prior (NDOF_STORE(1), snana.F90:28092-28108)."""
+    the prior (NDOF_STORE(1), snana.F90:28205-28221)."""
     return ndof + (prior_chi2 > 0.01)
 
 
@@ -1144,7 +1144,7 @@ SIMFIT_IDEAL_DEBUG = 777
 
 def fiterr_windowed(config, passband_mask, filter_mean_wave, t0_phys,
                     redshifts, mjd_offsets, filter_indices, iteration):
-    """SNANA GET_FUDGE_FITERR_MAXFRAC (snlc_fit.F90:11188): per-epoch
+    """SNANA GET_FUDGE_FITERR_MAXFRAC (snlc_fit.F90:11311): per-epoch
     FUDGE_FITERR_MAXFRAC where TREST, rest-lambda, passband and iteration all
     fall inside their windows; 0.0 (scalar) when the fudge is off.
     ``passband_mask`` is the fitter's per-filter FUDGE_FITERR_PASSBANDS
@@ -1180,7 +1180,7 @@ def fitwin_trest_bounds(config, filters):
 
     SNANA fills every filter's window with the global FITWIN_TREST and then
     overwrites the bands FITWIN_TREST_FILTER names, testing only the
-    per-filter array (SETCUTS_FITWIN_TREST, snlc_fit.F90:2774-2812).
+    per-filter array (SETCUTS_FITWIN_TREST, snlc_fit.F90:2806-2844).
     Returns None when no band is overridden, so the scalar window stands.
     """
     if not config.fit.fitwin_trest_filter:
@@ -1263,7 +1263,7 @@ def rounds2_strategy(config, full_covariance):
     freezes them at each round's start, in Woodbury form when the fit carries
     the full epoch covariance: its colour dispersion, FUDGE_MAG_COVERR or the
     Milky Way extinction error (:10569). Without it, USE_DIAG_ONLY keeps
-    sigma live (:10572)."""
+    sigma live (:10695)."""
     if full_covariance:
         return 'frozen_woodbury'
     return ('frozen_diag' if config.fit.use_offdiag_covariance
@@ -1519,7 +1519,7 @@ class LightCurveFitter:
                 inistp[name] = 0.0
         if config.model.lfixpar_all or config.model.lfixpar_adjust:
             # zeroes INISTP for every fit parameter, zPHOT included
-            # (snlc_fit.F90:1974-1978)
+            # (snlc_fit.F90:2006-2010)
             inistp.update({name: 0.0 for name in self.param_names})
         self.held_params = tuple(sorted(
             {name for name, step in inistp.items() if step == 0.0}
@@ -2037,7 +2037,7 @@ class LightCurveFitter:
                 params[:, -1], lo[:, -1], hi[:, -1]))
 
         # bands in range at the start z (REDSHIFT_FIT, snlc_fit.F90:8679);
-        # photo-z tests RESTLAMBDA at its trial z (Z8TEST, :1776)
+        # photo-z tests RESTLAMBDA at its trial z (Z8TEST, :1784)
         mask = batch.observation_mask & restlambda_mask(self._compiled_settings, photometry, batch.filter_indices,
             _fit_redshifts(self._compiled_settings, params, scales, batch.redshifts))
 
@@ -2046,7 +2046,7 @@ class LightCurveFitter:
         bw = (None if photo else events_band_weights(self._compiled_settings, photometry, batch.redshifts, batch.mw_att_obs))
 
         # FITINI_ADJUST (snlc_fit.F90:9594, :9801), after FITINI_PHOTOZ
-        # under photo-z (:1962-1966)
+        # under photo-z (:1994-1998)
         params, chi2red_ok, chi2red_ok2 = self._run_adjust(
             self._model_input, photometry, z_weights, params, scales, batch.mjd_offsets,
             batch.filter_indices, mask, batch.fluxcals, batch.fluxcalerrs,
@@ -2094,7 +2094,7 @@ class LightCurveFitter:
             observation_mask=mask,
             prior_chi2=prior_chi2,
             z_prior=reported_z_prior,
-            # zPHOT last (TABLE_VARLIST_COV, snlc_fit.F90:19399)
+            # zPHOT last (TABLE_VARLIST_COV, snlc_fit.F90:19578)
             cov_output_params=covariance_output_params(self.fit_parameters),
             iter1_verdicts=verdicts,
         )
@@ -2161,8 +2161,8 @@ class LightCurveFitter:
                                  prior_data=prior_data, weights=weights)
 
         # each pass's t0 prior is centred on its INIVAL(IPAR_PEAKMJD), which
-        # after the first iteration is the last one's fit (snlc_fit.F90:4840,
-        # :7913-7921); the distance prior is at the redshift prior's mean
+        # after the first iteration is the last one's fit (snlc_fit.F90:4891,
+        # :7963-7971); the distance prior is at the redshift prior's mean
         # under photo-z until a redshift is fitted
         def prior_at(p, mu):
             return parameters.per_sn(p[:, T0] * scales[:, T0], mu, batch.reference_mjds)
@@ -2204,7 +2204,7 @@ class LightCurveFitter:
                                        prior_data, z_priors)
 
         # FITWIN_TREST and the epoch rejects, from round 1's last pass
-        # (snlc_fit.F90:4481-4510, :10885, :10967)
+        # (snlc_fit.F90:4532-4561, :11008, :10967)
         z = _fit_redshifts(self._compiled_settings, params, scales, z_data)
         mask = mask & self.fitwin_trest_ok(
             filter_indices, mjd, params[:, T0] * scales[:, T0], z)
@@ -2257,7 +2257,7 @@ class LightCurveFitter:
         """Which round-1 window accepted each SN: ``{window: ok_mask}`` over
         the windows this fit configured, empty when it configured none.
 
-        SNANA abandons the event mid-fit (FITPAR_ANA, snlc_fit.F90:2139-2155);
+        SNANA abandons the event mid-fit (FITPAR_ANA, snlc_fit.F90:2171-2187);
         a vmapped batch records the verdict instead and the caller drops those
         events. The window is named as the input names it, so what rejected
         an event survives into the results; SNANA's own numbering for it
@@ -2265,7 +2265,7 @@ class LightCurveFitter:
 
         PROB is FITPROBCHI2_STORE(1): the probability of the minimised chi2,
         prior included, on NDOF + NDOF_PRIOR (:func:`_prob_ndof`,
-        MNFIT_STOREPAR, snana.F90:28085-28125).
+        MNFIT_STOREPAR, snana.F90:28198-28238).
         """
         verdicts = {}
         physical = params * scales
@@ -2284,8 +2284,8 @@ class LightCurveFitter:
     def _prior_chi2(self, physical, prior_data, z_priors):
         """Every event's prior chi2 at the physical parameters: the model
         parameters' priors, and under photo-z the redshift's
-        (CHI2PRIOR(IPAR_zPHOT), snlc_fit.F90:4903) and any distance prior's
-        (CHI2PRIOR(IPAR_DLMAG), :4910)."""
+        (CHI2PRIOR(IPAR_zPHOT), snlc_fit.F90:4954) and any distance prior's
+        (CHI2PRIOR(IPAR_DLMAG), :4961)."""
         chi2 = vmap(lambda p, d: parameters.prior_chi2(p, self.priors, d))(
             physical[:, :self.n_model_params], prior_data)
         if self.config.photoz.dofit_photoz:

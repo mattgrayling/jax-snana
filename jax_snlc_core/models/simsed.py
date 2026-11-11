@@ -26,27 +26,28 @@ import numpy as np
 from jax_snlc_core import logging as log
 from jax_snlc_core.interpolation import linear_between, linear_bin
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import (interpolate_wgtmap, read_wgtmap, resolve_fits_path,
-                                       skip_docana)
+from jax_snlc_core.snana_files import (interpolate_wgtmap, key_runs, leading_values,
+                                       read_sed_file, read_wgtmap, resolve_fits_path,
+                                       split_names)
 
 from .input_keys import SIM_ONLY
 from .roles import SimulatedModel
-from .sed_model import (SED_WAVELENGTH_RANGE, SNModel, compute_explosion_tshift,
-                        late_time_decay, late_time_tables, read_sed_file, resample_surfaces,
+from .sed_model import (SNModel, compute_explosion_tshift,
+                        late_time_decay, late_time_tables, resample_surfaces,
                         uvlam_extrapflux_sedmodel)
 
 logger = logging.getLogger(__name__)
 
 # grid points of the tabulated marginal in _draw_correlated_truncated
 N_GRID_SIMSED_REDCOR = 4096
-# the rest-frame days a text SED is read within (genmag_SIMSED.c:234-235)
+# the rest-frame days a text SED is read within (genmag_SIMSED.c:241-242)
 SIMSED_DAY_RANGE = (-500.0, 1500.0)
 
-# SNANA's KEYWORD_SIMSED values (snlc_sim.c:6129, :6082, :23775).
+# SNANA's KEYWORD_SIMSED values (snlc_sim.c:6141, :6094, :23828).
 KEYWORD_CONTINUOUS = 'SIMSED_PARAM'
 KEYWORD_GRIDONLY = 'SIMSED_GRIDONLY'
 # init_GENGAUSS_ASYM(0) then the wide-open range and flat sigma SNANA gives
-# every SIMSED parameter (snlc_sim.c:945-950)
+# every SIMSED parameter (snlc_sim.c:947-952)
 SIMSED_GENGAUSS_INIT = {'peak': 0.0, 'sigma': (1.0e8, 1.0e8),
                         'range': (-1.0e8, 1.0e8)}
 FLAT_SIGMA = 1.0e7
@@ -54,7 +55,7 @@ KEYWORD_BAGGAGE = 'SIMSED_param'
 
 
 def _is_index_simsed(parname):
-    """IS_INDEX_SIMSED (genmag_SIMSED.c:1029-1037)."""
+    """IS_INDEX_SIMSED (genmag_SIMSED.c:1032-1040)."""
     return any(s in parname for s in ('INDEX', 'INDX', 'index', 'indx'))
 
 
@@ -98,7 +99,7 @@ def _draw_correlated_truncated(peak1, sig1, range1, peak2, sig2, range2,
     """Draw from a bivariate Gaussian truncated to range1 x range2.
 
     SNANA draws a Cholesky-correlated pair and redraws BOTH parameters whenever
-    either lands outside its GENRANGE, up to 100 tries (snlc_sim.c:14165,
+    either lands outside its GENRANGE, up to 100 tries (snlc_sim.c:14183,
     PICK_RANCOV). That rejection defines a rectangle-truncated bivariate normal,
     which is sampled here by inverse CDF instead of by looping: par1 by
     inverting the tabulated marginal of _redcor_marginal_cdf, par2 in closed
@@ -123,11 +124,12 @@ def _draw_correlated_truncated(peak1, sig1, range1, peak2, sig2, range2,
 
 
 def _sed_binary_records(raw: bytes):
-    """Each SED's SEDBINARY floats, under either layout SNANA has written.
+    """Each SED's stored path and SEDBINARY floats, under either layout SNANA
+    has written.
 
-    Before FIX_SIZE_ARG_BINARY (genmag_SIMSED.h): IVERSION and MXDAY as
-    8-byte ints (sizeof(int*), genmag_SIMSED.c:522, :1135), then per SED a
-    300-byte path (MXPATHLEN, sndata.h:120), int NSEDBINARY and the floats.
+    Before FIX_SIZE_ARG_BINARY (genmag_SIMSED.h, 74dfb2c5): IVERSION and MXDAY as
+    8-byte ints (sizeof(int*), genmag_SIMSED.c:522, :1135, 74dfb2c5), then per SED a
+    300-byte path (MXPATHLEN, sndata.h:122), int NSEDBINARY and the floats.
     Since: 4-byte ints, then per SED int NCHAR, the path's NCHAR bytes, int
     NSEDBINARY and the floats. IVERSION is 4 in both. The old 8-byte writes
     come from 4-byte ints, so their high halves hold whatever the struct
@@ -140,145 +142,148 @@ def _sed_binary_records(raw: bytes):
     while offset < len(raw):
         if new_layout:
             nchar = struct.unpack_from('i', raw, offset)[0]
+            path = raw[offset + 4:offset + 4 + nchar]
             offset += 4 + nchar
         else:
+            path = raw[offset:offset + 300].split(b'\0', 1)[0]
             offset += 300
         n_floats = struct.unpack_from('i', raw, offset)[0]
         offset += 4
-        yield np.frombuffer(raw, dtype=np.float32, count=n_floats, offset=offset)
+        yield path.decode(), np.frombuffer(raw, dtype=np.float32, count=n_floats, offset=offset)
         offset += 4 * n_floats
 
 
-def read_sed_binary(binary_path: str, n_seds: int
-                    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Read a SNANA ``SED.BINARY`` file containing all grid-point SEDs.
+def read_sed_binary(binary_path: str, filenames: List[str]
+                    ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Read a SNANA ``SED.BINARY`` file holding the SEDs ``filenames`` names,
+    the SED.INFO entries in order, each record parsed on its own day and
+    wavelength counts (pack_SEDBINARY, genmag_SEDtools.c:2267-2382). A
+    record stored for another SED file, as a stale binary holds, is an error.
 
     Phases in the binary already use the configured phase origin, and
-    fluxes include the model's ``FLUXSCALE``.
-
-    Returns ``(all_phases, wavelengths, all_flux)``:
-        - all_phases: (n_seds, n_phases) per-template phase grids (days),
-          using the configured phase origin
-        - wavelengths: (n_wavelengths,) wavelength grid (Angstroms)
-        - all_flux: (n_seds, n_phases, n_wavelengths)
+    fluxes include the model's ``FLUXSCALE``. Returns, per SED, its phases
+    (days), wavelengths (Angstroms) and (n_phases, n_wavelengths) flux.
     """
     with open(binary_path, 'rb') as f:
         raw = f.read()
     iversion = struct.unpack_from('i', raw, 0)[0]
+    stale = "Delete it so SNANA rewrites it, or set SIMSED_USE_BINARY 0."
     if iversion != 4:
-        raise SNANAError(
-            f"{binary_path} is SED.BINARY format version {iversion}; only version "
-            f"4 is read. Delete it so SNANA rewrites it, or set SIMSED_USE_BINARY "
-            f"0.",
-            function_name="read_sed_binary")
-    records = _sed_binary_records(raw)
+        raise SNANAError(f"{binary_path} is SED.BINARY format version {iversion}; only "
+                         f"version 4 is read. {stale}", function_name="read_sed_binary")
+    records = list(_sed_binary_records(raw))
+    if len(records) != len(filenames):
+        raise SNANAError(f"{binary_path} holds {len(records)} SEDs where SED.INFO lists "
+                         f"{len(filenames)}. {stale}", function_name="read_sed_binary")
 
-    # pack_SEDBINARY layout; the last flux value is zero-padded
-    data0 = next(records)
-    nday = int(data0[2])
-    padword = float(data0[5])
-    if abs(padword - 77777.0) > 0.1:
-        raise SNANAError(f"SED.BINARY PADWORD={padword}, expected 77777. "
-                         f"Binary may be corrupt or incompatible version.",
-                         function_name="read_sed_binary")
-
-    all_phases = np.zeros((n_seds, nday), dtype=np.float64)
-    all_phases[0] = data0[6:6 + nday].astype(np.float64)
-    off2 = 6 + nday
-    nlam = int(data0[off2])
-    wavelengths = data0[off2 + 2:off2 + 2 + nlam].astype(np.float64)
-    flux_start = off2 + 2 + nlam
-
-    all_flux = np.zeros((n_seds, nday, nlam), dtype=np.float32)
-    flux_avail = data0[flux_start:]
-    all_flux[0].flat[:len(flux_avail)] = flux_avail
-
-    for ised in range(1, n_seds):
-        data = next(records)
-        ised_nday = int(data[2])
-        if ised_nday != nday:
-            raise SNANAError(f"SED {ised} has NDAY={ised_nday}, expected {nday}",
-                             function_name="read_sed_binary")
-        all_phases[ised] = data[6:6 + nday].astype(np.float64)
-        flux_avail = data[flux_start:]
-        all_flux[ised].flat[:len(flux_avail)] = flux_avail
-
-    return all_phases, wavelengths, all_flux
+    templates = []
+    for filename, (stored, data) in zip(filenames, records):
+        # the full path when SNANA wrote the file (genmag_SIMSED.c:341); only
+        # its end must be the SED.INFO name, so a moved library still reads
+        if not stored.endswith('/' + filename):
+            raise SNANAError(f"{binary_path} holds {stored} where SED.INFO names "
+                             f"{filename}. {stale}", function_name="read_sed_binary")
+        # pack_SEDBINARY layout from index 1; the last flux value is never written
+        nday = int(data[2])
+        if abs(float(data[5]) - 77777.0) > 0.1:
+            raise SNANAError(f"{binary_path}: {stored} has PADWORD {data[5]}, not 77777. "
+                             f"{stale}", function_name="read_sed_binary")
+        nlam = int(data[6 + nday])
+        flux_start = 8 + nday + nlam
+        flux = np.zeros(nday * nlam, dtype=np.float32)
+        flux[:len(data) - flux_start] = data[flux_start:]
+        templates.append((data[6:6 + nday].astype(np.float64),
+                          data[8 + nday:flux_start].astype(np.float64),
+                          flux.reshape(nday, nlam)))
+    return templates
 
 
 def read_sed_info(info_filepath: str) -> Dict:
-    """Parse a SIMSED ``SED.INFO`` metadata file.
+    """Parse a SIMSED ``SED.INFO`` metadata file (read_SIMSED_INFO,
+    genmag_SIMSED.c:766-960).
 
-    The file is SNANA's index of a tabulated model directory, one ``KEY:``
-    line each: ``NPAR:`` the number of parameters the grid spans,
-    ``PARNAMES:`` their names, ``FLUX_SCALE:`` a factor applied to every
-    tabulated flux, ``RESTLAMBDA_RANGE:`` the wavelengths in Angstroms the
-    surfaces are read within, ``MAG_ERR:`` the model magnitude error, and
-    ``OPTFLAG_T0SHIFT_PEAKMAG:`` 0 to keep each file's own phase zero rather
-    than moving it to the bolometric peak; then one ``SED:`` line per
-    surface giving the file name and that surface's value of each
-    parameter, in ``PARNAMES`` order. Each surface file is three columns,
-    phase in days, wavelength in Angstroms and flux density, as
-    :func:`jax_snlc_core.models.sed_model.read_sed_file` reads them.
+    The file is SNANA's index of a tabulated model directory:
+    ``PARNAMES:`` the names of the parameters the grid spans,
+    ``FLUX_SCALE:`` a factor applied to every tabulated flux,
+    ``RESTLAMBDA_RANGE:`` the wavelengths in Angstroms the surfaces are
+    read within, ``MAG_ERR:`` the model magnitude error,
+    ``MINSLOPE_EXTRAPMAG_LATE:`` and ``UVLAM_EXTRAPFLUX:`` the model's
+    late-time and UV extrapolations, and ``OPTFLAG_T0SHIFT_PEAKMAG:`` 0 to
+    keep each file's own phase zero rather than moving it to the bolometric
+    peak; then one ``SED:`` entry per surface giving the file name and that
+    surface's value of each parameter, in ``PARNAMES`` order. PARNAMES,
+    RESTLAMBDA_RANGE and SED are required, as in SNANA, and at most one
+    parameter may be an index; NPAR is not read, as SNANA counts PARNAMES
+    (genmag_SIMSED.c:792). Each
+    key takes the words it needs, and words after them are passed over. Each
+    surface file is three columns, phase in days, wavelength in Angstroms
+    and flux density, as :func:`jax_snlc_core.snana_files.read_sed_file`
+    reads them. A key not described here is reported and not read.
 
     Returns a dict with keys: ``npar`` (int), ``parnames`` (list[str]),
     ``flux_scale`` (float), ``restlambda_range`` (tuple[float, float]),
-    ``mag_err`` (float), ``t0shift_peakmag`` (bool) and ``sed_entries``
-    (list[{filename, par_values}]).
+    ``mag_err`` (float), ``minslope_extrapmag_late`` (float, 0 for none),
+    ``uvlam_extrapflux`` (float, or None for none), ``t0shift_peakmag``
+    (bool) and ``sed_entries`` (list[{filename, par_values}]).
     """
     result: Dict = {
-        'npar': 0,
-        'parnames': [],
         'flux_scale': 1.0,
-        'restlambda_range': SED_WAVELENGTH_RANGE,
         'mag_err': 0.0,
+        'minslope_extrapmag_late': 0.0,
+        'uvlam_extrapflux': None,
         't0shift_peakmag': True,
         'sed_entries': [],
     }
+    for key, values in key_runs(info_filepath):
+        if key == 'PARNAMES':
+            result['parnames'] = split_names(' '.join(values))
+        elif key == 'FLUX_SCALE':
+            result['flux_scale'] = float(leading_values(info_filepath, key, values, 1)[0])
+        elif key == 'RESTLAMBDA_RANGE':
+            result['restlambda_range'] = tuple(
+                float(v) for v in leading_values(info_filepath, key, values, 2))
+        elif key == 'MAG_ERR':
+            result['mag_err'] = float(leading_values(info_filepath, key, values, 1)[0])
+        elif key == 'MINSLOPE_EXTRAPMAG_LATE':
+            result['minslope_extrapmag_late'] = float(
+                leading_values(info_filepath, key, values, 1)[0])
+        elif key == 'UVLAM_EXTRAPFLUX':
+            # a value of 0 or below extends nothing (genmag_SALT2.c:321)
+            uvlam = float(leading_values(info_filepath, key, values, 1)[0])
+            result['uvlam_extrapflux'] = uvlam if uvlam > 0.0 else None
+        elif key == 'OPTFLAG_T0SHIFT_PEAKMAG':
+            # default on; 0 turns it off (genmag_SIMSED.c:851-856)
+            result['t0shift_peakmag'] = int(leading_values(info_filepath, key, values, 1)[0]) != 0
+        elif key == 'FLUX_ERRFLAG':
+            if int(leading_values(info_filepath, key, values, 1)[0]) > 0:
+                raise SNANAError(f"{info_filepath}: FLUX_ERRFLAG > 0 (SED flux errors) is "
+                                 f"not supported", function_name="read_sed_info")
+        elif key == 'SED':
+            if 'parnames' not in result:
+                raise SNANAError(f"{info_filepath}: an SED entry comes before PARNAMES",
+                                 function_name="read_sed_info")
+            filename, *par_values = leading_values(info_filepath, key, values,
+                                                   1 + len(result['parnames']))
+            result['sed_entries'].append({'filename': filename,
+                                          'par_values': [float(v) for v in par_values]})
+        # a label, the redshift binning of SNANA's flux tables, which jax has
+        # none of, and a parameter count SNANA takes from PARNAMES
+        elif key not in ('MODEL', 'LOGZBIN', 'NPAR'):
+            log.warn(logger, "SIMSED", f"{info_filepath}: {key}: is not read")
 
-    with open(info_filepath, 'r') as f:
-        for line in skip_docana(f):
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('$'):
-                continue
-
-            if line.startswith('NPAR:'):
-                result['npar'] = int(line.split(':')[1].strip())
-            elif line.startswith('PARNAMES:'):
-                result['parnames'] = line.split(':')[1].strip().split()
-            elif line.startswith('FLUX_SCALE:'):
-                result['flux_scale'] = float(line.split(':')[1].strip())
-            elif line.startswith('RESTLAMBDA_RANGE:'):
-                parts = line.split(':')[1].strip().split()
-                result['restlambda_range'] = (float(parts[0]), float(parts[1]))
-            elif line.startswith('MAG_ERR:'):
-                result['mag_err'] = float(line.split(':')[1].strip())
-            elif line.startswith('OPTFLAG_T0SHIFT_PEAKMAG:'):
-                # default on; 0 turns it off (genmag_SIMSED.c:848-853)
-                result['t0shift_peakmag'] = \
-                    int(line.split(':')[1].strip()) != 0
-            elif line.startswith('SED:'):
-                rest = line[4:].strip()
-                parts = rest.split()
-                filename = parts[0]
-                par_values = [float(p) for p in parts[1:]]
-                result['sed_entries'].append({
-                    'filename': filename,
-                    'par_values': par_values,
-                })
-
-    if result['npar'] > 0 and len(result['parnames']) != result['npar']:
-        raise SNANAError(
-            f"NPAR={result['npar']} but found {len(result['parnames'])} PARNAMES "
-            f"in {info_filepath}",
-            function_name="read_sed_info")
-    for entry in result['sed_entries']:
-        if len(entry['par_values']) != result['npar']:
-            raise SNANAError(
-                f"SED {entry['filename']} has {len(entry['par_values'])} parameter values "
-                f"but NPAR={result['npar']} in {info_filepath}",
-                function_name="read_sed_info")
-
+    missing = [key for key, name in (('PARNAMES', 'parnames'),
+                                     ('RESTLAMBDA_RANGE', 'restlambda_range'),
+                                     ('SED', 'sed_entries'))
+               if not result.get(name)]
+    if missing:
+        raise SNANAError(f"{info_filepath} has no {', '.join(missing)} key",
+                         function_name="read_sed_info")
+    index_names = [name for name in result['parnames'] if _is_index_simsed(name)]
+    if len(index_names) > 1:
+        raise SNANAError(f"{info_filepath}: PARNAMES has {len(index_names)} index "
+                         f"parameters ({', '.join(index_names)}); only one is allowed",
+                         function_name="read_sed_info")
+    result['npar'] = len(result['parnames'])
     return result
 
 
@@ -295,7 +300,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
     uses_nonia_rates = True
     mjd_explode_anchor = 'optmask'
 
-    # read SED.BINARY instead of the text SEDs (snlc_sim.c:934)
+    # read SED.BINARY instead of the text SEDs (snlc_sim.c:936)
     simsed_use_binary: Annotated[int, SIM_ONLY] = 0
 
     # SNANA's flux-table cache; jax keeps none
@@ -306,7 +311,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
     simsed_wgtmap_file: Annotated[str, SIM_ONLY] = field(
         default="", metadata={"static": True})
 
-    # bright transients get extra headroom (check_crazyFlux, snlc_sim.c:28686)
+    # bright transients get extra headroom (check_crazyFlux, snlc_sim.c:28744)
     crazyflux_factor = 10.0
 
     wavelength_grid: jax.Array = None
@@ -363,6 +368,12 @@ class SIMSEDModel(SNModel, SimulatedModel):
         self.flux_scale = self.sed_info['flux_scale']
         self.restlambda_range = self.sed_info['restlambda_range']
         self.mag_err = self.sed_info['mag_err']
+        # SED.INFO's extrapolations apply where the sim input leaves them unset
+        # (genmag_SIMSED.c:861-873)
+        if self.minslope_extrapmag_late == 0.0:
+            self.minslope_extrapmag_late = self.sed_info['minslope_extrapmag_late']
+        if self.uvlam_extrapflux is None:
+            self.uvlam_extrapflux = self.sed_info['uvlam_extrapflux']
 
         n_seds = len(self.sed_info['sed_entries'])
         log.line(logger, f"NPAR={self.npar}, PARNAMES={self.parnames}")
@@ -380,10 +391,9 @@ class SIMSEDModel(SNModel, SimulatedModel):
         # KEYWORD_SIMSED[ipar]; undeclared parameters stay baggage (:23410).
         self.par_keywords = (KEYWORD_BAGGAGE,) * self.npar
         self.sequential_gridonly = False
-        # the last index-named parameter is the template index SNANA reports
-        index_parameters = [i for i, name in enumerate(self.parnames)
-                            if _is_index_simsed(name)]
-        self.index_parameter = index_parameters[-1] if index_parameters else None
+        # the index-named parameter is the template index SNANA reports
+        self.index_parameter = next((i for i, name in enumerate(self.parnames)
+                                     if _is_index_simsed(name)), None)
 
         self._corner_lookup = None
         self._cont_axes = None
@@ -400,79 +410,69 @@ class SIMSEDModel(SNModel, SimulatedModel):
         self._load_sed_data(self.simsed_use_binary)
 
         # SNANA applies the explosion reanchor only on the text-SED read
-        # (genmag_SIMSED.c:347-362); binaries keep their packed shift
+        # (genmag_SIMSED.c:358-373); binaries keep their packed shift
         if self.optmask_t0shift_explode >= 1 and self._native_grid_mode == 'text':
             self._reanchor_to_explosion(self.optmask_t0shift_explode)
-        del self._native_phases, self._native_flux
-
+        # each template on its own grid, as SNANA extends them (genmag_SIMSED.c:376-377)
         if self.uvlam_extrapflux is not None:
-            self._apply_uvlam_extrap(self.uvlam_extrapflux)
+            extended = [uvlam_extrapflux_sedmodel(self.uvlam_extrapflux, waves, flux)
+                        for waves, flux in zip(self._native_waves, self._native_flux)]
+            self._native_waves = [waves for waves, _ in extended]
+            self._native_flux = [flux for _, flux in extended]
+        self._resample_native_to_common()
+        del self._native_phases, self._native_waves, self._native_flux
+        log.line(logger, f"Template library shape: {self.template_seds.shape}")
         self.resample_to_grid(self.choose_grid())
 
     def _load_sed_data(self, use_binary: int) -> None:
         """Read the SED payload. SNANA reads SED.BINARY only when
-        SIMSED_USE_BINARY is set (genmag_SIMSED.c:248); otherwise the text
-        SEDs are authoritative.
+        SIMSED_USE_BINARY is set (genmag_SIMSED.c:255); otherwise the text
+        SEDs are authoritative. Each SED keeps its own phase and wavelength
+        grids (genmag_SEDtools.c:1047-1050) until they are put on common ones.
         """
-        n_seds = len(self.sed_info['sed_entries'])
+        filenames = [entry['filename'] for entry in self.sed_info['sed_entries']]
         binary_file = self._model_dir / "SED.BINARY"
         if use_binary and binary_file.exists():
             t0 = time.time()
-            all_phases, wavelengths, all_flux = read_sed_binary(str(binary_file), n_seds)
-            dt = time.time() - t0
-            log.line(logger, f"Read SED.BINARY: {n_seds} SEDs, "
-                     f"{all_phases.shape[1]} phases x {len(wavelengths)} wavelengths "
-                     f"in {dt:.2f}s")
-            self.native_wavelengths = wavelengths
+            templates = read_sed_binary(str(binary_file), filenames)
+            log.line(logger, f"Read SED.BINARY: {len(templates)} SEDs in "
+                     f"{time.time() - t0:.2f}s")
             # FLUX_SCALE already applied in binary
             self.flux_scale = 1.0
-            self._native_phases = [all_phases[i] for i in range(n_seds)]
-            self._native_flux = [all_flux[i] for i in range(n_seds)]
-            self._native_grid_step = float(all_phases[0, 1] - all_phases[0, 0])
+            phases = templates[0][0]
+            self._native_grid_step = float(phases[1] - phases[0])
             self._native_grid_mode = 'binary'
-            self._resample_native_to_common()
         else:
-            log.line(logger, f"Reading {n_seds} text SED files "
+            log.line(logger, f"Reading {len(filenames)} text SED files "
                      f"(SIMSED_USE_BINARY={use_binary})...")
-            all_phases = []
-            template_data = []
-
-            for entry in self.sed_info['sed_entries']:
-                sed_path = resolve_fits_path(
-                    self._model_dir / entry['filename'], required=True)
-
-                # SIMSED allows non-uniform day bins
-                # (OPTMASK_DAYLIST_SEDMODEL, genmag_SIMSED.c:227-229)
-                p, w, fg = read_sed_file(
-                    sed_path, SIMSED_DAY_RANGE, self.sed_info['restlambda_range'],
-                    t0shift_peakmag=self.sed_info['t0shift_peakmag'],
-                    uniform_days=False)
-                template_data.append((p, w, fg))
-                all_phases.append(p)
-
-            self.native_wavelengths = template_data[0][1]
-            self._native_phases = list(all_phases)
-            self._native_flux = [fg for (p, w, fg) in template_data]
+            # SIMSED allows non-uniform day bins
+            # (OPTMASK_DAYLIST_SEDMODEL, genmag_SIMSED.c:234-236)
+            templates = [read_sed_file(
+                resolve_fits_path(self._model_dir / filename, required=True),
+                SIMSED_DAY_RANGE, self.sed_info['restlambda_range'],
+                t0shift_peakmag=self.sed_info['t0shift_peakmag'], uniform_days=False)
+                for filename in filenames]
             self._native_grid_step = 0.2
             self._native_grid_mode = 'text'
-            self._resample_native_to_common()
 
-        log.line(logger, f"Template library shape: {self.template_seds.shape}")
+        self._native_phases = [phases for phases, _, _ in templates]
+        self._native_waves = [waves for _, waves, _ in templates]
+        self._native_flux = [flux for _, _, flux in templates]
 
     def set_parameter_keywords(self, continuous_parnames: List[str],
                                _gridonly_parnames: List[str]) -> None:
         """Record which input key declared each SED.INFO parameter.
 
         Parameters named by neither key are baggage: SNANA generates nothing
-        for them but still writes their grid values (snlc_sim.c:23769).
+        for them but still writes their grid values (snlc_sim.c:23828).
         """
         # SIMSED_GRIDONLY: SEQUENTIAL names no parameter and zeroes NPAR_SIMSED
-        # (snlc_sim.c:6064), so no parameter columns are written.
+        # (snlc_sim.c:6076), so no parameter columns are written.
         self.sequential_gridonly = 'SEQUENTIAL' in _gridonly_parnames
-        # NGEN = NGENTOT = NSED, NGEN_LC = 0 (snlc_sim.c:23835-23843)
+        # NGEN = NGENTOT = NSED, NGEN_LC = 0 (snlc_sim.c:23888-23896)
         self.forced_ngen = (len(self.sed_info['sed_entries'])
                             if self.sequential_gridonly else None)
-        # input-declaration order, which the outputs follow (snlc_sim.c:6127);
+        # input-declaration order, which the outputs follow (snlc_sim.c:6139);
         # SEQUENTIAL is a placeholder, not a parameter
         self._declared_parnames = list(continuous_parnames) + [
             n for n in _gridonly_parnames if n != 'SEQUENTIAL']
@@ -532,9 +532,9 @@ class SIMSEDModel(SNModel, SimulatedModel):
         parameters, or None when no non-zero correlation is configured.
 
         SNANA resolves both names against the declared SIMSED parameters and
-        aborts unless exactly two match (snlc_sim.c:6321-6334), requires a
-        symmetric Gaussian (snlc_sim.c:6355-6362), and aborts on an invalid
-        reduced correlation (snlc_sim.c:6374-6380). The inverse-CDF sampler
+        aborts unless exactly two match (snlc_sim.c:6333-6346), requires a
+        symmetric Gaussian (snlc_sim.c:6367-6374), and aborts on an invalid
+        reduced correlation (snlc_sim.c:6386-6392). The inverse-CDF sampler
         additionally needs positive widths, |rho| strictly below one, ordered
         truncation ranges, and a finite positive marginal normalisation; a
         violation of any of these is a degenerate law, so it is fatal here.
@@ -594,7 +594,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
                     function_name="_parse_redcor")
         sig1, sig2 = float(d1.sigma[0]), float(d2.sigma[0])
         # SNANA keeps both forms as covariance and divides by the sigmas to
-        # validate the reduced correlation (snlc_sim.c:6365-6380)
+        # validate the reduced correlation (snlc_sim.c:6377-6392)
         rho = value / (sig1 * sig2) if is_cov else value
         if not abs(rho) < 1.0:
             raise SNANAError(
@@ -646,7 +646,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
         # Each parameter is drawn under a simsed_ prefix, since its name comes
         # from the model's file and could clash with a shared one such as AV.
         # The input spells it without the prefix, and each carries SNANA's
-        # SIMSED init, a flat sigma over an open range (snlc_sim.c:945-950).
+        # SIMSED init, a flat sigma over an open range (snlc_sim.c:947-952).
         names = cls._declared_names({'simsed_config': simsed_config}, 'parnames')
         return {'simsed_config': simsed_config,
                 'population_parameters': tuple(f'simsed_{n}' for n in names),
@@ -658,7 +658,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
     def _declared_names(cls, structured_config, key):
         """Parameter names from the declaration, without the INDEX(a,b,c)
         subset suffix and without the SEQUENTIAL placeholder, which names no
-        parameter (snlc_sim.c:6064)."""
+        parameter (snlc_sim.c:6076)."""
         cfg = structured_config.get('simsed_config') or {}
         names = [str(n).partition('(')[0] for n in cfg.get(key) or []]
         return tuple(n for n in names if n != 'SEQUENTIAL')
@@ -666,14 +666,14 @@ class SIMSEDModel(SNModel, SimulatedModel):
     @property
     def _output_order(self):
         """Parameter indices in SNANA's output order: the declared ones as
-        declared, then the baggage as SED.INFO lists it (snlc_sim.c:23769)."""
+        declared, then the baggage as SED.INFO lists it (snlc_sim.c:23828)."""
         declared = [self.parnames.index(n) for n in self._declared_parnames]
         return declared + [i for i in range(self.npar) if i not in declared]
 
     def text_sim_header_lines(self, hcol, params, i):
         lines = []
         # SIMSED reuses the SALT2x0 slot as a distance-modulus flux scale
-        # (gen_modelPar_SIMSED, snlc_sim.c:14144).
+        # (gen_modelPar_SIMSED, snlc_sim.c:14162).
         if 'SIM_SALT2x0' not in hcol and 'SIM_DLMU' in hcol:
             lines.append("SIM_SALT2x0: "
                          f"{10.0 ** (-0.4 * float(hcol['SIM_DLMU'][i])):.4e}\n")
@@ -765,7 +765,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
         """A continuous parameter's GENRANGE, in every SUBPOP class, or its
         GENPDF grid, must lie within the model's grid, widened by 1e-8 of
         its span for boundary values (checkpar_SIMSED,
-        snlc_sim.c:23705-23725); with no GENRANGE the open init range fails
+        snlc_sim.c:23758-23778); with no GENRANGE the open init range fails
         the same check. The draw stays inside its declared range, so this
         is the whole of the check and the per-batch corners clamp."""
         if self._cont_axes is None:
@@ -796,7 +796,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
 
     def _parse_gridonly_entry(self, entry):
         """``NAME`` or ``NAME(a,b,c)``; the subset form is only valid for the
-        template-index parameter (snlc_sim.c:6226) and restricts selection to
+        template-index parameter (snlc_sim.c:6238) and restricts selection to
         the listed index values."""
         if '(' not in entry:
             return entry
@@ -830,11 +830,13 @@ class SIMSEDModel(SNModel, SimulatedModel):
             tshift = compute_explosion_tshift(
                 self._native_flux[i], self._native_phases[i], optmask)
             self._native_phases[i] = self._native_phases[i] - tshift
-        self._resample_native_to_common()
 
     def _resample_native_to_common(self):
         """Build common_phases, template_seds and the per-template phase bounds
-        from the native per-template grids.
+        from the native per-template grids, on the union of the templates'
+        wavelengths, which keeps each template's linear interpolation between
+        its own points. The model's wavelength support is the range every
+        template covers (LAMMIN_ALL, LAMMAX_ALL; genmag_SEDtools.c:1062-1071).
 
         The common grid follows the load path: the SED.BINARY daystep, or
         0.2 d anchored on phase 0 for the text SEDs, whose per-template grids
@@ -842,8 +844,12 @@ class SIMSEDModel(SNModel, SimulatedModel):
         one grid keep it. FLUX_SCALE is a scalar, so applying it here commutes
         with the resampling; SNANA applies it when it computes the magnitude.
         """
+        self.native_wavelengths = np.unique(np.concatenate(self._native_waves))
+        self.wavelength_support = (max(waves[0] for waves in self._native_waves),
+                                   min(waves[-1] for waves in self._native_waves))
         phases_list = self._native_phases
-        flux_list = self._native_flux
+        flux_list = [resample_surfaces(waves, flux, self.native_wavelengths)
+                     for waves, flux in zip(self._native_waves, self._native_flux)]
         n_seds = len(phases_list)
         n_wl = flux_list[0].shape[1]
         phase_min = min(p[0] for p in phases_list)
@@ -910,7 +916,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
             grid_uniforms = jax.vmap(lambda key: jax.random.uniform(key))(keys_for('SIMSED_GRID'))
             wgt_sum = self._wgt_cumsum
             # one surface selection per event, by SNANA's precedence
-            # (gen_modelPar_SIMSED, snlc_sim.c:14248-14257)
+            # (gen_modelPar_SIMSED, snlc_sim.c:14266-14275)
             if wgt_sum is not None:
                 # pick_SIMSED_BY_WGT (genmag_SIMSED.c:1269-1307)
                 draw = grid_uniforms * wgt_sum[-1]
@@ -919,7 +925,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
                 global_idx = params['sn_global_idx']
                 grid_idx = global_idx[0] + jnp.arange(global_idx.shape[0])
             elif self._gridonly_subset_seds is not None:
-                # pick_gridval_SIMSED (snlc_sim.c:14288-14299)
+                # pick_gridval_SIMSED (snlc_sim.c:14306-14317)
                 subset = jnp.asarray(self._gridonly_subset_seds)
                 pick = jnp.floor(grid_uniforms * subset.shape[0]).astype(jnp.int32)
                 grid_idx = subset[jnp.clip(pick, 0, subset.shape[0] - 1)]
@@ -957,7 +963,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
         """A GRIDONLY parameter's value before the snap: its population
         draw, or without one (see :meth:`drawn_parameters`) a draw over the
         grid widened by half a bin each side, so every node is equally
-        likely whatever GENRANGE says (snlc_sim.c:23679-23696)."""
+        likely whatever GENRANGE says (snlc_sim.c:23738-23755)."""
         if f'simsed_{name}' in params:
             return params[f'simsed_{name}']
         half_bin = 0.5 * (axis[-1] - axis[0]) / max(len(axis) - 1, 1)
@@ -984,7 +990,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
         (set_SIMSED_WGT_SUM, genmag_SIMSED.c:1178).
         """
         wgt = None
-        # WGT column names by substring (IS_WGT_SIMSED, genmag_SIMSED.c:1040);
+        # WGT column names by substring (IS_WGT_SIMSED, genmag_SIMSED.c:1043);
         # a WGTMAP file overrides the column (set_SIMSED_WGT_SUM,
         # genmag_SIMSED.c:1189-1190)
         wgt_cols = [i for i, n in enumerate(self.parnames)
@@ -1074,27 +1080,6 @@ class SIMSEDModel(SNModel, SimulatedModel):
             idx_nd.append(idx)
         return jnp.asarray(self._gridonly_lookup)[tuple(idx_nd)]
 
-    def _apply_uvlam_extrap(self, uvlam: float) -> None:
-        """UVLAM_EXTRAPFLUX on every SIMSED template.
-
-        One call per template, as SNANA's does (genmag_SIMSED.c:365-366). Each
-        (template, phase) row is a DAY of that template's surface, so the
-        stacked call preserves the per-template, per-day anchors.
-        """
-        waves = self.native_wavelengths
-        lam_min_orig = waves[0]
-        n_seds, n_phases, n_wl = self.template_seds.shape
-        new_waves, new_flux = uvlam_extrapflux_sedmodel(
-            uvlam, waves, self.template_seds.reshape(n_seds * n_phases, n_wl))
-        n_uv = len(new_waves) - n_wl
-
-        self.native_wavelengths = new_waves
-        self.template_seds = new_flux.reshape(n_seds, n_phases, len(new_waves))
-
-        if n_uv:
-            log.line(logger, f"SIMSED UV extrapolation: extended from {lam_min_orig:.0f} to "
-                     f"{new_waves[0]:.0f} A ({n_uv} new bins)")
-
     def resample_to_grid(self, wavelength_grid: jnp.ndarray) -> None:
         """Resample all templates from native wavelengths onto
         ``wavelength_grid``, the simulator's working grid."""
@@ -1136,7 +1121,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
         Values clamp to the grid. Every declared range was checked against
         it at construction (`_check_continuous_ranges`), so a value lies
         outside only by the float32 rounding of a grid edge, which SNANA
-        also treats as on the edge (checkpar_SIMSED, snlc_sim.c:23709).
+        also treats as on the edge (checkpar_SIMSED, snlc_sim.c:23762).
         """
         names = self.continuous_parnames
         lookup = jnp.asarray(self._corner_lookup)
@@ -1168,8 +1153,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
                 jnp.stack(corner_weights, axis=1))
 
     def get_wavelength_range(self) -> Tuple[float, float]:
-        return (float(self.native_wavelengths.min()),
-                float(self.native_wavelengths.max()))
+        return tuple(float(lam) for lam in self.wavelength_support)
 
     def sed_param_names(self):
         return ('grid_idx', 'corner_indices', 'corner_weights', 'mu')
@@ -1234,15 +1218,15 @@ class SIMSEDModel(SNModel, SimulatedModel):
         return sed
 
     def _header_column_name(self, index: int) -> str:
-        """SNANA's column name for parameter `index` (snlc_sim.c:25281): the
+        """SNANA's column name for parameter `index` (snlc_sim.c:25334): the
         declaring keyword wrapped around the name. SIMSED_PARAM / SHAPEPAR /
-        COLORPAR / COLORLAW all record `SIMSED_PARAM` (:6129)."""
+        COLORPAR / COLORLAW all record `SIMSED_PARAM` (:6141)."""
         return f'{self.par_keywords[index]}({self.parnames[index]})'
 
     def get_snana_header_params(self, parameters: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Map internal params to SNANA FITS column names.
 
-        Matches the SIMSED block at sntools_dataformat_fits.c:486-493; the
+        Matches the SIMSED block at sntools_dataformat_fits.c:489-496; the
         writer drops these when WRFLAG_MODELPAR is off.
         """
         result = {}
@@ -1256,7 +1240,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
             index = values[self.parnames[self.index_parameter]] + 0.01
         result['SIM_TEMPLATE_INDEX'] = index.astype(np.int32)
         if 'mu' in parameters:
-            # SIMSED reuses SALT2x0 purely as a flux scale (snlc_sim.c:14144).
+            # SIMSED reuses SALT2x0 purely as a flux scale (snlc_sim.c:14162).
             result['SIMSED_SALT2x0'] = np.power(
                 10.0, -0.4 * np.asarray(parameters['mu'], dtype=np.float64)
             ).astype(np.float32)
@@ -1267,7 +1251,7 @@ class SIMSEDModel(SNModel, SimulatedModel):
 
     @property
     def dump_columns(self) -> tuple:
-        """Every SIMSED parameter, the baggage included (snlc_sim.c:23769)."""
+        """Every SIMSED parameter, the baggage included (snlc_sim.c:23828)."""
         return tuple(self._header_column_name(i) for i in self._output_order)
 
     sim_model_index = 7                        # MODEL_SIMSED

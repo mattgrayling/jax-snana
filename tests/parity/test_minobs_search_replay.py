@@ -1,10 +1,10 @@
 """MINOBS_SEARCH replay parity.
 
 SNANA fails pipeline, SPECID and zHOST together when an event has fewer than
-MINOBS epochs (sntools_trigger.c:2033 returns before evaluating any of them).
+MINOBS epochs (sntools_trigger.c:2035 returns before evaluating any of them).
 The count is GENLC.NEPOCH, not the reported NOBS: SNANA tacks an artificial
 PEAKMJD epoch onto every band it generates for, plus one per band setting
-MJD_TEMPLATE (snlc_sim.c:12979-12989).
+MJD_TEMPLATE (snlc_sim.c:12997-13007).
 
 The fixture is built so the test can fail three separate ways:
   - GENRANGE_TREST is widened so a band collects several epochs. With the

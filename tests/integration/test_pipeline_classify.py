@@ -62,7 +62,7 @@ _KEYS = {"nzbin": 10, "zmin": 0.1, "zmax": 1.0, "u1": 1, "u2": 1,
          "surveygroup_biascor": "DES(zbin=0.15:x1bin=2.0:cbin=0.2)",
          "typeIa_ccprior": 999, "blindflag": 0, "varname_pIa": _COLUMN,
          # a fixed scalePCC of 0 is SALT2mu's own parval and turns the CC prior
-         # off (prep_input, SALT2mu.c:22117), which would leave the classifier's
+         # off (prep_input, SALT2mu.c:22131), which would leave the classifier's
          # probabilities with nothing to weight
          "p13": 1}
 
@@ -154,7 +154,7 @@ def test_a_cut_on_the_column_reaches_every_table(contaminated, typed_corrections
     """SALT2mu applies a CUTWIN to the bias-correction sample too, so that
     sample must carry the column; classified on both, the cut runs and
     removes the contaminants. A cut on varname_pIa cuts on that column
-    (SALT2mu.c:8352-8355)."""
+    (SALT2mu.c:8362-8365)."""
     fitted = Fit("fitted", fitres=contaminated)
     perfect = Perfect(ia_types=(_IA_TYPE,), prob_ia=0.9, prob_cc=0.1)
     data = Classify("classified", perfect, fit=fitted)
@@ -289,9 +289,11 @@ def test_supernnova_refuses_bands_its_model_was_not_trained_on(tmp_path):
     naming both."""
     version = tmp_path / "V"
     version.mkdir()
+    # under the simulation's names, which its HEAD names its PHOT file by
     for name in ("HEAD.FITS", "PHOT.FITS"):
         shutil.copy(Path(_SNANA) / "gentype_map_k10" / f"{name}.gz",
-                    version / f"V_{name}.gz")
+                    version / f"JAX_TEST_GENTYPE_MAP_{name}.gz")
+    (version / "V.LIST").write_text("JAX_TEST_GENTYPE_MAP_HEAD.FITS\n")
 
     with pytest.raises(SNANAError, match=r"\['g', 'i', 'r', 'z'\].*\['DES-g', 'DES-i', 'DES-r', "
                                          r"'DES-z'\].*band_map"):
@@ -540,7 +542,7 @@ def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
     fits_dir.mkdir()
     text_dir.mkdir()
     head = Table({'SNID': ['1'], 'PTROBS_MIN': [1], 'PTROBS_MAX': [3],
-                  'PEAKMJD': [60001.], 'REDSHIFT_FINAL': [0.2],
+                  'RA': [10.], 'DEC': [-5.], 'PEAKMJD': [60001.], 'REDSHIFT_FINAL': [0.2],
                   'REDSHIFT_FINAL_ERR': [0.001]})
     phot = Table({'MJD': [60000., 60001., 60002.], 'BAND': ['g', 'g', 'r'],
                   'FLUXCAL': [10., 11., 12.], 'FLUXCALERR': [1., 1., 1.],
@@ -548,16 +550,17 @@ def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
     primary = fits.PrimaryHDU()
     primary.header['DATATYPE'] = 'DATA'
     primary.header['SURVEY'] = 'DES'
+    primary.header['PHOTFILE'] = 'selected_PHOT.FITS'
     head_path = fits_dir / ('selected_HEAD.FITS' + ('.gz' if head_gz else ''))
     fits.HDUList([primary, fits.BinTableHDU(head)]).writeto(head_path)
     phot.write(fits_dir / ('selected_PHOT.FITS' + ('.gz' if phot_gz else '')))
     # An unlisted HEAD must not be opened or require a PHOT partner.
     (fits_dir / 'unlisted_HEAD.FITS').write_text('not part of this version')
-    (fits_dir / 'version.LIST').write_text('selected_HEAD.FITS\n')
-    (text_dir / 'version.LIST').write_text('event.DAT\n')
+    (fits_dir / 'fits.LIST').write_text('selected_HEAD.FITS\n')
+    (text_dir / 'text.LIST').write_text('event.DAT\n')
     (text_dir / 'event.DAT').write_text(
-        'SURVEY: DES\nSNID: 1\nFILTERS: gr\nPEAKMJD: 60001\n'
-        'REDSHIFT_FINAL: 0.2 +- 0.001\n'
+        'SURVEY: DES\nSNID: 1\nFILTERS: gr\nRA: 10\nDEC: -5\nPEAKMJD: 60001\n'
+        'REDSHIFT_FINAL: 0.2 +- 0.001\nNOBS: 3\n'
         'VARLIST: MJD FLT FLUXCAL FLUXCALERR PHOTFLAG\n'
         'OBS: 60000 g 10 1 0\nOBS: 60001 g 11 1 8\nOBS: 60002 r 12 1 0\n')
     classifier = SuperNNova(filters=('g',), band_map={'g': 'DES-g'})

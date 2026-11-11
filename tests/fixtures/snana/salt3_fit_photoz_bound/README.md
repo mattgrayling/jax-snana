@@ -1,15 +1,16 @@
 # Fixture: salt3_fit_photoz_bound
 
-Generated: 2026-09-17
-SNANA version: v12_02d-12-g74dfb2c5
-Command: `snlc_sim.exe salt3_fit_photoz/input.input` (run from a scratch dir with `JAX_TEST_FIXTURE_ROOT=fixtures`, a link to `tests/fixtures/data`)
+Generated: 2026-11-06
+SNANA version: v12_02f
+Command: `snlc_sim.exe salt3_fit_photoz/input.input` (run from a scratch dir with `JAX_TEST_FIXTURE_ROOT=fixtures`, a decompressed copy of `tests/fixtures/data`)
+Fit command: `snlc_fit.exe tests/fixtures/snana/salt3_fit_photoz_bound/fit.nml`
+Fit environment: `JAX_TEST_FIXTURE_ROOT=fixtures`, `JAX_TEST_FIT_SIM_DIR` points to the private simulation directory.
 
 GENVERSION: `JAX_TEST_SALT3_FIT_PHOTOZ`
 
 Files:
-- FITRES.TEXT (62.5 KB)
+- FITRES.TEXT (61.9 KB)
+
+Shared simulation: `../salt3_fit_photoz`.
 
 Refresh with `python tests/fixtures/regenerate.py --only salt3_fit_photoz_bound`.
-
-Input photometry is shared with `../salt3_fit_photoz`; regeneration uses
-that simulation with this fixture’s fit configuration.

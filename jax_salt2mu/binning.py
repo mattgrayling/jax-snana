@@ -143,7 +143,7 @@ def coeff_bininfo(sim_vals, is_continuous: bool, onebin: bool, name: str,
     """get_BININFO_biasCor_abg: native grid from distinct SIM values, or a
     forced single bin under u=0|3 or for a continuous coefficient (>5
     values). The distinct values are counted over true Ia rows alone
-    (NONIA_INDEX != 0 is skipped, SALT2mu.c:16373)."""
+    (NONIA_INDEX != 0 is skipped, SALT2mu.c:16386)."""
     vals = np.asarray(sim_vals, dtype=float)             # float32 SIM grid values
     if is_ia is not None:
         vals = vals[np.asarray(is_ia, dtype=bool)]
@@ -187,7 +187,7 @@ def build_coeff_bins(config, model, sim_truth) -> Tuple[BinInfo, ...]:
     template = sim_truth.get("SIM_TEMPLATE_INDEX")
     is_ia = None if template is None else np.asarray(template) == 0
     for name, sim_col, continuous in model.biascor_coeffs:
-        # a parameter given no u<N> is held (ipar 0, SALT2mu.c:6702), hence one bin
+        # a parameter given no u<N> is held (ipar 0, SALT2mu.c:6712), hence one bin
         onebin = config.nuisance_onebin.get(name, True)
         bins.append(coeff_bininfo(sim_truth[sim_col], continuous, onebin, name, is_ia))
     return tuple(bins)
@@ -197,8 +197,8 @@ def biascor_gammadm_offset(model, coeff_bins, config) -> float:
     """GAMMADM_OFFSET: the midpoint of the biasCor axis the mass step reads.
 
     ``(VAL_MIN + VAL_MAX)/2`` of the model's ``gammadm_coeff`` axis
-    (setup_CELLINFO_biasCor, SALT2mu.c:16225-16228), which get_gammadm_host
-    subtracts from the step (:16782). Zero where USE_GAMMA0 leaves the term out.
+    (setup_CELLINFO_biasCor, SALT2mu.c:16238-16241), which get_gammadm_host
+    subtracts from the step (:16795). Zero where USE_GAMMA0 leaves the term out.
     """
     if not use_gamma0(model, config):
         return 0.0
@@ -253,7 +253,7 @@ def coeff_weights(coeff_vals, coeff_avg, coeff_binsize, n_events):
     """Per-event ``[n, N]`` weights over the coefficient nodes: outer product
     of per-axis weights (get_INTERPWGT_abg), C-order over the nodes. SNANA
     evaluates them at each event's effective alpha/beta/gammaDM
-    (SALT2mu.c:5332-5338)."""
+    (SALT2mu.c:5342-5348)."""
     w = None
     for val, avg, binsize in zip(coeff_vals, coeff_avg, coeff_binsize):
         wj = axis_weights(jnp.broadcast_to(val, (n_events,)), avg, binsize)
@@ -300,7 +300,7 @@ class ZBinGrid:
 
 
 def _powz_edges(cfg: BBCConfig) -> np.ndarray:
-    """setup_BININFO_powz (SALT2mu.c:2941): binSize ~ (1+z)^powzbin. With znhalf>0 the
+    """setup_BININFO_powz (SALT2mu.c:2944): binSize ~ (1+z)^powzbin. With znhalf>0 the
     first nzbin/2 bins follow the power law up to znhalf and the rest are uniform."""
     p1 = 1.0 - cfg.powzbin
     if p1 == 0.0:

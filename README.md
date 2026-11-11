@@ -5,7 +5,7 @@
 [![Coverage](https://coveralls.io/repos/github/mattgrayling/jax-snana/badge.svg?branch=main)](https://coveralls.io/github/mattgrayling/jax-snana?branch=main)
 [![PyPI](https://img.shields.io/pypi/v/jax-snana)](https://pypi.org/project/jax-snana/)
 [![arXiv](https://img.shields.io/badge/arXiv-2610.19000-b31b1b.svg)](https://arxiv.org/abs/2610.19000)
-[![SNANA](https://img.shields.io/badge/SNANA-v12__02d--12--g74dfb2c5-blue)](https://github.com/RickKessler/SNANA/commit/74dfb2c5)
+[![SNANA](https://img.shields.io/badge/SNANA-v12__02f-blue)](https://github.com/RickKessler/SNANA/releases/tag/v12_02f)
 
 GPU-accelerated supernova simulation, light curve fitting and cosmology in JAX
 
@@ -17,7 +17,7 @@ simulations, light curve fitting, BBC distance fitting and cosmological inferenc
 also provides a compiled simulator for simulation-based inference, as discussed in Grayling 2026
 (https://arxiv.org/abs/2610.19000).
 
-jax-snana is validated against SNANA v12_02d-12-g74dfb2c5.
+jax-snana is validated against SNANA v12_02f.
 
 ## Installation and usage
 jax-snana can be pip-installed via the command `pip install jax-snana`.

@@ -124,7 +124,7 @@ def test_bayesn_and_simsed_suffixes():
 def test_any_gengauss_key_activates_snana_parameter():
     """prepIndex_GENGAUSS sets USE on any family key
     (sntools_genGauss_asym.c:146-165); missing keys keep the SNANA init
-    values (snlc_sim.c:872-917)."""
+    values (snlc_sim.c:874-919)."""
     dists = build({
         'GENPEAK_SALT2x1': 0.0, 'GENSIGMA_SALT2x1': [1.0, 1.0],
         'GENPEAK2_SALT2x1': 2.0, 'GENPROB2_SALT2x1': 0.1, 'GENSIGMA2_SALT2x1': [0.5, 0.5],
@@ -143,7 +143,7 @@ def test_any_gengauss_key_activates_snana_parameter():
 
 def test_gensigma_rv_alone_is_a_live_population():
     """GENSIGMA_RV without GENPEAK/GENRANGE uses SNANA's RV init
-    (peak 3.1, range (1, 5); snlc_sim.c:884-887)."""
+    (peak 3.1, range (1, 5); snlc_sim.c:886-889)."""
     dists = build({'GENSIGMA_RV': [0.5, 0.5]})
     assert dists['RV'].peak == 3.1
     assert dists['RV'].range == (1.0, 5.0)
@@ -242,7 +242,7 @@ def test_genpdf_map_naming_no_parameter_aborts(tmp_path, varname):
 
 
 def test_genpdf_map_takes_either_dust_spelling(tmp_path):
-    """SNANA names host dust EBV (PARNAME_EBV, sntools.h:174); the map is
+    """SNANA names host dust EBV (PARNAME_EBV, sntools.h:175); the map is
     stored under the key the sampler draws."""
     genpdf = tmp_path / "ebv.GENPDF"
     genpdf.write_text(
@@ -314,7 +314,7 @@ def test_zvariation_may_shift_any_population_parameter():
 
 def test_genpdf_flat_takes_any_population_parameter():
     """SNANA's GENPDF_FLAT handles a fixed list (prep_GENPDF_FLAT,
-    snlc_sim.c:8102); flattening works alike for any parameter, so here it
+    snlc_sim.c:8117); flattening works alike for any parameter, so here it
     takes BayeSN's theta."""
     dists, _ = _build_distributions({'GENPDF_FLAT': 'THETA(-1:2)'},
                                     MODEL_REGISTRY['bayesn'], {})

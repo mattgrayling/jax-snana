@@ -182,8 +182,8 @@ covariance = compute_covariance(
 for the selected mode.
 The returned `CovResult` holds `hubble_diagram` and one `covariances[label]`
 entry per covariance option. Dense entries have `kind="systematics"` and a
-`matrix` array. With `write_mask_cov=8`, factorized entries have
-`kind="factorized"`, statistical variances `diag`, systematic vectors `U`,
+`matrix` array. Factorized entries, which the default `write_mask_cov=8`
+gives, have `kind="factorized"`, statistical variances `diag`, systematic vectors `U`,
 and optional `vec_labels`. Pass a factorized entry directly to
 `hubble_diagram_from_covariance` without constructing a dense covariance.
 `covtot_inv(label)` constructs the inverse total covariance.

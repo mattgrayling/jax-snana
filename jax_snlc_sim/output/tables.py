@@ -9,8 +9,7 @@ from jax_snlc_core.dust import OPT_MWCOLORLAW_NAMES
 from jax_snlc_core.filters import filter_band
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import (HOSTGAL_COORD_NULL, HOSTGAL_PREFIXES, HOSTGAL_PROPERTY_NULL,
-                                       SNANA_NULLFLOAT, MXBIN_HOSTGALz,
-                                       MXBIN_HOSTGALz_QUANTILE, HOSTGAL_SHAPE_NULL,
+                                       SNANA_NULLFLOAT, HOSTGAL_SHAPE_NULL,
                                        HOSTGAL_MAG_NULL, HOSTGAL_SB_NULL, HOSTGAL_CONFUSION_NULL,
                                        HOSTGAL_NO_HOST_NULL, hostgal_null_key)
 from jax_snlc_sim.observations import (LookupColumn, simlib_epochs, span_indices)
@@ -23,23 +22,23 @@ logger = logging.getLogger(__name__)
 
 SIM_HOSTLIB_GALID_NULL = -9
 
-# string column widths (sndata.h:115-116)
+# string column widths (sndata.h:117-118)
 MXCHAR_CCID = 40
 
 MXCHAR_FIELDNAME = 32
 
-MODEL_INDEX_NON1ASED = 10   # sntools.h:149
+MODEL_INDEX_NON1ASED = 10   # sntools.h:150
 
-MODEL_INDEX_NON1AGRID = 11  # sntools.h:150
+MODEL_INDEX_NON1AGRID = 11  # sntools.h:151
 
-# MODEL_ indices SNANA generates as Type Ia (LGEN_SNIA, snlc_sim.c:26628):
+# MODEL_ indices SNANA generates as Type Ia (LGEN_SNIA, snlc_sim.c:26684):
 # STRETCH, MLCS2k2, SNOOPY, S11DM15, SALT2 (SALT3 too) and BayeSN
 SNIA_GENMODEL_INDICES = (1, 3, 4, 5, 6, 13)
 
 
 def subsurvey_flag(resources) -> bool:
     """Whether the SIMLIB names sub-surveys, globally or per entry
-    (wr_snfitsio_SET_SUBSURVEY_FLAG, sntools_dataformat_fits.c:1420-1438)."""
+    (wr_snfitsio_SET_SUBSURVEY_FLAG, sntools_dataformat_fits.c:1424-1442)."""
     return bool(resources.simlib_subsurvey_list) or any(
         f.subsurvey not in ('', resources.survey_name) for f in resources.fields)
 
@@ -50,7 +49,7 @@ _MWCOLORLAW_CODES = {name: code for code, name in OPT_MWCOLORLAW_NAMES.items()}
 
 def mw_option_keys(config) -> Dict[str, float]:
     """The Milky Way dust options every data file records
-    (sntools_dataformat_fits.c:1267-1281, sntools_dataformat_text.c:285-446)."""
+    (sntools_dataformat_fits.c:1271-1285, sntools_dataformat_text.c:285-446)."""
     mw = config.mw_dust
     return {'SIMOPT_MWCOLORLAW': _MWCOLORLAW_CODES[mw.dust_law],
             'SIM_MWRV': float(mw.rv),
@@ -59,7 +58,7 @@ def mw_option_keys(config) -> Dict[str, float]:
 
 def effective_gentype(config: SimulationConfig) -> int:
     """SIM_GENTYPE = SNTYPE_Ia_SPEC, overridden by GENTYPE when > 0
-    (snlc_sim.c:26638-26641). GENTYPE is optional; SNANA's unset value is -9."""
+    (snlc_sim.c:26694-26697). GENTYPE is optional; SNANA's unset value is -9."""
     return (config.rates.gentype if config.rates.gentype > 0
             else config.rates.sntype_spec)
 
@@ -123,11 +122,11 @@ def per_event_types(config, resources, params, n, specid_pass):
     """Per-event SIM_GENTYPE and SNTYPE, shared by the HEAD, TEXT and DUMP
     writers so the three cannot drift.
 
-    SIM_GENTYPE is the per-template NON1ASED SNTAG (snlc_sim.c:14403), or
-    SNTYPE_Ia_SPEC for SNIa models (:26638), overridden by GENTYPE when > 0
-    (:14404, :26640). gen_spectype (:24826-24883) builds SNTYPE from the same
+    SIM_GENTYPE is the per-template NON1ASED SNTAG (snlc_sim.c:14421), or
+    SNTYPE_Ia_SPEC for SNIa models (:26694), overridden by GENTYPE when > 0
+    (:14422, :26696). gen_spectype (:24826-24883) builds SNTYPE from the same
     base; an event is photometric ONLY when SPECID maps exist and it failed
-    them, or when the spec file forces EFF=0 (L_PHOTID, :24834-24839); with
+    them, or when the spec file forces EFF=0 (L_PHOTID, :24886-24891); with
     no spec maps every event keeps the spec type, whatever the trigger did.
     The photometric type is SNTYPE_Ia_PHOT for Ia (from the SNTYPES_Ia pair)
     or base+OFFSET_TYPE_PHOT otherwise, overridden by GENTYPE_PHOT when > 0.
@@ -161,13 +160,13 @@ def sim_gentypes(config, params, n):
 
 def generates_snia(model) -> bool:
     """SNANA's LGEN_SNIA: the model is one SNANA generates as a Type Ia
-    (snlc_sim.c:26628), whatever GENTYPE the input gives."""
+    (snlc_sim.c:26684), whatever GENTYPE the input gives."""
     return model.sim_model_index in SNIA_GENMODEL_INDICES
 
 
 def gentype_to_name(config, model, generated) -> Dict[int, str]:
     """SNANA's GENTYPE_TO_NAME map, by increasing GENTYPE: the type names of
-    the events that reached the magnitudes (snlc_sim.c:27549-27551).
+    the events that reached the magnitudes (snlc_sim.c:27607-27609).
 
     Several names under one GENTYPE are joined by ``+`` in the order the
     events first meet them, and a name is skipped when the list already
@@ -203,7 +202,7 @@ def sim_model_name(config, model) -> str:
 
 def _sim_type_name(config, model) -> str:
     """SIM_TYPE_NAME: the GENMODEL directory less whatever prefix the model
-    declares (SNANA strips it for SIMSED alone, snlc_sim.c:29450)."""
+    declares (SNANA strips it for SIMSED alone, snlc_sim.c:29508)."""
     dirname = _genmodel_dirname(config)
     prefix = model.sim_type_name_prefix
     if prefix and dirname.upper().startswith(prefix.upper()):
@@ -236,7 +235,7 @@ def compute_derived_values(columnar_data, full_results, kcor_filter_names,
             and 'peakmags' in full_results
             and selection_result is not None
             and 'passing_mask' in selection_result):
-        # DOFILT-masked: NULLFLOAT for a filter with no kept epoch (snlc_sim.c:9639)
+        # DOFILT-masked: NULLFLOAT for a filter with no kept epoch (snlc_sim.c:9650)
         peakmags_all = np.array(selection_result['peakmags_masked'])
         peakmags_selected = peakmags_all[selection_result['passing_mask']]
         peak_magnitudes = {
@@ -248,42 +247,35 @@ def compute_derived_values(columnar_data, full_results, kcor_filter_names,
 
     return distance_moduli, peak_magnitudes
 
+
 def _hostgalz_columns(prefix, param_prefix, params, quantiles, n, stored):
-    """A host slot's photo-z quantile grid and its (empty) LOGMASS(z) grid, as
-    SNANA packs them: NBIN is the HOSTLIB's quantile count for a slot with a
-    galaxy stored, the vector carries the galaxy's quantiles as the HOSTLIB
-    has them (-9 for one it lacks) and -9 after (load_SNDATA_HOSTGAL,
-    snlc_sim.c:26106). A slot with no galaxy stored keeps NBIN 0 and the -9
-    initialisation."""
-    quantile_keys = [f'{param_prefix}{name}' for name, _ in quantiles]
-    percentiles = [p for _, p in quantiles]
-    z = np.full((n, MXBIN_HOSTGALz_QUANTILE), SNANA_NULLFLOAT, dtype=np.float32)
-    pct = np.full((n, MXBIN_HOSTGALz_QUANTILE), SNANA_NULLFLOAT, dtype=np.float32)
-    if quantile_keys and all(k in params for k in quantile_keys):
-        nq = len(percentiles)
-        zq = np.stack([np.asarray(params[k], dtype=np.float32)
-                       for k in quantile_keys], axis=1)
-        z[:, :nq] = np.where(stored[:, None], zq, SNANA_NULLFLOAT)
-        pct[:, :nq] = np.where(stored[:, None],
-                               np.asarray(percentiles, dtype=np.float32)[None, :],
-                               SNANA_NULLFLOAT)
-        nbin = np.where(stored, nq, 0)
-    else:
-        nbin = np.zeros(n, dtype=np.int64)
-    return {
-        f'{prefix}_NBIN_QUANTILE_ZPHOT': nbin.astype(np.int16),
-        f'{prefix}_QUANTILE_ZPHOT': z,
-        f'{prefix}_QUANTILE_PERCENT': pct,
-        f'{prefix}_NBIN_LOGMASS_ZGRID': np.zeros(n, dtype=np.int16),
-        f'{prefix}_LOGMASS_ZGRID': np.full((n, MXBIN_HOSTGALz), SNANA_NULLFLOAT, dtype=np.float32),
-        f'{prefix}_LOGMASS_VALGRID': np.full((n, MXBIN_HOSTGALz), SNANA_NULLFLOAT, dtype=np.float32),
-        f'{prefix}_LOGMASS_ERRGRID': np.full((n, MXBIN_HOSTGALz), SNANA_NULLFLOAT, dtype=np.float32),
-    }
+    """A host slot's photo-z quantile grid and the NBIN of its LOGMASS(z) grid,
+    as SNANA writes them (wr_snfitsio_addcol_HOSTGALz,
+    sntools_dataformat_fits.c:795-806). The quantile vectors are as wide as the
+    HOSTLIB's quantile list and absent without one. A slot with a galaxy
+    stored and quantiles loaded has NBIN quantiles as the HOSTLIB has them
+    (-9 for one it lacks); any other slot keeps NBIN 0 and zero cells, which
+    SNANA leaves unwritten. The sim has no LOGMASS(z) grid, so only its NBIN
+    of 0 is written."""
+    keys = [f'{param_prefix}{name}' for name, _ in quantiles]
+    loaded = all(k in params for k in keys)
+    filled = stored & loaded
+    columns = {f'{prefix}_NBIN_QUANTILE_ZPHOT':
+               np.where(filled, len(quantiles), 0).astype(np.int16)}
+    if quantiles:
+        zq = (np.stack([np.asarray(params[k], dtype=np.float32) for k in keys], axis=1)
+              if loaded else np.zeros((n, len(keys)), dtype=np.float32))
+        percentiles = np.asarray([p for _, p in quantiles], dtype=np.float32)
+        columns[f'{prefix}_QUANTILE_ZPHOT'] = np.where(filled[:, None], zq, 0.0)
+        columns[f'{prefix}_QUANTILE_PERCENT'] = np.where(
+            filled[:, None], percentiles[None, :], 0.0).astype(np.float32)
+    columns[f'{prefix}_NBIN_LOGMASS_ZGRID'] = np.zeros(n, dtype=np.int16)
+    return columns
 
 
 def _galid_unique(params, key, unset, empty):
     """HOSTGAL_OBJID_UNIQUE, CID * 57 + the slot's drawn offset
-    (set_GALID_UNIQUE, sntools_host.c:9085), ``empty`` on a slot with no
+    (set_GALID_UNIQUE, sntools_host.c:9482), ``empty`` on a slot with no
     host; ``unset`` without HOSTLIB_GALID_UNIQUE."""
     offset = params.get(f'{key}galid_unique_offset')
     if offset is None:
@@ -329,10 +321,10 @@ def _neighbour_columns(prefix, params, n, bands, sentinel, prop_null, dmucor,
     data[f'{prefix}_DDLR'] = np.asarray(
         params.get(f'{key}DDLR', sentinel)).astype(np.float32)
     # declared per slot but filled only for the matched host
-    # (sntools_dataformat_fits.c:669 vs :1938), so it reads back as 0
+    # (sntools_dataformat_fits.c:672 vs :1943), so it reads back as 0
     data[f'{prefix}_CONFUSION'] = np.zeros(n, dtype=np.float32)
 
-    # as for the primary host (load_SNHOSTGAL_perGal, sntools_host.c:7502)
+    # as for the primary host (load_SNHOSTGAL_perGal, sntools_host.c:7940)
     for prop in ('LOGMASS', 'LOGSFR', 'LOGsSFR', 'COLOR'):
         data[f'{prefix}_{prop}'] = np.asarray(params.get(
             f'{key}{prop}_OBS',
@@ -340,7 +332,7 @@ def _neighbour_columns(prefix, params, n, bands, sentinel, prop_null, dmucor,
         data[f'{prefix}_{prop}_ERR'] = np.asarray(params.get(
             f'{key}{prop}_ERR', prop_null)).astype(np.float32)
 
-    # missing shape/ID columns: reset values if matched (sntools_host.c:8638-8642)
+    # missing shape/ID columns: reset values if matched (sntools_host.c:9035-9039)
     matched = data[f'{prefix}_OBJID'] > 0
     shape_null = np.where(matched, HOSTGAL_SHAPE_NULL,
                           HOSTGAL_PROPERTY_NULL).astype(np.float32)
@@ -353,7 +345,7 @@ def _neighbour_columns(prefix, params, n, bands, sentinel, prop_null, dmucor,
         params.get(f'{key}SQRADIUS', shape_null)).astype(np.float32)
     data[f'{prefix}_OBJID_UNIQUE'] = _galid_unique(params, key, objid_null, 0)
 
-    # 999 without a neighbour (sntools.c:9276)
+    # 999 without a neighbour (sntools.c:8969)
     mag_null = np.full(n, HOSTGAL_MAG_NULL, dtype=np.float32)
     magerr_null = np.where(matched, SNANA_NULLFLOAT,
                            HOSTGAL_MAG_NULL).astype(np.float32)
@@ -377,7 +369,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
     """The HEAD columns as {name: array}.
 
     The column set and their order follow ``wr_snfitsio_init_head``
-    (sntools_dataformat_fits.c:283): every column SNANA writes, in SNANA's
+    (sntools_dataformat_fits.c:285): every column SNANA writes, in SNANA's
     order, carrying SNANA's sentinel where there is no value to report.
     """
     params = columnar_data['parameters']
@@ -403,7 +395,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
                     and not config.output.wrflag_modelpar else header_params)
 
     # SUBSURVEY per event, blank where the entry names none
-    # (sntools_dataformat_fits.c:317, :1432-1438, :1589)
+    # (sntools_dataformat_fits.c:319, :1436-1442, :1594)
     if subsurvey_flag(resources):
         names = np.array([f.subsurvey for f in resources.fields], dtype='S40')
         data['SUBSURVEY'] = names[np.asarray(params['field_idx'], dtype=np.int32)]
@@ -414,19 +406,19 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
             [f"{int(c)}-{int(t)}" for c, t in zip(cids, template_index)],
             dtype=f'S{MXCHAR_CCID}')
     else:
-        # the CID as SNANA prints it, unpadded (snlc_sim.c:25393)
+        # the CID as SNANA prints it, unpadded (snlc_sim.c:25446)
         data['SNID'] = cids.astype(str).astype(f'S{MXCHAR_CCID}')
     data['FAKE'] = np.full(n, 2, dtype=np.int16)
     data['RA'] = metadata['ra'].astype(np.float64)
     data['DEC'] = metadata['dec'].astype(np.float64)
     # Atmosphere/DCR band-averaged true coords (SNDATA.RA_AVG_BAND,
-    # snlc_sim.c:25853). All RA_AVG columns precede all DEC_AVG ones.
+    # snlc_sim.c:25913). All RA_AVG columns precede all DEC_AVG ones.
     if 'ra_avg_band' in metadata:
         for k, band in enumerate(metadata['avg_band_names']):
             data[f'RA_AVG_{band}'] = metadata['ra_avg_band'][:, k].astype(np.float64)
         for k, band in enumerate(metadata['avg_band_names']):
             data[f'DEC_AVG_{band}'] = metadata['dec_avg_band'][:, k].astype(np.float64)
-    # SNDATA.PIXSIZE = SIMLIB_OBS_GEN.PIXSIZE (snlc_sim.c:25479), per SN
+    # SNDATA.PIXSIZE = SIMLIB_OBS_GEN.PIXSIZE (snlc_sim.c:25532), per SN
     # from its SIMLIB entry.
     pixsizes = np.asarray(resources.flat_field_index['pixsizes'],
                           dtype=np.float32)
@@ -443,7 +435,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
     data['MWEBV'] = metadata['mwebv'].astype(np.float32)
     data['MWEBV_ERR'] = np.asarray(params['mwebv_err']).astype(np.float32)
 
-    # REDSHIFT_FINAL = GENLC.REDSHIFT_CMB_SMEAR (snlc_sim.c:25414)
+    # REDSHIFT_FINAL = GENLC.REDSHIFT_CMB_SMEAR (snlc_sim.c:25467)
     redshifts_obs_helio = np.asarray(params['redshift_helio']).astype(np.float32)
     redshifts_obs_cmb = np.asarray(params['redshift_final']).astype(np.float32)
     redshift_err = np.asarray(params['redshift_smear_err']).astype(np.float32)
@@ -466,18 +458,19 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
 
     data['VPEC'] = np.array(params['vpec'], dtype=np.float32)
     data['VPEC_ERR'] = np.array(params['vpec_err'], dtype=np.float32)
-    # smeared LENSDMU and its error (snlc_sim.c:25422-25423); truth is SIM_LENSDMU
+    # smeared LENSDMU and its error (snlc_sim.c:25475-25476); truth is SIM_LENSDMU
     data['LENSDMU'] = np.asarray(params['lensdmu_smear'], dtype=np.float32)
     data['LENSDMU_ERR'] = np.asarray(params['lensdmu_err'], dtype=np.float32)
 
-    # drawn galaxy versus DDLR match (snlc_sim.c:26128 vs sntools.c:9163)
+    # drawn galaxy versus DDLR match (snlc_sim.c:26184 vs sntools.c:9163)
     if 'host_GALID' in params:
         drawn_galid = np.asarray(params['drawn_GALID']).astype(np.int64)
         ranked_galid = np.asarray(params['host_GALID']).astype(np.int64)
         nmatch, nmatch2 = params['host_NMATCH'], params['host_NMATCH2']
     else:
-        drawn_galid = ranked_galid = nmatch = nmatch2 = np.zeros(
-            n, dtype=np.int64)
+        # no HOSTLIB: the -9 init_SNDATA_EVENT leaves (sntools.c:8850-8851)
+        drawn_galid = ranked_galid = np.zeros(n, dtype=np.int64)
+        nmatch = nmatch2 = np.full(n, -9, dtype=np.int64)
     data['HOSTGAL_NMATCH'] = np.array(nmatch).astype(np.int16)
     data['HOSTGAL_NMATCH2'] = np.array(nmatch2).astype(np.int16)
 
@@ -508,7 +501,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
         'host_CONFUSION',
         np.full(n, HOSTGAL_CONFUSION_NULL, dtype=np.float32)).astype(np.float32)
 
-    # observed property, else the true one; exact basenames (sndata.h:85-88)
+    # observed property, else the true one; exact basenames (sndata.h:87-90)
     prop_null = np.full(n, HOSTGAL_PROPERTY_NULL, dtype=np.float32)
     for prop in ('LOGMASS', 'LOGSFR', 'LOGsSFR', 'COLOR'):
         data[f'HOSTGAL_{prop}'] = params.get(
@@ -529,7 +522,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
     data['HOSTGAL_OBJID_UNIQUE'] = _galid_unique(params, 'host_', objid_null,
                                                  -9)
 
-    # HOSTLIB mag + DMUCOR + MW extinction (sntools_host.c:8805, :8955, :9287)
+    # HOSTLIB mag + DMUCOR + MW extinction (sntools_host.c:9202, :9352, :9684)
     dmucor = np.asarray(params.get('host_dmucor', np.zeros(n, dtype=np.float32)))
     mwxt = np.asarray(params['host_mwxt_mag'], dtype=np.float32)
 
@@ -546,7 +539,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
             f'host_{filt}_obs_err', magerr_null).astype(np.float32)
 
     # the photo-z quantile and LOGMASS(z) grids of each host slot follow
-    # its magnitudes (wr_snfitsio_init_host, sntools_dataformat_fits.c:626-716)
+    # its magnitudes (wr_snfitsio_init_host, sntools_dataformat_fits.c:629-720)
     quantiles = ([] if resources.hostlib is None
                  else resources.hostlib.zphot_quantiles)
     data.update(_hostgalz_columns('HOSTGALz', 'host_', params, quantiles, n,
@@ -573,8 +566,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
                     or col.startswith('HOSTGAL_SB_FLUXCAL')
                     or col.endswith(('NMATCH', 'NMATCH2'))):
                 continue
-            null = HOSTGAL_NO_HOST_NULL.get(
-                hostgal_null_key(col, bands))
+            null = HOSTGAL_NO_HOST_NULL.get(hostgal_null_key(col))
             if null is None:
                 continue
             arr = np.asarray(value)
@@ -582,12 +574,14 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
 
     peak_mjds = params['peakmjd'].astype(np.float64)
     data['PEAKMJD'] = peak_mjds.astype(np.float32)
+    # the observing season, which a simulation does not assign (snlc_sim.c:25305)
+    data['SEASON_INDEX'] = np.full(n, -9, dtype=np.int16)
     data['MJD_TRIGGER'] = np.asarray(params['mjd_trigger']).astype(np.float32)
     data['MJD_DETECT_FIRST'] = np.asarray(
         params['mjd_detect_first']).astype(np.float32)
     data['MJD_DETECT_LAST'] = np.asarray(
         params['mjd_detect_last']).astype(np.float32)
-    # SDSS only (snlc_sim.c:25404)
+    # SDSS only (snlc_sim.c:25457)
     if resources.survey_name.upper() == 'SDSS':
         non1a = model.sim_model_index in (
             MODEL_INDEX_NON1ASED, MODEL_INDEX_NON1AGRID)
@@ -600,7 +594,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
     data['SIM_MODEL_NAME'] = np.array([model_name] * n, dtype='S32')
     data['SIM_MODEL_INDEX'] = np.full(n, model.sim_model_index, dtype=np.int16)
     data['SIM_GENTYPE'] = sim_gentype.astype(np.int16)
-    # both serialise SNDATA.SIM_GENTYPE (sntools_dataformat_fits.c:2000-2005)
+    # both serialise SNDATA.SIM_GENTYPE (sntools_dataformat_fits.c:2010-2015)
     model_params.pop('SIM_TYPE_INDEX', None)
     data['SIM_TYPE_INDEX'] = sim_gentype.astype(np.int16)
     # per event where the model names it, else the model's name
@@ -616,7 +610,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
     true_zhel = np.asarray(params['sim_redshift_helio']).astype(np.float32)
     data['SIM_REDSHIFT_HELIO'] = true_zhel
     data['SIM_REDSHIFT_CMB'] = true_zcmb
-    # the host-draw redshift; the matched host's is separate (snlc_sim.c:25460)
+    # the host-draw redshift; the matched host's is separate (snlc_sim.c:25513)
     z_matched = params.get('host_ZTRUE')
     data['SIM_REDSHIFT_HOST'] = np.asarray(
         params['sim_redshift_host']).astype(np.float32)
@@ -649,7 +643,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
             params[key], dtype=np.float32)
 
     # The TRUE host's DDLR/separation, which differs from HOSTGAL_DDLR when
-    # the DDLR-closest match is a neighbour (snlc_sim.c:26052); zero without
+    # the DDLR-closest match is a neighbour (snlc_sim.c:26114); zero without
     # a HOSTLIB, where SNANA leaves SNDATA untouched.
     if resources.hostlib is not None:
         data['SIM_SNHOST_DDLR'] = np.asarray(
@@ -676,7 +670,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
         data['SIM_MAGSMEAR_COH'] = np.full(n, 0.0, dtype=np.float32)
     data['SIM_WGT_POPULATION'] = np.asarray(params['wgt_population'], dtype=np.float32)
 
-    # drawn for every model, sentinel where none is configured (snlc_sim.c:14325)
+    # drawn for every model, sentinel where none is configured (snlc_sim.c:14343)
     data['SIM_AV'] = np.asarray(params['sim_av'], dtype=np.float32)
     data['SIM_RV'] = np.asarray(params['sim_rv'], dtype=np.float32)
 
@@ -695,11 +689,11 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
                             SNANA_NULLFLOAT).astype(np.float32)
         data[f'SIM_PEAKMAG_{filt}'] = peak
     for filt in bands:
-        # EXPOSURE_TIME_FILTER scale (snlc_sim.c:25537)
+        # EXPOSURE_TIME_FILTER scale (snlc_sim.c:25590)
         data[f'SIM_EXPOSURE_{filt}'] = np.full(
             n, config.survey.exposure_time.get(filt, 1.0), dtype=np.float32)
 
-    # Host/SN peak flux ratio in a 1" aperture (snlc_sim.c:26158), written
+    # Host/SN peak flux ratio in a 1" aperture (snlc_sim.c:26214), written
     # whenever a HOSTLIB is in use; NULLFLOAT when host mags are unmodelled.
     if resources.hostlib is not None:
         for fn, filt in zip(kcor_filter_names, bands):
@@ -714,7 +708,7 @@ def build_header_columns(columnar_data, config, resources, kcor_filter_names,
                 SNANA_NULLFLOAT).astype(np.float32)
 
     # NSUBSAMPLE_MARK: cyclic label over written SNe = NGENLC_WRITE % N, with
-    # NGENLC_WRITE incremented before assignment (snlc_sim.c:30728,30772); -9 off.
+    # NGENLC_WRITE incremented before assignment (snlc_sim.c:30786,30830); -9 off.
     _nsub = config.output.nsubsample_mark
     if _nsub > 1:
         data['SIM_SUBSAMPLE_INDEX'] = ((np.arange(n) + 1) % _nsub).astype(np.int16)
@@ -735,16 +729,13 @@ def build_phot_columns(columnar_data, resources, snrmon_colname,
 
     data['MJD'] = obs['mjd'].astype(np.float64)
     # BAND is as wide as the kcor's longest filter name, FIELD as wide as
-    # MXCHAR_FIELDNAME (sntools_dataformat_fits.c:833, :851); IMGNUM, DETNUM,
+    # MXCHAR_FIELDNAME (sntools_dataformat_fits.c:837, :855); IMGNUM, DETNUM,
     # XPIX and YPIX exist only under USE_SIMLIB_IDEXPT
     data['BAND'] = LookupColumn(
         np.array(columnar_data['filter_names'],
                  dtype=f'S{resources.filter_name_width}'), obs['filter_idx'])
-    # FIELD: the SN's SIMLIB entry field name on every epoch; 'VOID' only
-    # when the SIMLIB defines no field (FIELD_NONAME, sntools.h:117).
-    field_names = np.array([f.field_name for f in resources.fields],
-                           dtype=f'S{MXCHAR_FIELDNAME}')
-    field_names = np.where(field_names == b'FIELD_NONAME', b'VOID', field_names)
+    # FIELD: the SN's SIMLIB entry field name on every epoch
+    field_names = np.array([f.field_name for f in resources.fields], dtype=f'S{MXCHAR_FIELDNAME}')
     counts = np.asarray(columnar_data['obs_counts'])
     data['FIELD'] = LookupColumn(
         field_names, np.repeat(np.asarray(params['field_idx'], dtype=np.int32),
@@ -756,13 +747,13 @@ def build_phot_columns(columnar_data, resources, snrmon_colname,
                         0).astype(np.int32)
     photflag = np.where(obs['is_trigger'],
                         photflag | params['photflag_trigger'], photflag)
-    # the SIMLIB's APPEND flag on its appended rows (snlc_sim.c:25633)
+    # the SIMLIB's APPEND flag on its appended rows (snlc_sim.c:25686)
     photflag |= np.asarray(obs['append_photflag'].astype(np.int32))
-    # snlc_sim.c:25637-25638
+    # snlc_sim.c:25690-25691
     pf_saturate = params['photflag_saturate']
     if pf_saturate != 0:
         photflag = np.where(obs['is_saturated'], photflag | pf_saturate, photflag)
-    # max-SNR and nearest-peak epochs (snlc_sim.c:25640-25644)
+    # max-SNR and nearest-peak epochs (snlc_sim.c:25693-25697)
     pf_snrmax = params['photflag_snrmax']
     if pf_snrmax > 0:
         photflag = np.where(obs['is_snrmax_epoch'], photflag | pf_snrmax, photflag)
@@ -774,7 +765,7 @@ def build_phot_columns(columnar_data, resources, snrmon_colname,
     data['FLUXCAL'] = fluxcal
     data['FLUXCALERR'] = fluxcalerr
 
-    # NEA units replace the Gaussian triple (sntools_dataformat_fits.c:864)
+    # NEA units replace the Gaussian triple (sntools_dataformat_fits.c:868)
     if params['nea_psf_unit']:
         data['PSF_NEA'] = obs['nea'].astype(np.float32)
     else:
@@ -790,7 +781,7 @@ def build_phot_columns(columnar_data, resources, snrmon_colname,
     data['TEXPOSE'] = np.broadcast_to(np.float32(0.0), n_obs)
     data['GAIN'] = obs['gain'].astype(np.float32)
 
-    # Atmosphere / DCR per-obs columns (WRFLAG_ATMOS, fits.c:889)
+    # Atmosphere / DCR per-obs columns (WRFLAG_ATMOS, fits.c:893)
     if 'airmass' in obs:
         data['dRA'] = np.asarray(obs['d_ra'], dtype=np.float32)
         data['dDEC'] = np.asarray(obs['d_dec'], dtype=np.float32)
@@ -851,7 +842,7 @@ def build_columnar_data(simulator, results, selection_result):
 
     params_out['photflag_detect'] = simulator.searcheff_photflag_detect
     params_out['photflag_trigger'] = simulator.searcheff_photflag_trigger
-    params_out['photflag_saturate'] = simulator.photflag_saturate
+    params_out['photflag_saturate'] = simulator.instrument.photflag_saturate
     params_out['photflag_snrmax'] = simulator.instrument.photflag_snrmax
     params_out['photflag_nearpeak'] = simulator.instrument.photflag_nearpeak
     params_out['nea_psf_unit'] = simulator.nea_psf_unit
@@ -864,7 +855,7 @@ def build_columnar_data(simulator, results, selection_result):
             short = filter_band(fname)
             params_out[f'host_SB_FLUXCAL_{short}'] = sb_stacked_np[:, i]
 
-    # Host mag in the 1" aperture SIM_GALFRAC references (snlc_sim.c:26147)
+    # Host mag in the 1" aperture SIM_GALFRAC references (snlc_sim.c:26203)
     galmag = results.get('host_galmag_galfrac')
     if galmag is not None:
         galmag_np = np.asarray(galmag)[passing_indices]
@@ -895,12 +886,12 @@ def build_columnar_data(simulator, results, selection_result):
 
     fi_obs = column(obs_schedule['filter_indices'])
 
-    # the saturation-masked flux, error and SNR (snlc_sim.c:28544-28548)
+    # the saturation-masked flux, error and SNR (snlc_sim.c:28608-28612)
     fluxcal = column(results['fluxcals_noisy'])
     fluxcalerr = column(results['fluxcalerrs'])
     snr = column(results['snrs'])
 
-    # APPLYFLAG_MWEBV corrects with the map MWEBV (MWEBVfluxCor_to_SNDATA, snlc_sim.c:25862)
+    # APPLYFLAG_MWEBV corrects with the map MWEBV (MWEBVfluxCor_to_SNDATA, snlc_sim.c:25922)
     if simulator.mw_dust.applyflag_mwebv:
         params_mw = results['parameters']
         rv = simulator.mw_dust.rv
@@ -947,7 +938,7 @@ def build_columnar_data(simulator, results, selection_result):
                      else np.full(n_obs, SNANA_NULLFLOAT, dtype=np.float32)),
     }
 
-    # written whenever the key is set, zeros included (snlc_sim.c:7439, :27786)
+    # written whenever the key is set, zeros included (snlc_sim.c:7451, :27844)
     if simulator.magmonitor_snr:
         observations['snr_mon'] = column(results['snrs_mon'])
 

@@ -97,20 +97,20 @@ def test_parse_dndz_entries_unknown_model_aborts():
 
 
 # ----------------------------------------------------------------------------
-# parse_dndz_entries: invalid params are fatal (snlc_sim.c:18060-18066)
+# parse_dndz_entries: invalid params are fatal (snlc_sim.c:18080-18086)
 # ----------------------------------------------------------------------------
 
 
 def test_parse_dndz_powerlaw2_invalid_params_fatal():
     """A/B above 10 in POWERLAW2 is fatal, matching SNANA's powerlaw bounds
-    check (snlc_sim.c:18060-18066)."""
+    check (snlc_sim.c:18080-18086)."""
     with pytest.raises(SNANAError, match="powerlaw"):
         parse_dndz_entries(
             [["POWERLAW2", 100.0, 100.0, 0.0, 1.0]], (0.0, 2.0), h0=70.0)
 
 
 def test_parse_dndz_powerlaw_invalid_params_fatal():
-    """The same A/B bounds apply to plain POWERLAW (snlc_sim.c:18060-18066)."""
+    """The same A/B bounds apply to plain POWERLAW (snlc_sim.c:18080-18086)."""
     with pytest.raises(SNANAError, match="powerlaw"):
         parse_dndz_entries([["POWERLAW", 100.0, 100.0]], (0.0, 2.0), h0=70.0)
 
@@ -362,7 +362,7 @@ def test_dndz_pec1a_fraction_is_z_dependent_for_differing_beta(tmp_path):
 
 
 def test_dndz_pec1a_reweights_do_not_reach_the_pec1a_rate(tmp_path):
-    """The DNDZ_* modifiers sit inside `if (IS_NOMINAL)` (snlc_sim.c:2722).
+    """The DNDZ_* modifiers sit inside `if (IS_NOMINAL)` (snlc_sim.c:2728).
 
     Doubling the nominal rate must lower the PEC1A fraction, not leave it
     unchanged as it would if DNDZ_ALLSCALE also scaled the PEC1A rate.
@@ -375,7 +375,7 @@ def test_dndz_pec1a_reweights_do_not_reach_the_pec1a_rate(tmp_path):
 
 
 def test_dndz_pec1a_requires_a_non1a_model(tmp_path):
-    """DNDZ_PEC1A key allowed only for NON1A model (snlc_sim.c:2793)."""
+    """DNDZ_PEC1A key allowed only for NON1A model (snlc_sim.c:2799)."""
     import pathlib
     from jax_snlc_sim.inputs import parse_snana_input_file
     root = pathlib.Path(__file__).resolve().parents[2]
@@ -431,7 +431,7 @@ def test_dndz_pec1a_normalises_weights_within_each_class(tmp_path):
 
 # ----------------------------------------------------------------------------
 # Rate models added 2026-08-13. Each expected value is SNANA's own formula from
-# SNrate_model (snlc_sim.c:17939-18092), not a copy of the implementation.
+# SNrate_model (snlc_sim.c:17957-18110), not a copy of the implementation.
 # ----------------------------------------------------------------------------
 
 
@@ -486,6 +486,6 @@ def test_abmodel_prompt_term_contributes():
 
 
 def test_abmodel_rejects_out_of_range_parameters():
-    """SNANA aborts for A > 1e-13 or B > 0.01 (snlc_sim.c:18044)."""
+    """SNANA aborts for A > 1e-13 or B > 0.01 (snlc_sim.c:18062)."""
     with pytest.raises(SNANAError, match="A\\+B rate model"):
         parse_dndz_entries([['ABMODEL', '1e-12', '1e-3']], (0.01, 1.0), h0=70.0)

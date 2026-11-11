@@ -141,7 +141,7 @@ def narrow(keep, name: str, mask, ladder):
     return keep
 
 
-# SALT2mu.c:577 and snlc_fit.F90's FIX_COVAR_LCFIT both use this floor.
+# SALT2mu.c:579 and snlc_fit.F90's FIX_COVAR_LCFIT both use this floor.
 EIGMIN_COV = 1.0e-4
 
 # a FITRES covariance column carries -9 when the fit left it undefined
@@ -150,12 +150,12 @@ UNDEFINED_COV = -9.0
 
 def fix_covariance(cov: np.ndarray, force: bool = False) -> np.ndarray:
     """Eigen-clip non-positive-definite matrices, as SNANA's
-    ``update_covMatrix`` (sntools.c:2485) does for both snlc_fit and SALT2mu.
+    ``update_covMatrix`` (sntools.c:2480) does for both snlc_fit and SALT2mu.
 
     ``cov`` is an ``[n, k, k]`` stack of symmetric matrices. Each element equal
     to the undefined sentinel -9 is set to zero and that matrix is returned
     unrepaired, as ``update_covMatrix`` returns istat_cov = -9 before reaching
-    the eigen decomposition (sntools.c:2537-2548). Of the rest, matrices with a
+    the eigen decomposition (sntools.c:2532-2543). Of the rest, matrices with a
     non-positive eigenvalue are rebuilt from a spectrum clipped at
     :data:`EIGMIN_COV`; ``force`` rebuilds every matrix, which is what SNANA's
     ``OPT_COVAR_LCFIT`` FIXCOV_RED bit asks for.

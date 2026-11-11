@@ -374,6 +374,15 @@ def test_ngen_unit_rounds_the_season_count_before_multiplying(fixture_dir, tmp_p
     assert readme["OUTPUT_SUMMARY"]["NGENLC_TOT"] == 17
 
 
+def test_an_input_counted_only_by_ngen_lc_is_refused(fixture_dir, tmp_path):
+    """SNANA's batch layer runs every job with NGEN_LC 0, so an input that
+    sets no other count generates nothing (submit_prog_sim.py:1661;
+    snlc_sim.c:143)."""
+    sim = Sim("sim", fixture_dir / "input.input", overrides={"NGENTOT_LC": 0, "NGEN_LC": 10})
+    with pytest.raises(SNANAError, match="sets only NGEN_LC"):
+        sim.run({}, tmp_path / "sim")
+
+
 @pytest.mark.parametrize('snana_output', [False, True])
 def test_retained_data_reselection_matches_a_fresh_load(
         fixture_dir, tmp_path, snana_output):
@@ -383,9 +392,11 @@ def test_retained_data_reselection_matches_a_fresh_load(
 
     data = tmp_path / 'sample'
     data.mkdir()
+    # under the simulation's names, which its HEAD names its PHOT file by
     for table in ('HEAD', 'PHOT'):
-        (data / f'sample_{table}.FITS.gz').symlink_to(fixture_dir / f'{table}.FITS.gz')
-    (data / 'sample.LIST').write_text('sample_HEAD.FITS\n')
+        (data / f'JAX_TEST_SALT3_FIT_SELECT_{table}.FITS.gz').symlink_to(
+            fixture_dir / f'{table}.FITS.gz')
+    (data / 'sample.LIST').write_text('JAX_TEST_SALT3_FIT_SELECT_HEAD.FITS\n')
     stage = Fit('fit', fixture_dir / 'fit.nml',
                 overrides={'BATCH_SIZE': 4, 'OPT_SNCID_LIST': 1,
                            'SNTABLE_LIST': 'SNANA FITRES' if snana_output else 'FITRES'})

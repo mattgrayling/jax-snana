@@ -10,7 +10,9 @@ dust-multiply reorder (extinction applied caller-side, after m0_scale).
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import yaml
 
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
 from jax_snlc_fit.fitter import fit_static_data
 
@@ -129,7 +131,6 @@ def test_mskopt_scatter_bit_combinations(bayesn_fit_setup):
 def test_mskopt_ambiguous_bits_fatal(bayesn_fit_setup):
     """bit1 with bit2/4, both time modes, or both wavelength modes abort
     (genmag_BAYESN.c:461-468, :487-500)."""
-    from jax_snlc_core.logging import SNANAError
     _, model = bayesn_fit_setup
     try:
         for mskopt in (1 | 2, 1 | 4, 1 | 6, 32 | 64, 512 | 1024):
@@ -209,6 +210,18 @@ def test_filter_centre_limits_are_optional(data_root, tmp_path, key, window):
         assert model.filter_center_range == (2000.0, 23500.0)
 
 
+@pytest.mark.parametrize("key", ["SIGMA0", "TAUA", "L_SIGMA_EPSILON"])
+def test_a_model_without_its_scatter_keys_is_refused(data_root, tmp_path, key):
+    """The grey scatter, dust scale and SED scatter are part of the model."""
+    source = data_root / "models" / "BAYESN.W22" / "BAYESN.YAML"
+    data = yaml.safe_load(source.read_text())
+    del data[key]
+    trimmed = tmp_path / "BAYESN.YAML"
+    trimmed.write_text(yaml.safe_dump(data))
+    with pytest.raises(SNANAError, match=f"lacks {key}"):
+        build_model(str(trimmed), {}, model_type="bayesn")
+
+
 def test_filter_centre_limits_come_from_the_yaml(bayesn_fit_setup):
     """Without wavelength extrapolation the window is the YAML's (:573-574)."""
     _, model = bayesn_fit_setup
@@ -235,8 +248,6 @@ def test_host_law_configuration(data_root, tmp_path):
 
 
 def test_unavailable_bayesn_options(bayesn_fit_setup, data_root):
-    from jax_snlc_core.logging import SNANAError
-
     with pytest.raises(SNANAError, match='UVLAM_EXTRAPFLUX'):
         build_model(str(data_root / 'models' / 'BAYESN.W22'),
                     {'UVLAM_EXTRAPFLUX': 1500.})
@@ -252,8 +263,6 @@ def test_unavailable_bayesn_options(bayesn_fit_setup, data_root):
 
 @pytest.mark.parametrize("model_name", ["BAYESN.W22", "BAYESN.G26"])
 def test_dimensions_are_optional(repo_root, tmp_path, model_name):
-    import yaml
-
     source = repo_root / "jax_snlc_core/data/models" / model_name / "BAYESN.YAML"
     data = yaml.safe_load(source.read_text())
     for key in ("N_LAM", "N_TAU", "N_SIG"):
@@ -279,9 +288,6 @@ def test_dimensions_are_optional(repo_root, tmp_path, model_name):
 @pytest.mark.parametrize("key", ["N_LAM", "N_TAU", "N_SIG", "W0", "W1",
                                   "L_SIGMA_EPSILON"])
 def test_inconsistent_dimensions_are_rejected(data_root, tmp_path, key):
-    import yaml
-    from jax_snlc_core.logging import SNANAError
-
     data = yaml.safe_load((data_root / "models/BAYESN.W22/BAYESN.YAML").read_text())
     for size_key in ("N_LAM", "N_TAU", "N_SIG"):
         data.pop(size_key, None)
