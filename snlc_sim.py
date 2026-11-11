@@ -37,7 +37,7 @@ def main(argv=None) -> None:
 
     sim = sim_run.prepare(snana_config)
     timings['init'] = time.perf_counter() - start
-    # as set_TIMERS(1) prints it at the end of setup (snlc_sim.c:14727)
+    # as set_TIMERS(1) prints it at the end of setup (snlc_sim.c:14745)
     log.line(logger, f"CPUTIME_INITIALIZE   = {timings['init']:.3f} sec")
 
     # SIMLIB_DUMP, DASHBOARD, INIT_ONLY and SIMGEN_DUMP: 0 stop after init

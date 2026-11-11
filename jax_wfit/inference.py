@@ -67,10 +67,10 @@ def summary(
 
     ``value`` and ``sigma`` are the estimate and uncertainty every consumer
     reports. -marg selects the first: the marginalised mean, or the best-fit
-    point under -minchi2 (wfit.c:3885). -sig_type selects the second: "68"
+    point under -minchi2 (wfit.c:4151). -sig_type selects the second: "68"
     averages the two half-widths of the 68.3% interval about the mean, which
-    reduces to half the q16-q84 width, or the standard deviation (wfit.c:3892);
-    -minchi2 always reports the standard deviation (wfit.c:3907-3910).
+    reduces to half the q16-q84 width, or the standard deviation (wfit.c:4158);
+    -minchi2 always reports the standard deviation (wfit.c:4173-4176).
     """
     return {
         "center": center, "mean": mean, "median": median,
@@ -184,7 +184,7 @@ def _external_count(
 def _prior_ndof(config: WFITConfig, priors: Mapping[str, jnp.ndarray]) -> int:
     """The degrees of freedom the external priors add: one for the CMB, one
     per BAO measurement, none for the Omega_m prior (set_Ndof,
-    wfit.c:3011-3024)."""
+    wfit.c:3277-3290)."""
     count = int(config.cmb)
     if config.bao:
         count += int(priors["bao_redshift"].size)

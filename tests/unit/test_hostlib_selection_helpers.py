@@ -22,7 +22,7 @@ def test_compute_dztol_quadratic():
 def test_snvar_bin_index_1d_half_bin_snap_at_edges():
     """The bin snap covers the half-bin beyond each edge centre; values
     further out are rejected fatally at the call boundary
-    (_compute_snvar_bin_indices, sntools_host.c:1655-1660), so the kernel
+    (_compute_snvar_bin_indices, sntools_host.c:1666-1671), so the kernel
     itself applies no clipping."""
     centres = jnp.linspace(-3.0, 3.0, 7)
     assert int(compute_snvar_bin_index_1d(jnp.float32(-3.0), centres)) == 0
@@ -55,7 +55,7 @@ def test_snvar_bin_index_nd_2d_flat_index():
 def test_snvar_value_outside_wgtmap_range_is_flagged():
     """An event's WGTMAP SN-variable value outside [VALMIN, VALMAX] is flagged
     for the run to abort on (getBin_SNVAR_HOSTLIB_WGTMAP,
-    sntools_host.c:1655-1660) instead of silently taking the edge bin's
+    sntools_host.c:1666-1671) instead of silently taking the edge bin's
     weights; the edges themselves are inside."""
     from types import SimpleNamespace
     from jax_snlc_sim.hostlib.selection import HostSelector

@@ -1,4 +1,4 @@
-"""``apply_fluxcal_fudges``: SNANA EXEC_FUDGE_FLUXCAL (snana.F90:18700-18948),
+"""``apply_fluxcal_fudges``: SNANA EXEC_FUDGE_FLUXCAL (snana.F90:18792-19040),
 and ``flux_baselines``, the jax key FLUXCAL_BASELINE_CORRECT."""
 
 import numpy as np
@@ -35,12 +35,12 @@ def test_a_negative_additive_fudge_subtracts_in_quadrature():
 
 
 def test_pixel_error_uses_noise_equivalent_aperture():
-    # SQERR2b * AREA with AREA = NEA (snana.F90:18874, :18878)
+    # SQERR2b * AREA with AREA = NEA (snana.F90:18966, :18970)
     assert _add_var(0.0, 0.5) == 0.25 * _NEA
 
 
 def test_a_negative_per_pixel_fudge_contributes_nothing():
-    # AREA stays 0 unless ERR2b > 0 (snana.F90:18865-18866), so an unphysical
+    # AREA stays 0 unless ERR2b > 0 (snana.F90:18957-18958), so an unphysical
     # negative FUDGE_FLUXCAL_ERRPIX adds no variance rather than a positive one
     assert _add_var(0.0, -0.5) == 0.0
     assert _add_var(0.0, 0.0) == 0.0

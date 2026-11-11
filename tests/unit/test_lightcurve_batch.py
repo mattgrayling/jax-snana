@@ -109,7 +109,7 @@ def test_absent_model_truth_columns_are_named(caplog):
 
 def test_sim_prescale_keeps_every_nth_event_read():
     """SIM_PRESCALE keeps the events at read positions 0, N, 2N, ... whatever
-    the other cuts do (RDHEAD_DRIVER, snana.F90:4083; REJECT_PRESCALE, :9990),
+    the other cuts do (RDHEAD_DRIVER, snana.F90:4099; REJECT_PRESCALE, :10062),
     and N_SNLC_PROC then counts the survivors."""
     from jax_snlc_fit.cuts import apply_snana_selection
     b = _make_batch(n=300)
@@ -188,7 +188,8 @@ def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
     by either of its names (LCIDSELECT, snana.F90:11902), so a Rubin object
     id or an IAUC name picks the event out of a file whose SNIDs are numbers;
     SNIDs which are not numbers are matched as strings, and a numeric SNID
-    as its number."""
+    as its number. A list file holds any number of CIDs to a line, a word
+    holding commas split at them (match_cidlist_init, sntools.c:380-412)."""
     from jax_snlc_fit.cuts import apply_snana_selection
     from jax_snlc_fit.cuts import _cid_list
 
@@ -210,8 +211,9 @@ def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
     b.snids = np.array(['ecf56b03-f72e', '878b0afa-a1b2', '0042', '7'])
     b.head_extras = {}
     cid_file = tmp_path / "cids.list"
-    cid_file.write_text("ecf56b03-f72e  # first\n42\n")
-    cids, names, _ = _cid_list([7], ['878b0afa-a1b2'], str(cid_file))
+    cid_file.write_text("ecf56b03-f72e  # first\n42,7\n")
+    cids, names, _ = _cid_list([], ['878b0afa-a1b2'], str(cid_file))
+    assert names == ['878b0afa-a1b2', 'ecf56b03-f72e', '42', '7']
     keep, _ = apply_snana_selection(b, sncid_list=cids, snccid_names=names,
                                     ladder=[])
     assert keep.all()
@@ -222,7 +224,8 @@ def test_snccid_list_matches_the_transient_and_iauc_names(tmp_path):
 
 def test_private_cutwin_veto_rejects_on_equality():
     """The 'VARNAME != VALUE' spelling rejects events matching the value rather
-    than windowing them (USE_PRIVATE_CUTWIN = -1, snana.F90:5095)."""
+    than windowing them (USE_PRIVATE_CUTWIN = -1, snana.F90:5095), each
+    naming its PRIVATE(<name>) column by the name."""
     from jax_snlc_core.logging import SNANAError
     from jax_snlc_fit.cuts import apply_snana_selection
     import pytest as _pytest
@@ -230,22 +233,20 @@ def test_private_cutwin_veto_rejects_on_equality():
     b = _make_batch(n=4)
     b.head_extras = {'PRIVATE(FOO)': np.array([1.0, 3.0, 3.0, 7.0])}
 
-    keep, _ = apply_snana_selection(b, private_veto={'PRIVATE(FOO)': 3.0},
-                                    ladder=[])
+    keep, _ = apply_snana_selection(b, private_veto={'FOO': 3.0}, ladder=[])
     assert list(keep) == [True, False, False, True]
 
     # the window spelling still selects rather than rejects
     keep, _ = apply_snana_selection(
-        b, private_windows={'PRIVATE(FOO)': (2.0, 5.0)}, ladder=[])
+        b, private_windows={'FOO': (2.0, 5.0)}, ladder=[])
     assert list(keep) == [False, True, True, False]
 
     # both spellings compose, and a name the HEAD lacks is an error
     keep, _ = apply_snana_selection(
-        b, private_windows={'PRIVATE(FOO)': (2.0, 8.0)},
-        private_veto={'PRIVATE(FOO)': 3.0}, ladder=[])
+        b, private_windows={'FOO': (2.0, 8.0)}, private_veto={'FOO': 3.0}, ladder=[])
     assert list(keep) == [False, False, False, True]
     with _pytest.raises(SNANAError):
-        apply_snana_selection(b, private_veto={'PRIVATE(BAR)': 1.0}, ladder=[])
+        apply_snana_selection(b, private_veto={'BAR': 1.0}, ladder=[])
 
 
 def test_concatenate_remaps_band_indices_to_the_merged_mapping():
@@ -407,7 +408,7 @@ def test_redshift_final_shift_moves_every_sn():
 
 def test_gap_maxima_start_at_minus_999_and_only_a_real_gap_moves_them():
     """TGAPMAX and T0GAPMAX are -999 for a light curve with fewer than two
-    accepted epochs (snana.F90:21092-21093), on a one-epoch axis too, and are
+    accepted epochs (snana.F90:21184-21185), on a one-epoch axis too, and are
     otherwise the largest gap: overall, and touching the peak window."""
     times = np.array([[-10.0, 30.0, 0.0, 5.0], [1.0, 2.0, 3.0, 4.0]])
     accepted = np.array([[True, True, True, True], [True, False, False, False]])

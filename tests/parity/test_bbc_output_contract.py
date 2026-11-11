@@ -52,12 +52,18 @@ CONFIGS = {
     "salt_default_blindflag": _COMMON_HIZ + [f"datafile={_BC}/DATA.FITRES"],
     # typeIa_ccprior=999: CONTAM_DATA has no TYPE column, so it reads -9 == the
     # default and force_probcc0 would pin every pIa to 1, leaving the CC term
-    # weightless (SALT2mu.c:22789)
+    # weightless (SALT2mu.c:22803)
     "salt_ccprior": _COMMON + _5D + [
         f"datafile={_BC}/CONTAM_DATA.FITRES",
         f"simfile_biascor={_BC}/BIASCOR.FITRES",
         f"simfile_ccprior={_BC}/CCPRIOR.FITRES",
         "p13=1", "opt_ccprior=5", "varname_pIa=PROBIA",
+        "typeIa_ccprior=999", "blindflag=0"],
+    # the H11 CC prior, whose version is its name (prepare_CCprior, SALT2mu.c:16868)
+    "salt_h11": _COMMON + _5D + [
+        f"datafile={_BC}/CONTAM_DATA.FITRES",
+        f"simfile_biascor={_BC}/BIASCOR.FITRES",
+        "simfile_ccprior=H11", "p13=1", "varname_pIa=PROBIA",
         "typeIa_ccprior=999", "blindflag=0"],
     # force_realdata activates blinding, which sims are exempt from by default
     "salt_blinded": _COMMON + _5D + [
@@ -267,7 +273,7 @@ def test_column_list_matches_salt2mu(written):
 
 def test_m0dif_redshift_columns_have_salt2mu_precision(written):
     """write_M0_fitres prints the three redshift columns as %7.5f
-    (SALT2mu.c:23947). zHD is what wfit and create_covariance read back, so a
+    (SALT2mu.c:23961). zHD is what wfit and create_covariance read back, so a
     %.4f column truncates the cosmology fit's redshifts at 1e-5.
     """
     name, prefix, _ = written
@@ -280,7 +286,7 @@ def test_m0dif_redshift_columns_have_salt2mu_precision(written):
 
 def test_biascor_summary_matches_salt2mu(written):
     """NSIM/sigint carry the biasCor dimensionality and are absent without one;
-    the alpha/beta grid note is SALT-only (SALT2mu.c:24953)."""
+    the alpha/beta grid note is SALT-only (SALT2mu.c:24987)."""
     name, prefix, _ = written
     assert _biascor_summary(f"{prefix}.FITRES") == \
         _biascor_summary(f"{_REF}/{name}.FITRES")
@@ -306,7 +312,7 @@ def test_bbc_columns_match_salt2mu(written):
         if not bad:
             continue
         # SALT2mu's distance integrator can terminate early at isolated redshifts:
-        # rombint (SALT2mu.c:25789) stops on the agreement between two successive
+        # rombint (SALT2mu.c:25823) stops on the agreement between two successive
         # Romberg extrapolations, which can be coincidental, leaving ~6e-4 mag
         # instead of its 1e-6 tolerance. So a handful of rows can disagree while
         # the column as a whole is right. Judge the column
@@ -327,7 +333,7 @@ def test_bbc_columns_match_salt2mu(written):
 
 
 def test_passthrough_columns_are_token_identical(written):
-    """SNANA re-emits the input words (write_fitres_line, SALT2mu.c:24501). A
+    """SNANA re-emits the input words (write_fitres_line, SALT2mu.c:24515). A
     numeric comparison passes while "0.00100" silently becomes "0.001"."""
     name, prefix, _ = written
     mine = read_fitres(f"{prefix}.FITRES", as_text=True)
@@ -413,7 +419,7 @@ def cutmask_write_m9(tmp_path_factory):
 
 def test_cutmask_write_m9_writes_only_the_fitres(cutmask_write_m9):
     """SNANA returns before opening the M0DIF, CSV and COV (write_M0_fitres
-    SALT2mu.c:23865, write_M0_csv :23980, write_M0_cov :24037) and still writes
+    SALT2mu.c:23879, write_M0_csv :23994, write_M0_cov :24051) and still writes
     the FITRES, so the FITRES alone is the whole output.
 
     Checked against SALT2mu.exe run with the same keys plus write_csv=1: it too
@@ -424,7 +430,7 @@ def test_cutmask_write_m9_writes_only_the_fitres(cutmask_write_m9):
 
 def test_cutmask_write_m9_fitres_has_no_rows(cutmask_write_m9):
     """No SN rows, and hence no VARNAMES line either (write_fitres_driver,
-    SALT2mu.c:24254, :24399)."""
+    SALT2mu.c:24268, :24413)."""
     text = (cutmask_write_m9 / "JAX.FITRES").read_text()
     assert "VARNAMES:" not in text
     assert "SN:" not in text
@@ -432,7 +438,7 @@ def test_cutmask_write_m9_fitres_has_no_rows(cutmask_write_m9):
 
 def test_cutmask_write_m9_header_matches_salt2mu(cutmask_write_m9):
     """The provenance and warning block, including the cutmask_write warning
-    SNANA writes into the FITRES and not the M0DIF (write_NWARN, :24752).
+    SNANA writes into the FITRES and not the M0DIF (write_NWARN, :24786).
 
     What follows it, the `SALT2mu fit results:` block, is compared value by value
     by the per-feature parity tests rather than as text, for the reason

@@ -19,7 +19,7 @@ from jax_snlc_core.utils import apply_range_cuts, in_window
 from jax_snlc_sim.simulation import Cuts
 
 
-# Bit positions, SNANA snlc_sim.h:1786-1797.
+# Bit positions, SNANA snlc_sim.h:1788-1799.
 CUTBIT_TRESTMAX    = 0   # (1)    max Trest coverage
 CUTBIT_TRESTMIN    = 1   # (2)    min Trest coverage (pre-max)
 CUTBIT_SNRMAX      = 2   # (4)    max SNR per filter requirement
@@ -46,7 +46,7 @@ CUTBIT_MAP = {
     'NOBS_SNR': CUTBIT_NOBS_SNR,
     'NOBS_MJDDIF': CUTBIT_NOBS_MJDDIF,
     'MWEBV': CUTBIT_MWEBV,
-    # SNANA shares CUTBIT_REDSHIFT across the redshift triad (snlc_sim.c:24182)
+    # SNANA shares CUTBIT_REDSHIFT across the redshift triad (snlc_sim.c:24240)
     'REDSHIFT': CUTBIT_REDSHIFT,
     'REDSHIFT_TRUE': CUTBIT_REDSHIFT,
     'REDSHIFT_FINAL': CUTBIT_REDSHIFT,
@@ -57,7 +57,7 @@ CUTBIT_MAP = {
 }
 
 
-# TGAPMAX/T0GAPMAX before any gap is measured (snlc_sim.c:9563).
+# TGAPMAX/T0GAPMAX before any gap is measured (snlc_sim.c:9574).
 GAP_UNSET = -99999.0
 
 
@@ -99,7 +99,7 @@ def prepare_cutwin(cutwin: Cuts, filter_names: list, byfield_masks):
                     epochs_filter_mask[char_to_idx[char]] = True
         epochs_filter_mask = jnp.array(epochs_filter_mask)
 
-    # CUTWIN_SNRMAX entries, AND-combined (snlc_sim.c:24339-24369)
+    # CUTWIN_SNRMAX entries, AND-combined (snlc_sim.c:24391-24421)
     snrmax_cuts = []
     for snrmax, filters, nfilt, tlo, thi in cutwin.snrmax_cuts:
         unknown = [c for c in filters if c not in char_to_idx]
@@ -114,7 +114,7 @@ def prepare_cutwin(cutwin: Cuts, filter_names: list, byfield_masks):
                             jnp.array(idx, dtype=jnp.int32),
                             int(nfilt), float(tlo), float(thi)))
 
-    # Gap endpoint bounds and the near-peak window (snlc_sim.c:24394-24408).
+    # Gap endpoint bounds and the near-peak window (snlc_sim.c:24446-24460).
     gap_lo, gap_hi = trestmin_lo, trestmax_hi
     t0_lo, t0_hi = trestmin_hi, trestmax_lo
     peakmag_lo, peakmag_hi = cutwin.peakmag_range or (-30.0, 999.0)
@@ -183,7 +183,7 @@ def prepare_cutwin(cutwin: Cuts, filter_names: list, byfield_masks):
 def cutwin_one_sn(arrays, options, snrs, phases, filter_indices, valid, mjds, epoch_mask,
                   peakmags, field_idx, saturated):
     options = dict(options)
-    # counters range over the filtered epochs (snlc_sim.c:24203-24235);
+    # counters range over the filtered epochs (snlc_sim.c:24255-24287);
     # SATURATE counts over `valid`, filled outside gen_cutwin's loop
     snr_ok = epoch_mask & (snrs >= arrays["nepoch_snr_threshold"])
     pass_nepoch = (jnp.sum(snr_ok) >= arrays["nepoch_min"]
@@ -215,7 +215,7 @@ def cutwin_one_sn(arrays, options, snrs, phases, filter_indices, valid, mjds, ep
         has_postmax = True
 
     if options["use_nobsdiff"]:
-        # against the previous accepted epoch (snlc_sim.c:24194, 24272-24273)
+        # against the previous accepted epoch (snlc_sim.c:24194, 24324-24325)
         masked_mjds = jnp.where(epoch_mask, mjds, GAP_UNSET)
         prev_accepted = jnp.concatenate([
             jnp.array([GAP_UNSET], dtype=mjds.dtype),
@@ -227,7 +227,7 @@ def cutwin_one_sn(arrays, options, snrs, phases, filter_indices, valid, mjds, ep
         pass_nobsdiff = True
 
     if options["has_epochs_time"]:
-        # passes when TIME_ABOVE < CUTWIN_EPOCHS_TRANGE[1] (snlc_sim.c:24280-24297)
+        # passes when TIME_ABOVE < CUTWIN_EPOCHS_TRANGE[1] (snlc_sim.c:24332-24349)
         filt_ok = arrays["epochs_filter_mask"][filter_indices]
         time_mask = epoch_mask & (snrs > arrays["epochs_snr_min"]) & filt_ok
         has_any = jnp.any(time_mask)
@@ -271,28 +271,22 @@ def cutwin_one_sn(arrays, options, snrs, phases, filter_indices, valid, mjds, ep
     else:
         pass_peakmag = True
 
-    # CUTWIN_NOBS_[NO]SATURATE (snlc_sim.c:24467-24477)
+    # CUTWIN_NOBS_[NO]SATURATE, both bounds in every band, where SNANA can skip the minimum
     if options["has_saturate_cuts"]:
         is_filter = filter_indices[:, None] == jnp.arange(options["n_filters"])[None, :]
 
-        def _saturate_fail(prep, obs_mask, nobs_tot_gate):
+        def _saturate_fail(prep, obs_mask):
             lo, hi, active = prep
             counts = jnp.sum(obs_mask[:, None] & is_filter, axis=0)
             out_of_range = ((counts[None, :] < lo[:, None])
                             | (counts[None, :] > hi[:, None]))
-            if nobs_tot_gate:
-                # only bands with NOBS_TOT > MINOBS (snlc_sim.c:24491-24506)
-                nobs_tot = jnp.sum(valid[:, None] & is_filter, axis=0)
-                out_of_range = out_of_range & (
-                    nobs_tot[None, :] > lo[:, None])
             return (out_of_range & active).any()
 
         fail_sat = jnp.bool_(False)
         if arrays["sat_prep"] is not None:
-            fail_sat = fail_sat | _saturate_fail(arrays["sat_prep"], saturated, False)
+            fail_sat = fail_sat | _saturate_fail(arrays["sat_prep"], saturated)
         if arrays["nosat_prep"] is not None:
-            fail_sat = fail_sat | _saturate_fail(
-                arrays["nosat_prep"], valid & ~saturated, True)
+            fail_sat = fail_sat | _saturate_fail(arrays["nosat_prep"], valid & ~saturated)
         pass_saturate = ~fail_sat
     else:
         pass_saturate = True

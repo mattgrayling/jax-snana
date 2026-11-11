@@ -42,6 +42,15 @@ def test_string_columns_stay_strings(tmp_path):
     assert list(fx.df["BANDLIST"]) == ["grizY", "griz"]
 
 
+def test_a_quote_is_read_as_text(tmp_path):
+    """SNANA reads each word as written, so a word starting with a quote
+    is a value and does not swallow the rows after it."""
+    fx = read_fitres(_write(tmp_path, 'VARNAMES: CID FIELD zHD\n'
+                                      'SN: a "C3 0.1\nSN: b X3 0.2\nSN: c C3" 0.3\n'))
+    assert list(fx.df["FIELD"]) == ['"C3', "X3", 'C3"']
+    np.testing.assert_allclose(fx.get("zHD"), [0.1, 0.2, 0.3])
+
+
 def test_numeric_columns_are_numeric(tmp_path):
     fx = read_fitres(_write(tmp_path, _FITRES))
     assert np.issubdtype(fx.df["zHD"].dtype, np.floating)
@@ -103,7 +112,7 @@ def test_identifiers_survive_numeric_tables_and_concatenation(tmp_path):
     text = ("VARNAMES: CID SNID MU\n"
             "SN: 00123 00456 40.25\nSN: 123 456 41.5\n")
     plain = _write(tmp_path, text, name="ids.FITRES")
-    compressed = _write(tmp_path, text, name="ids.FITRES", gz=True)
+    compressed = _write(tmp_path, text, name="ids_gzipped.FITRES", gz=True)
     for path in (plain, compressed):
         table = read_fitres(path)
         verbatim = read_fitres(path, as_text=True)
@@ -118,7 +127,7 @@ def test_identifiers_survive_numeric_tables_and_concatenation(tmp_path):
 
 def test_values_past_the_last_varname_are_ignored(tmp_path):
     """SNTABLE_READ_EXEC_TEXT reads a row's first NVAR values and ignores the
-    rest (sntools_output_text.c:1265-1276), so each column keeps its name."""
+    rest (sntools_output_text.c:1291-1302), so each column keeps its name."""
     path = _write(tmp_path, "VARNAMES: CID A B\nSN: 1 2.0 3.0 9\nSN: 2 4.0 5.0\n")
     for table in (read_fitres(path), read_fitres(path, as_text=True)):
         assert table.varnames == ["CID", "A", "B"]
@@ -141,10 +150,20 @@ def test_row_with_fewer_values_than_varnames_aborts(tmp_path):
     assert np.isnan(read_fitres(with_nan).get("B")[0])
 
 
+def test_star_repeats_the_row_above(tmp_path):
+    """A '*' in the first, string column repeats the row above's value
+    (sntools_output_text.c:1355-1361); in the first row there is none."""
+    path = _write(tmp_path, "VARNAMES: CID A\nSN: 7 1.0\nSN: * 2.0\nSN: 8 3.0\n")
+    assert read_fitres(path).get("CID").tolist() == ["7", "7", "8"]
+    first = _write(tmp_path, "VARNAMES: CID A\nSN: * 1.0\n", name="first.FITRES")
+    with pytest.raises(SNANAError, match="no row above"):
+        read_fitres(first)
+
+
 def test_only_snana_row_keys_are_rows(tmp_path):
     """A line under VARNAMES whose first word is not a row key, such as a
     stray VPEC_INFO: line, is not a row (validRowKey_TEXT,
-    sntools_output_text.c:1386): its length is not checked and its words do
+    sntools_output_text.c:1430): its length is not checked and its words do
     not change the type of a column."""
     path = _write(tmp_path, "VARNAMES: CID A B\nSN: 1 2.0 3.0\nVPEC_INFO: 250.0\n"
                             "NOTE: hello world\nGAL: 2 4.0 5.0\nOBS: 3 6.0 7.0\n")
@@ -175,10 +194,12 @@ def test_missing_varnames_aborts(tmp_path):
 
 @pytest.mark.parametrize('as_text', [False, True])
 def test_original_lines_keep_comments_and_surplus_fields_out_of_values(tmp_path, as_text):
-    """Pandas reads original whitespace and ignores comments and surplus tokens."""
+    """Any whitespace separates values; surplus words are ignored, a comment
+    starts at a word opening with a comment character, and a '#' inside a
+    word is part of it."""
     path = _write(tmp_path, 'VARNAMES: CID A B\n'
                             '  SN:\t001\t2.0  3.0  extra # comment\n'
-                            'SN: 002 4.0 5.0#comment\n')
+                            'SN: 002#b 4.0 5.0 !comment\n')
     table = read_fitres(path, as_text=as_text)
-    assert table.get('CID').tolist() == ['001', '002']
+    assert table.get('CID').tolist() == ['001', '002#b']
     np.testing.assert_array_equal(np.asarray(table.get('B'), dtype=float), [3., 5.])

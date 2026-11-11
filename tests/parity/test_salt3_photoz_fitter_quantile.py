@@ -93,6 +93,22 @@ def test_steffen_quantile_prior_vs_snana(snana_fixture):
     _assert_prior_columns(results, snana, 0.003)
 
 
+def test_quantile_prior_width_without_prior_zerrscale(snana_fixture):
+    """A quantile fit that leaves PRIOR_ZERRSCALE unset takes it as 1
+    (snlc_fit.F90:1822-1827), so zPRIORERR is the PDF's own width. The
+    fixture is the quantile fixture's light curves refitted by SNANA without
+    the key."""
+    fx = snana_fixture("salt3_fit_photoz_quantile_noscale")
+    data = snana_fixture("salt3_fit_photoz")
+    config = fit_config(fx.root / "fit.nml")
+    assert config.photoz.prior_zerrscale == 1.0
+    batch = load_batch(config, data.head_fits, data.phot_fits, max_fit=30)
+    # the hostless events carry the -9 sentinel in every quantile
+    batch = batch.filter_by_mask((np.asarray(batch.zpdf_quantiles) > 0).all(axis=1))
+    results = run_fit(build_fitter(config, build_fit_model(config), batch), batch)
+    _assert_prior_columns(results, parse_fitres(fx.root / "FITRES.TEXT"), 0.001)
+
+
 def _assert_prior_columns(results, snana, tol):
     for cid, zp, zpe in zip(np.asarray(results.snids).astype(int),
                             *map(np.asarray, results.z_prior)):

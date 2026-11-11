@@ -1,4 +1,4 @@
-"""``fix_covariance``: SNANA's ``update_covMatrix`` (sntools.c:2485-2607)."""
+"""``fix_covariance``: SNANA's ``update_covMatrix`` (sntools.c:2480-2602)."""
 
 import numpy as np
 import pytest

@@ -1,7 +1,7 @@
 """SNANA-vs-JAX cross-validation for NPE_SAT saturation.
 
 When ``NPE_PIXEL_SATURATE`` is lowered so some epochs saturate:
-- SEARCHEFF detections fall (saturated obs never detect — sntools_trigger.c:2496)
+- SEARCHEFF detections fall (saturated obs never detect — sntools_trigger.c:2498)
 - ``PHOTFLAG_SATURATE`` is OR'd into PHOTFLAG for saturated epochs
 - ``CUTWIN_NOBS_SATURATE`` / ``CUTWIN_NOBS_NOSATURATE`` apply as a CUTMASK bit
 
@@ -219,30 +219,22 @@ def test_cutwin_nobs_saturate_end_to_end(snana_fixture, tmp_path, saturation_on_
 def test_cutwin_nobs_nosaturate_end_to_end(snana_fixture, tmp_path, saturation_on_run):
     """CUTWIN_NOBS_NOSATURATE selects on the unsaturated-epoch count.
 
-    SNANA only tests a band whose total epoch count exceeds the triplet's
-    minimum (NOBS_TOT > MINOBS, snlc_sim.c:24491-24506), so a minimum the
-    cadence cannot reach skips the band instead of rejecting the event.
+    jax enforces both bounds; SNANA's minimum is disabled whenever it reaches
+    the band's epoch count, so only the jax side
+    is asserted here.
     """
     fx = snana_fixture("saturation_on")
     n = len(_parse_dump_column(fx.dump, "CID"))
     base = saturation_on_run[3]
 
-    # Median NOBS is 8 per SN across six bands, so most gri bands carry
-    # fewer than 4 epochs and the NOBS_TOT > 3 gate skips them, so the cut
-    # must NOT reject everything.
+    # Median NOBS is 8 per SN across six bands, so 3 per band is unreachable.
     high_min = _run_with_extra(
         fx.input_file, tmp_path, "CUTWIN_NOBS_NOSATURATE: 3 999 gri\n", n)[3]
-    # 0 0: no unsaturated epoch allowed in g, r or i (every observed band
-    # passes the NOBS_TOT > 0 gate).
+    # 0 0: no unsaturated epoch allowed in g, r or i.
     none_allowed = _run_with_extra(
         fx.input_file, tmp_path, "CUTWIN_NOBS_NOSATURATE: 0 0 gri\n", n)[3]
 
-    # Every gri band here carries fewer than 4 epochs, so the gate skips all
-    # of them and the cut removes nothing: equality is the exact statement,
-    # and any rejection would mean the gate had stopped skipping.
-    assert high_min == base, (
-        f"NOBS_TOT gate should skip sparse bands rather than reject any; "
-        f"got {high_min} of {base}")
+    assert high_min == 0, f"minimum of 3 per band is unreachable; got {high_min}"
     assert 0 < none_allowed < base, (
         f"expected a partial cut on the unsaturated count, got {none_allowed}")
 
@@ -327,17 +319,16 @@ def test_cutwin_nobs_saturate_unit():
     )
     assert np.array_equal(np.asarray(fail), [True, False, False])
 
-    # Case 2b: NOSATURATE '1 999 i': the NOBS_TOT > MINOBS gate skips
-    # bands without enough observations (snlc_sim.c:24491-24506): SN0/SN1
-    # have no i obs (NOBS_TOT=0) and SN2 has one (NOBS_TOT=1, not > 1),
-    # so no SN is tested and none fails.
+    # Case 2b: NOSATURATE '1 999 i': SN0 and SN1 have no i obs, so they fail
+    # where SNANA's NOBS_TOT > MINOBS gate passes them;
+    # SN2's one i obs is unsaturated.
     fail = _saturate_fail(
         filter_idx, valid, saturated,
         saturate_ranges=[],
         nosaturate_ranges=[(1, 999, "i")],
         filter_names=filter_names,
     )
-    assert not np.any(np.asarray(fail))
+    assert np.array_equal(np.asarray(fail), [True, True, False])
 
     # Case 2c: NOSATURATE '0 0 g': every SN has NOBS_TOT_g > 0 so all are
     # tested; the cut demands zero unsaturated g obs, so SN0 (two

@@ -29,10 +29,14 @@ first.
 | `RANSEED_CHANGE` | `GLOBAL` | Number of independent realisations and seed. Each realisation produces a separate data version. |
 | `FORMAT_MASK` | `GLOBAL` | Output format. Default: 48, for FITS output with random event identifiers. |
 | `NGEN_UNIT` | `GLOBAL` | Rate-based event count: each component simulates `NGEN_UNIT` times its expected events per season. Replaces the fixed counts `NGENTOT_LC` and `NGEN_LC` of the simulation input files; giving `NGENTOT_LC` in the configuration as well is an error. |
+| `RESET_CIDOFF` | `GLOBAL` | How event identifiers are offset between jobs: with 0 or 1 each component's first offset is rounded up on its first digit, with 2 it is not. Default: 1 with random identifiers, 0 otherwise. |
 | `BLIND` | Task `OPTS` | Marks the simulated data for blinded BBC fits. Default: false. |
 | `EXTERNAL` | Task | Completed Pippin simulation task to use instead of generating events. See {ref}`pippin-existing-fits`. |
 
-Each repeated job requests the event count given in its component's input.
+Each repeated job generates the count its component's input sets with
+`NGENTOT_LC` or `NGEN_SEASON`, or the `NGEN_UNIT` count; an input that sets
+only `NGEN_LC` is refused, as SNANA's batch layer runs every job with
+`NGEN_LC 0`.
 `RANSEED_REPEAT` therefore increases the combined sample size, whereas
 `RANSEED_CHANGE` produces separate samples of that size. If both are given,
 the later one in `GLOBAL` applies.
@@ -318,8 +322,11 @@ CREATE_COV:
       BINNED: false
       EXTRA_COVS:
         - calibration 1.0 $DATA/calibration_covariance.npz
+      EXTRA_OPTS: --write_mask_cov 2
 ```
 
+An external matrix has no factorized form, so the write mask must include
+the systematic (1) or inverse (2) covariance; the default, 8, writes neither.
 Each entry is `label scale file`, the first three words. The scale
 multiplies the uncertainty and is squared for the covariance. The file path
 may contain environment variables and must be absolute once they are
@@ -345,7 +352,7 @@ subtraction with rebinning.
 | Flag | Purpose |
 |---|---|
 | `--write_format_cov npz` or `text` | Dense matrices as NumPy archives or gzipped text; default: `npz`. Factorized output always uses NumPy archives. |
-| `--write_mask_cov N` | Select output forms using the values in {ref}`covariance-output-settings`. Default: 8, the factorized total covariance. Include inverse covariance (2) or factorized total covariance (8) for cosmology fitting. |
+| `--write_mask_cov N` | Select output forms using the values in {ref}`covariance-output-settings`. Default: 8, the factorized total covariance. Include the systematic (1), inverse (2) or factorized total (8) covariance for cosmology fitting. |
 | `--label_cov_rows` | Add identifiers, survey and redshift to covariance rows, which it writes as text. |
 | `--mxsize_test_posdef N` | Maximum matrix dimension for the positive-definiteness check; default: 6000. Zero skips the check. |
 
@@ -366,6 +373,7 @@ the named fits and their settings under `COSMOFIT: WFIT`, as shown below.
 | `WFITOPT_GLOBAL` | `OPTS` | Flags applied to every entry, appended after its individual flags. |
 | `COVOPTS`, or `COVOPT` | `OPTS` | Labels of the covariances to fit, as one string such as `"ALL NOSYS"`. Default: every covariance. |
 | `BLIND_DATA`, `BLIND_SIM` | `OPTS` | Blind the fits to data and to simulations. Default: data true, simulations false. Blinding simulations alone is not supported. |
+| `USE_COVTOT_FACTORIZED`, `USE_COVSYS_INV` | `OPTS` | Which covariance file each fit reads: the factorized one if written and `USE_COVTOT_FACTORIZED` is true, else the inverse if written and `USE_COVSYS_INV` is true, else the systematic covariance. Default: both true. |
 
 For example:
 
@@ -457,6 +465,12 @@ non-repeating identifiers.
 Without random CIDs, each repeated job derives its own seed from the
 supplied one. `RANSEED_CHANGE` does this whether or not CIDs are random.
 
+Each job's `CIDOFF`, and with random CIDs its `CIDRAN_MIN` and
+`CIDRAN_MAX`, are set as SNANA's batch layer sets them, from the number of
+events each job generates, so a version has room for all its identifiers
+however many events it holds. A `CIDOFF`, `CIDRAN_MIN` or `CIDRAN_MAX` given in the
+task's settings replaces them.
+
 ## Included anchor files
 
 A comment line `# % include: anchors.yml %` is replaced by the
@@ -476,7 +490,6 @@ refused with `LEGACY: True`; `MERGE_CLASSIFIERS` is refused.
 Settings for Pippin's batch layer are ignored because jax-SNANA runs the
 analysis as a single process: `BATCH_INFO`, `BATCH_FILE`, `BATCH_REPLACE`,
 `BATCH_MEM`, `BATCH_WALLTIME`, `NUM_JOBS`, `GPU`, `CLEAN` and `INI_DIR`.
-`RESET_CIDOFF` is ignored too, as event offsets are assigned automatically.
 
 Other settings ignored here:
 

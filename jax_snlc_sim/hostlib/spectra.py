@@ -1,31 +1,35 @@
 """HOSTLIB_SPECBASIS_FILE / HOSTLIB_SPECDATA_FILE reader.
 
-SNANA reads these with its generic table reader (read_specTable_SNANA,
-sntools_host.c:1880): a `VARNAMES:` header plus `ROW:` lines, where the
-wavelength column is whichever name contains wave/lam (either case) and the
-basis columns are those starting with the SPECBASIS/SPECDATA prefix followed
-by an index. The two header keys FLAM_SCALE and FLAM_SCALE_POWZ1 scale the
-result as FLAM = sum(coeff_i * basis_i) * FLAM_SCALE * (1+z)^POWZ1.
+SNANA reads the header keys up to `VARNAMES:` and then the table with its
+generic table reader (read_specTable_SNANA, sntools_host.c:1862). The one
+wavelength column is the name containing wave, WAVE, lam or LAM, and the basis
+columns are those starting with the SPECBASIS or SPECDATA prefix. The two
+header keys FLAM_SCALE and FLAM_SCALE_POWZ1 scale the result as
+FLAM = sum(coeff_i * basis_i) * FLAM_SCALE * (1+z)^POWZ1.
 """
 
+import logging
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, NamedTuple, Union
 
 import numpy as np
 
+from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import open_text, read_two_column_file
+from jax_snlc_core.snana_files import (key_runs, leading_values, open_text, read_fitres,
+                                       read_two_column_file)
 
-# sntools_host.h:606-610
+logger = logging.getLogger(__name__)
+
+# sntools_host.h:631-635
 PREFIX_SPECBASIS = 'SPECBASIS'
 PREFIX_SPECDATA = 'SPECDATA'
 PREFIX_SPECBASIS_HOSTLIB = 'COEFF_'
 VARNAME_SPECDATA_HOSTLIB = 'IDSPECDATA'
 
-_WAVE_TOKENS = ('wave', 'lam')
+_WAVE_TOKENS = ('wave', 'WAVE', 'lam', 'LAM')
 
 # basis grid truncation (genmag_SEDtools.h:41)
 LAMMAX_SEDMODEL = 30000.0
@@ -40,7 +44,7 @@ class HostSpecTable:
     wave_min: np.ndarray       # (n_wave,) rest-frame bin lower edges
     wave_max: np.ndarray       # (n_wave,) rest-frame bin upper edges
     flam: np.ndarray           # (n_spec, n_wave) template fluxes, file order
-    index: np.ndarray          # (n_spec,) the integer after each column prefix
+    names: List[str]           # each template's column name
     flam_scale: float
     flam_scale_powz1: float
 
@@ -58,7 +62,7 @@ class HostSpecTable:
 
         SPECBASIS combines every template by its per-galaxy coefficients;
         SPECDATA takes the single spectrum the galaxy's ID names
-        (genSpec_HOSTLIB, sntools_host.c:2232-2262).
+        (genSpec_HOSTLIB, sntools_host.c:2243-2273).
         """
         selector = np.asarray(selector)
         if self.mode == PREFIX_SPECDATA:
@@ -84,7 +88,7 @@ class HostSpecTable:
         """Which spectrograph bins carry host flux.
 
         SNANA bounds the basis grid by WAVE_MIN at *both* ends
-        (sntools_host.c:2287-2288), so the last bin's upper half counts as
+        (sntools_host.c:2298-2299), so the last bin's upper half counts as
         off-grid; a bin whose rest-frame range leaves that span gets no flux.
         """
         z1 = 1.0 + redshift
@@ -94,45 +98,44 @@ class HostSpecTable:
 
 
 def read_host_spec_table(path: str, mode: str) -> HostSpecTable:
-    """Read a SPECBASIS or SPECDATA table."""
+    """Read a SPECBASIS or SPECDATA table: the header keys as a stream of
+    words up to VARNAMES or EAZY_TEMPLATES_LIST_FILE, then the table or the
+    templates that key lists (read_specTable_HOSTLIB, sntools_host.c:1765)."""
     if mode not in (PREFIX_SPECBASIS, PREFIX_SPECDATA):
         raise SNANAError(f"Unknown host-spectrum mode {mode!r}; expected "
                          f"{PREFIX_SPECBASIS} or {PREFIX_SPECDATA}.",
                          function_name="read_host_spec_table")
 
-    scale, powz1, varnames, rows = 1.0, 0.0, None, []
-    with open_text(path) as f:
-        for line in f:
-            words = line.split('#')[0].split()
-            if not words:
-                continue
-            key = words[0]
-            if key == 'FLAM_SCALE:':
-                scale = float(words[1])
-            elif key == 'FLAM_SCALE_POWZ1:':
-                powz1 = float(words[1])
-            elif key == 'VARNAMES:':
-                varnames = words[1:]
-            elif key == 'ROW:' and varnames is not None:
-                rows.append([float(w) for w in words[1:]])
-            elif key == 'EAZY_TEMPLATES_LIST_FILE:':
-                wave, flam = _read_eazy_templates(Path(os.path.expandvars(words[1])))
-                return _build_table(mode, wave, flam, np.arange(len(flam)),
-                                    scale, powz1)
-
-    if varnames is None or not rows:
-        raise SNANAError(f"No VARNAMES/ROW table found in {path}.",
+    scale, powz1 = 1.0, 0.0
+    for key, values in key_runs(path):
+        if key == 'FLAM_SCALE':
+            scale = float(leading_values(path, key, values, 1)[0])
+        elif key == 'FLAM_SCALE_POWZ1':
+            powz1 = float(leading_values(path, key, values, 1)[0])
+        elif key == 'EAZY_TEMPLATES_LIST_FILE':
+            list_file = leading_values(path, key, values, 1)[0]
+            wave, flam = _read_eazy_templates(Path(os.path.expandvars(list_file)))
+            # named as a table's columns would be (sntools_host.c:2063)
+            names = [f'{PREFIX_SPECBASIS}{i:02d}' for i in range(len(flam))]
+            return _build_table(mode, wave, flam, names, scale, powz1)
+        elif key == 'VARNAMES':
+            break
+        else:
+            log.warn(logger, "HOSTLIB", f"{path}: {key}: is not read")
+    else:
+        raise SNANAError(f"{path} has neither VARNAMES nor "
+                         f"EAZY_TEMPLATES_LIST_FILE.",
                          function_name="read_host_spec_table")
 
-    table = np.asarray(rows, dtype=float)
-    icol_wave = _wavelength_column(varnames, path)
-    icols, index = _template_columns(varnames, mode, path)
-    return _build_table(mode, table[:, icol_wave], table[:, icols].T,
-                        index, scale, powz1)
+    table = read_fitres(path).df
+    wave = table[_wavelength_column(list(table.columns), path)]
+    names = _template_columns(list(table.columns), mode, path)
+    return _build_table(mode, wave.to_numpy(dtype=float),
+                        table[names].to_numpy(dtype=float).T, names, scale, powz1)
 
 
-def _build_table(mode, wave, flam, index, scale, powz1) -> HostSpecTable:
-    """Truncate the grid and derive bin edges (sntools_host.c:1792).
+def _build_table(mode, wave, flam, names, scale, powz1) -> HostSpecTable:
+    """Truncate the grid and derive bin edges (sntools_host.c:1803).
 
     Edges sit midway between neighbouring centres; the first and last bins
     mirror their one neighbour's half-width.
@@ -143,7 +146,7 @@ def _build_table(mode, wave, flam, index, scale, powz1) -> HostSpecTable:
     wave_min = np.concatenate([[wave[0] - half[0]], wave[1:] - half])
     wave_max = np.concatenate([wave[:-1] + half, [wave[-1] + half[-1]]])
     return HostSpecTable(mode=mode, wave=wave, wave_min=wave_min,
-                         wave_max=wave_max, flam=flam, index=index,
+                         wave_max=wave_max, flam=flam, names=names,
                          flam_scale=scale, flam_scale_powz1=powz1)
 
 
@@ -157,13 +160,13 @@ class HostSpectra(NamedTuple):
 def hostlib_column_names(table: HostSpecTable) -> List[str]:
     """HOSTLIB columns this table needs (match_specTable_HOSTVAR, :2090).
 
-    SPECBASIS wants one coefficient per basis vector, named COEFF_SPECBASIS<nn>
-    by the basis file's read order; SPECDATA wants a single ID column.
+    SPECBASIS wants one coefficient per basis vector, named COEFF_ and the
+    basis vector's column name (sntools_host.c:766-770); SPECDATA wants a
+    single ID column.
     """
     if table.mode == PREFIX_SPECDATA:
         return [VARNAME_SPECDATA_HOSTLIB]
-    return [f'{PREFIX_SPECBASIS_HOSTLIB}{PREFIX_SPECBASIS}{i:02d}'
-            for i in range(table.n_spec)]
+    return [f'{PREFIX_SPECBASIS_HOSTLIB}{name}' for name in table.names]
 
 
 def hostlib_coefficients(table: HostSpecTable, column_data) -> np.ndarray:
@@ -184,7 +187,7 @@ def hostlib_coefficients(table: HostSpecTable, column_data) -> np.ndarray:
 
 
 def _read_eazy_templates(list_file: Union[str, Path]):
-    """Basis vectors named by an EAZY templates list (sntools_host.c:1985).
+    """Basis vectors named by an EAZY templates list (sntools_host.c:1996).
 
     Each list row is `index filename scale`. SNANA keeps only the filename's
     basename and resolves it against the list file's own directory, discarding
@@ -208,29 +211,26 @@ def _read_eazy_templates(list_file: Union[str, Path]):
     return wave, np.asarray(flam, dtype=float)
 
 
-def _wavelength_column(varnames: List[str], path: str) -> int:
-    """The last name containing wave/lam, as SNANA's scan leaves it."""
-    found = [i for i, v in enumerate(varnames)
-             if any(t in v.lower() for t in _WAVE_TOKENS)]
-    if not found:
-        raise SNANAError(f"No wavelength column in {path}; expected a VARNAME "
-                         f"containing 'wave' or 'lam'.",
+def _wavelength_column(varnames: List[str], path: str) -> str:
+    """The one name containing wave, WAVE, lam or LAM; SNANA aborts on none
+    or several (sntools_host.c:1896-1943)."""
+    found = [v for v in varnames if any(t in v for t in _WAVE_TOKENS)]
+    if len(found) != 1:
+        raise SNANAError(f"{path} has {len(found)} wavelength columns "
+                         f"({' '.join(found)}); expected one, named with "
+                         f"wave, WAVE, lam or LAM.",
                          function_name="read_host_spec_table")
-    return found[-1]
+    return found[0]
 
 
-def _template_columns(varnames: List[str], mode: str, path: str):
-    """Columns named <prefix><index>, in file order (sntools_host.c:1902)."""
-    icols, index = [], []
-    for i, name in enumerate(varnames):
-        match = re.fullmatch(rf'{mode}(\d+)', name, flags=re.IGNORECASE)
-        if match:
-            icols.append(i)
-            index.append(int(match.group(1)))
-    if not icols:
-        raise SNANAError(f"No {mode}<nn> columns in {path}.",
+def _template_columns(varnames: List[str], mode: str, path: str) -> List[str]:
+    """The names starting with the ``mode`` prefix in any case, in file
+    order (sntools_host.c:1909-1913)."""
+    names = [v for v in varnames if v[:len(mode)].upper() == mode]
+    if not names:
+        raise SNANAError(f"No {mode} columns in {path}.",
                          function_name="read_host_spec_table")
-    return icols, np.asarray(index, dtype=int)
+    return names
 
 
 def load_host_spec_table(config):

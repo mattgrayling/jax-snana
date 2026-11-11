@@ -152,7 +152,7 @@ def test_dcr_magshift_replay(snana_fixture, tmp_path):
 
 def test_atmosphere_text_format(snana_fixture, tmp_path):
     """TEXT output carries the atmosphere columns: the 6 per-obs PHOT columns in
-    the VARLIST and per-band RA_AVG/DEC_AVG in the header (text.c:152, 980)."""
+    the VARLIST and per-band RA_AVG/DEC_AVG in the header (text.c:153, 978)."""
     fx = snana_fixture("atmosphere_replay")
     cfg = dict(n_sne=5, random_seed=1)
     sim = sim_run.prepare(str(fx.input_file), **cfg)
@@ -172,7 +172,7 @@ def test_atmosphere_text_format(snana_fixture, tmp_path):
 
 def test_atmosphere_format_combos(snana_fixture, tmp_path):
     """ATMOS composes with the FORMAT_MASK modifier bits: COMPACT drops the
-    per-obs atmosphere columns (SNANA gates them behind WRFULL, fits.c:888), and
+    per-obs atmosphere columns (SNANA gates them behind WRFULL, fits.c:892), and
     CIDRAN keeps them while remapping every CID (HEAD, PHOT, .DCR) consistently."""
     fx = snana_fixture("atmosphere_replay")
 

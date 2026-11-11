@@ -91,7 +91,7 @@ def test_python_covariance_scales_and_writing(tmp_path):
                    outdir=tmp_path / 'covariance')
     result = compute_covariance(**options)
     scaled = compute_covariance(**options, sys_scales={'zpt': 2.})
-    np.testing.assert_allclose(scaled.covariances['ALL']['matrix'], result.covariances['ALL']['matrix'] * 4)
+    np.testing.assert_allclose(scaled.covsys('ALL'), result.covsys('ALL') * 4)
     assert not list(tmp_path.iterdir())
     compute_covariance(**options, write=True)
     assert (tmp_path / 'covariance/INFO.YML').is_file()

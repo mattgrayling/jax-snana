@@ -1,6 +1,7 @@
 """Fitter configuration parsing and FITS/TEXT photometry loading."""
 
 import dataclasses
+import logging
 import os
 
 import numpy as np
@@ -11,8 +12,11 @@ from jax_snlc_core.logging import SNANAError
 from jax_snlc_fit import LightCurveFitter
 from jax_snlc_fit.config import FitConfig, Model
 from jax_snlc_fit.config_parser import build, read_keys
-from jax_snlc_fit.loader import (_host_photoz_columns, read_snana_fits,
-                                 read_snana_text)
+from jax_snlc_fit.loader import (HeaderOverride, _head_extras, _head_metadata,
+                                 _host_photoz_columns, _set_logmass, apply_header_override,
+                                 apply_redshift_shifts, batch_from_columns,
+                                 read_header_override_file, read_snana_fits, read_snana_text,
+                                 version_epoch_ignore)
 
 
 def test_yaml_and_nml_equivalent(tmp_path):
@@ -144,7 +148,8 @@ def test_parse_sntable_list():
 
 
 def test_write_varnames_table_styles(tmp_path):
-    """key/csv/col/none output shapes (sntools_output_text.c:578-732)."""
+    """key/csv/col/none output shapes (sntools_output_text.c:578-732): an
+    SNTABLE header block, a blank line, VARNAMES and '#' frame the rows."""
     from jax_snlc_core.snana_files import write_varnames_table
 
     cols = {'CID': [1, 2], 'x1': [0.5, -1.25]}
@@ -154,9 +159,8 @@ def test_write_varnames_table_styles(tmp_path):
     write_varnames_table(p, ['CID', 'x1'], cols, fmt, style='key',
                          header_comments=['TABLE_NAME:    FITRES'])
     lines = p.read_text().splitlines()
-    assert lines[0] == "# TABLE_NAME:    FITRES"
-    assert lines[2] == "VARNAMES: CID x1"
-    assert lines[3] == "SN: 1 0.50"
+    assert lines[:5] == ["# TABLE_NAME:    FITRES", "", "VARNAMES: CID x1", "#",
+                         "SN: 1 0.50"]
 
     write_varnames_table(p, ['CID', 'x1'], cols, fmt, style='csv')
     lines = p.read_text().splitlines()
@@ -188,7 +192,7 @@ def test_write_varnames_table_formats_unlisted_columns_as_snana_does(tmp_path):
 def test_write_fitres_photoz_columns(tmp_path):
     """A photo-z fit writes OPT_PHOTOZ and keeps its covariances and prior,
     but zPHOT/zPHOTERR reach the table only as zHD (SKIPTABLE_FITPAR,
-    snlc_fit.F90:19042; OPT_PHOTOZ always written, :18813)."""
+    snlc_fit.F90:19042; OPT_PHOTOZ always written, :18992)."""
     from jax_snlc_core.snana_files import write_varnames_table as _wvt
     from jax_snlc_fit.fitter import BatchFitResult
     from jax_snlc_fit.output import build_fitres_table
@@ -256,8 +260,8 @@ def test_write_fitres_photoz_columns(tmp_path):
 
 def test_header_override_reader(tmp_path):
     """read_header_override_file: DOCANA skip, CID/GALID key detection,
-    comma-list + dir merge, REDSHIFT_CMB alias, key-mix abort."""
-    from jax_snlc_fit.loader import read_header_override_file
+    comma-list + LIST-directory merge, REDSHIFT_CMB alias,
+    NULL_ON_MISSING_EVENT, key-mix abort."""
 
     cdir = tmp_path / "cid"
     cdir.mkdir()
@@ -266,17 +270,23 @@ def test_header_override_reader(tmp_path):
                  "VARNAMES: CID REDSHIFT_HELIO VPEC\n"
                  "SN: 5 0.3 100.0\nSN: 7 0.4 -50.0\n")
     b = cdir / "b.dat"
-    b.write_text("VARNAMES: SNID REDSHIFT_CMB\nROW: 9 0.25\n")
-    match_col, values = read_header_override_file(
+    b.write_text("NULL_ON_MISSING_EVENT: 1\nVARNAMES: SNID,REDSHIFT_CMB\nROW: 9 0.25\n")
+    match_col, values, null_on_missing = read_header_override_file(
         [f"{a},{b}"])  # comma-separated list
     assert match_col == 'SNID'
     assert values['REDSHIFT_HELIO'] == {'5': 0.3, '7': 0.4}
     assert values['VPEC'] == {'5': 100.0, '7': -50.0}
     # REDSHIFT_CMB folds onto REDSHIFT_FINAL
     assert values['REDSHIFT_FINAL'] == {'9': 0.25}
+    assert null_on_missing == {'REDSHIFT_FINAL'}
 
-    # dir scan (both files in cdir are CID-keyed)
-    assert read_header_override_file(None, str(cdir))[0] == 'SNID'
+    # a directory, under either key, reads the files its LIST names
+    (cdir / "cid.LIST").write_text("b.dat\n")
+    assert read_header_override_file(None, str(cdir)).values == {'REDSHIFT_FINAL': {'9': 0.25}}
+    assert read_header_override_file([str(cdir)]).values == {'REDSHIFT_FINAL': {'9': 0.25}}
+    # but not with files as well (INIT_READ_OVERRIDE, snana.F90:2843)
+    with pytest.raises(SNANAError, match="OVERRIDE_FILE and OVERRIDE_DIR"):
+        read_header_override_file([str(a)], str(cdir))
 
     # GALID keying
     g = tmp_path / "g.dat"
@@ -288,13 +298,12 @@ def test_header_override_reader(tmp_path):
         read_header_override_file([str(a), str(g)])
 
 
-def test_header_override_apply(tmp_path):
-    """apply_header_override: overwrite existing column, ignore absent,
-    zHEL->zCMB recompute, and an overridden HOSTGAL_PHOTOZ becoming the
+def test_header_override_apply(tmp_path, caplog):
+    """apply_header_override: overwrite existing column, append an absent
+    one with a warning, NULL_ON_MISSING_EVENT, zHEL->zCMB recompute, and an overridden HOSTGAL_PHOTOZ becoming the
     redshift of an event with no spec-z (rd_override_zphot,
-    sntools_data.c:2206-2218)."""
+    sntools_data.c:2208-2220)."""
     from astropy.table import Table
-    from jax_snlc_fit.loader import apply_header_override
 
     # RA=0,DEC=0 so the CMB dipole gives a known nonzero shift
     t = Table({'SNID': ['1', '2', '3'], 'RA': [0.0, 0.0, 0.0],
@@ -311,17 +320,21 @@ def test_header_override_apply(tmp_path):
     from jax_snlc_core.cosmology import zhelio_to_zcmb
 
     # override REDSHIFT_HELIO on CID 1 (recompute zCMB) + an absent column
-    ov = ('SNID', {'REDSHIFT_HELIO': {'1': 0.35}, 'NOSUCH': {'1': 1.0}})
-    out = apply_header_override(t, ov)
+    ov = HeaderOverride('SNID', {'REDSHIFT_HELIO': {'1': 0.35}, 'NOSUCH': {'1': 1.0}})
+    with caplog.at_level(logging.WARNING):
+        out = apply_header_override(t, ov)
+    assert 'NOSUCH is not in the data' in caplog.text
+    assert 'REDSHIFT_HELIO is not in the data' not in caplog.text
     assert out is not t  # copy, original untouched
     assert out['REDSHIFT_HELIO'][0] == 0.35
+    assert list(out['NOSUCH']) == [1.0, -9.0, -9.0]
     exp = float(zhelio_to_zcmb(np.array([0.35]), np.array([0.0]),
                                    np.array([0.0]))[0])
     assert np.isclose(out['REDSHIFT_FINAL'][0], exp)
     assert out['REDSHIFT_HELIO'][2] == 0.5  # untouched
 
     # HOSTGAL_PHOTOZ overridden on CID 2 (photo-z only) and CID 3 (spec-z)
-    ov = ('SNID', {'HOSTGAL_PHOTOZ': {'2': 0.28, '3': 0.45}})
+    ov = HeaderOverride('SNID', {'HOSTGAL_PHOTOZ': {'2': 0.28, '3': 0.45}})
     out = apply_header_override(t, ov)
     assert np.isclose(out['REDSHIFT_HELIO'][1], 0.28)
     assert np.isclose(out['REDSHIFT_HELIO_ERR'][1], 0.05)
@@ -329,6 +342,18 @@ def test_header_override_apply(tmp_path):
                                    np.array([0.0]))[0])
     assert np.isclose(out['REDSHIFT_FINAL'][1], exp)
     assert out['HOSTGAL_PHOTOZ'][2] == 0.45 and out['REDSHIFT_HELIO'][2] == 0.5
+
+    # NULL_ON_MISSING_EVENT: events the override does not name take the null
+    t['VPEC'] = [100.0, 100.0, 100.0]
+    ov = HeaderOverride('SNID', {'VPEC': {'2': 300.0}}, frozenset({'VPEC'}))
+    assert list(apply_header_override(t, ov)['VPEC']) == [0.0, 300.0, 0.0]
+
+    # keys and labels are matched and written whole, whatever the HEAD's widths
+    t = Table({'SNID': ['12', '7'], 'NAME_IAUC': ['NULL', 'NULL'], 'VPEC': [0.0, 0.0]})
+    ov = HeaderOverride('SNID', {'VPEC': {'123': 300.0}, 'NAME_IAUC': {'7': '2026abc'}})
+    out = apply_header_override(t, ov)
+    assert list(out['VPEC']) == [0.0, 0.0]
+    assert list(out['NAME_IAUC']) == ['NULL', '2026abc']
 
 
 def _quantile_head(n_hosts=2):
@@ -356,8 +381,6 @@ def test_header_override_quantiles_implicit(tmp_path):
     a sim's zSN/zHOST rescale, and HOSTGAL_PHOTOZ[_ERR] from the grid's mean
     and width (rd_override_qzphot_implicit, rd_override_zphot); the old
     HOSTGAL_ZPHOT_Q* spelling aborts."""
-    from jax_snlc_fit.loader import (apply_header_override,
-                                          read_header_override_file)
 
     f = tmp_path / "qz.dat"
     f.write_text("VARNAMES: CID QZPHOT00 QZPHOT01 QZPHOT02 QZPHOT03\n"
@@ -369,7 +392,7 @@ def test_header_override_quantiles_implicit(tmp_path):
     pct = np.asarray(out['HOSTGALz_QUANTILE_PERCENT'])
     assert nbin.tolist() == [4, 3, 0]
     np.testing.assert_allclose(z[0, :4], 1.1 * np.array([0.10, 0.15, 0.20, 0.30]))
-    np.testing.assert_allclose(pct[0, :5], [0, 100 / 3, 200 / 3, 100, -9])
+    np.testing.assert_allclose(pct[0], [0, 100 / 3, 200 / 3, 100])
     np.testing.assert_allclose(z[1, :4], [0.30, 0.40, 0.50, -9])
     np.testing.assert_allclose(pct[1, :4], [0, 50, 100, -9])
     assert (z[2] == -9).all() and (pct[2] == -9).all()
@@ -385,6 +408,14 @@ def test_header_override_quantiles_implicit(tmp_path):
                                 read_header_override_file([f"{f},{g}"]))
     assert list(out['HOSTGAL_PHOTOZ']) == [0.25, 0.2, 0.2]
 
+    # NULL_ON_MISSING_EVENT on the quantiles leaves every host slot's
+    # photo-z unread, so a slot the override does not write is null
+    null = tmp_path / "qz_null.dat"
+    null.write_text("NULL_ON_MISSING_EVENT: 1\n" + f.read_text())
+    out = apply_header_override(_quantile_head(), read_header_override_file([str(null)]))
+    assert list(out['HOSTGAL2_PHOTOZ']) == [-9.0, -9.0, -9.0]
+    np.testing.assert_allclose(out['HOSTGAL_PHOTOZ'][1], 0.45)
+
     old = tmp_path / "old.dat"
     old.write_text("VARNAMES: CID HOSTGAL_ZPHOT_Q000 HOSTGAL_ZPHOT_Q100\nSN: 1 0.1 0.3\n")
     with pytest.raises(SNANAError, match="obsolete OVERRIDE columns .* QZPHOT00 QZPHOT01"):
@@ -395,8 +426,6 @@ def test_header_override_logmass_grid_needs_its_errors_and_increasing_z(tmp_path
     """A LOGMASS(z) grid in the override is refused without its error grid,
     which SNANA would read as the -9 fill, and the fit refuses a grid whose
     redshifts do not increase (init_spline, sntools_spline.c)."""
-    from jax_snlc_fit.loader import (_set_logmass, apply_header_override,
-                                          read_header_override_file)
 
     head = _quantile_head()
     head['HOSTGAL_LOGMASS'] = [10.0, 10.0, 10.0]
@@ -424,18 +453,17 @@ def test_header_override_quantiles_by_galid(tmp_path):
     the file keep their quantiles, and every host of an overridden event
     takes the grid's mean and width, an absent second host's grid being
     empty (rd_override_hostgal2z, rd_override_zphot)."""
-    from jax_snlc_fit.loader import (apply_header_override,
-                                          read_header_override_file)
 
     f = tmp_path / "galid.dat"
     f.write_text("VARNAMES: GALID HOSTGALz_QUANTILE_ZPHOT HOSTGALz_QUANTILE_PERCENT\n"
                  "GAL: 11 0.10 0\nGAL: * 0.20 50\nGAL: * 0.30 100\n"
                  "GAL: 33 0.40 0\nGAL: 33 0.44 100\n")
-    match_col, values = read_header_override_file([str(f)])
-    assert match_col == 'HOSTGAL_OBJID'
-    assert values['HOSTGALz_QUANTILE_ZPHOT'] == {'11': [0.1, 0.2, 0.3], '33': [0.4, 0.44]}
+    override = read_header_override_file([str(f)])
+    assert override.match_col == 'HOSTGAL_OBJID'
+    assert override.values['HOSTGALz_QUANTILE_ZPHOT'] == {'11': [0.1, 0.2, 0.3],
+                                                         '33': [0.4, 0.44]}
 
-    out = apply_header_override(_quantile_head(), (match_col, values))
+    out = apply_header_override(_quantile_head(), override)
     assert list(out['HOSTGALz_NBIN_QUANTILE_ZPHOT']) == [3, 3, 3]
     np.testing.assert_allclose(out['HOSTGALz_QUANTILE_ZPHOT'][0, :3], [0.11, 0.22, 0.33])
     np.testing.assert_allclose(out['HOSTGALz_QUANTILE_ZPHOT'][1, :3], [0.1, 0.2, 0.3])
@@ -630,7 +658,7 @@ def test_reference_cosmology_keys_reach_the_distance_modulus(tmp_path):
 
 def test_mwebv_force_turns_on_above_snanas_threshold(tmp_path):
     """SNANA forces every event's E(B-V) only where MWEBV_FORCE > -0.001
-    (snana.F90:17209), so its default, -9, and a value just below the
+    (snana.F90:17298), so its default, -9, and a value just below the
     threshold leave each event's own E(B-V); zero forces it."""
 
     forced = {}
@@ -795,7 +823,7 @@ def test_selection_ignore_lists_and_caps(tmp_path, cid_list):
 
 def test_flag_use_same_events_overrides_opt_sncid_list(tmp_path):
     """FLAG_USE_SAME_EVENTS is the newer spelling of OPT_SNCID_LIST and wins
-    when positive (snana.F90:6290)."""
+    when positive (snana.F90:6334)."""
 
     nml = tmp_path / "fit.nml"
     nml.write_text("&SNLCINP\n  OPT_SNCID_LIST = 3\n  FLAG_USE_SAME_EVENTS = 1\n&END\n")
@@ -806,7 +834,7 @@ def test_flag_use_same_events_overrides_opt_sncid_list(tmp_path):
 
 def test_varlist_pdf_is_refused_with_the_marginalisation_family(tmp_path):
     """VARLIST_PDF picks which parameters MINUIT's marginalisation grid runs
-    over (snana.F90:14370); its default 'ALL' asks for nothing, any other
+    over (snana.F90:14458); its default 'ALL' asks for nothing, any other
     value is refused with the rest of that family."""
     from jax_snlc_fit.config_parser import _check_rejected_keys, read_keys
 
@@ -823,7 +851,6 @@ def test_redshift_shift_systematics():
     while a host shift applies only when that host measurement IS the SN
     redshift — shifting an unused host-z would corrupt the reported column
     without changing the fit."""
-    from jax_snlc_fit.loader import apply_redshift_shifts
 
     z = np.array([0.2, 0.3, 0.4])
     extras = {'REDSHIFT_HELIO': z.copy()}
@@ -906,15 +933,15 @@ def test_bang_inside_quotes_is_not_a_comment(tmp_path):
     nml = tmp_path / "fit.nml"
     nml.write_text(
         "&SNLCINP\n"
-        "  PRIVATE_CUTWIN_STRING(1) = 'PRIVATE(FOO) 0.0 1.0'\n"
-        "  PRIVATE_CUTWIN_STRING(2) = 'PRIVATE(BAR) != 3'\n"
+        "  PRIVATE_CUTWIN_STRING(1) = 'FOO 0.0 1.0'\n"
+        "  PRIVATE_CUTWIN_STRING(2) = 'BAR != 3'\n"
         "  TEXTFILE_PREFIX = 'a!b'\n"
         "  KCOR_FILE = '/k.fits'   ! a genuine trailing comment\n"
         "&END\n")
     raw = read_keys(nml)
     assert raw["TEXTFILE_PREFIX"] == "a!b"
     assert raw["KCOR_FILE"] == "/k.fits"
-    assert raw["PRIVATE_CUTWIN_STRING(2)"] == "PRIVATE(BAR) != 3"
+    assert raw["PRIVATE_CUTWIN_STRING(2)"] == "BAR != 3"
 
 
 def test_private_cutwin_window_and_veto_spellings(tmp_path):
@@ -925,13 +952,13 @@ def test_private_cutwin_window_and_veto_spellings(tmp_path):
         "&SNLCINP\n"
         "  VERSION_PHOTOMETRY = 'V'\n"
         "  KCOR_FILE = 'k.fits'\n"
-        "  PRIVATE_CUTWIN_STRING(1) = 'PRIVATE(FOO) 0.0 1.0'\n"
-        "  PRIVATE_CUTWIN_STRING(2) = 'PRIVATE(BAR) != 3'\n"
+        "  PRIVATE_CUTWIN_STRING(1) = 'FOO 0.0 1.0'\n"
+        "  PRIVATE_CUTWIN_STRING(2) = 'BAR != 3'\n"
         "&END\n"
         "&FITINP\n  FITMODEL_NAME = 'M'\n  FILTLIST_FIT = 'griz'\n&END\n")
     cfg = build(read_keys(nml))
-    assert cfg.selection.private_cutwin == {'PRIVATE(FOO)': (0.0, 1.0)}
-    assert cfg.selection.private_veto == {'PRIVATE(BAR)': 3.0}
+    assert cfg.selection.private_cutwin == {'FOO': (0.0, 1.0)}
+    assert cfg.selection.private_veto == {'BAR': 3.0}
 
 
 def test_abort_policy_keys_are_live(tmp_path):
@@ -969,8 +996,8 @@ def test_scale_covar_only_switches_the_model_error(tmp_path):
 
 
 def test_file_keys_read_ignorefile_values_as_unset(tmp_path):
-    """SNANA gates each file key through IGNOREFILE (snana.F90:18558-18626,
-    :2816-2831), and EPOCH_IGNORE_FILE skips on NONE or NULL (:12876), so
+    """SNANA gates each file key through IGNOREFILE (snana.F90:18650-18718,
+    :2822-2837), and EPOCH_IGNORE_FILE skips on NONE or NULL (:12964), so
     these values name no file rather than a file called NONE."""
     def cfg(snlcinp):
         nml = tmp_path / "f.nml"
@@ -993,11 +1020,44 @@ def test_file_keys_read_ignorefile_values_as_unset(tmp_path):
     assert cfg("").selection.epoch_ignore_file == 'DEFAULT'
 
 
+def test_epoch_ignore_file_per_version_and_its_mask(tmp_path):
+    """Each data version reads its own <VERSION>.IGNORE under DEFAULT, with
+    entries that may share a line and notes after an entry passed over; a bit
+    list gives the mask unless the file also gives PHOTFLAG_MSKREJ, and the
+    namelist's mask wins over the file's (READ_EPIGNORE_FILE,
+    snana.F90:12881, :13017-13044)."""
+
+    def cfg(snlcinp=""):
+        nml = tmp_path / "f.nml"
+        nml.write_text(
+            "&SNLCINP\n  VERSION_PHOTOMETRY = 'V'\n  KCOR_FILE = 'k.fits'\n"
+            f"{snlcinp}&END\n"
+            "&FITINP\n  FITMODEL_NAME = 'M'\n  FILTLIST_FIT = 'griz'\n&END\n")
+        return build(read_keys(nml))
+    for version, text in (("A", "IGNORE: 5 55000.1234 g  IGNORE: 7 55001 r  error too small\n"
+                                "PHOTFLAG_BITLIST_REJECT: 1,3\n"
+                                "Total number of IGNORE epochs: 2\n"),
+                          ("B", "PHOTFLAG_MSKREJ: 64 PHOTFLAG_BITLIST_REJECT: 1,3\n")):
+        (tmp_path / version).mkdir()
+        (tmp_path / version / f"{version}.LIST").write_text(f"{version}.DAT\n")
+        (tmp_path / version / f"{version}.IGNORE").write_text(text)
+    a = version_epoch_ignore(cfg(), tmp_path / "A")
+    assert a == {'epoch_ignore': {('5', 55000.123, 'g'), ('7', 55001.0, 'r')},
+                 'photflag_mskrej': (10,)}
+    assert version_epoch_ignore(cfg(), tmp_path / "B")['photflag_mskrej'] == (64,)
+    assert version_epoch_ignore(cfg("  PHOTFLAG_MSKREJ = 4\n"),
+                                tmp_path / "B")['photflag_mskrej'] == (4,)
+    (tmp_path / "C").mkdir()
+    (tmp_path / "C" / "C.LIST").write_text("C.DAT\n")
+    assert version_epoch_ignore(cfg(), tmp_path / "C") == {'epoch_ignore': None,
+                                                            'photflag_mskrej': ()}
+
+
 def test_fits_header_and_survey_def_are_required(tmp_path):
     """SNANA reads DATATYPE and SURVEY through snfitsio_errorCheck, which
-    aborts (sntools_dataformat_fits.c:4491-4495, :4537-4541), and
-    read_SURVEYDEF aborts on a missing SURVEY.DEF (sntools.c:3586-3588); an
-    unmatched survey name is still -9 (:3722)."""
+    aborts (sntools_dataformat_fits.c:4516-4520, :4562-4566), and
+    read_SURVEYDEF aborts on a missing SURVEY.DEF (sntools.c:3583-3585); an
+    unmatched survey name is still -9 (:3719)."""
     from astropy.io import fits
     from jax_snlc_fit.output import survey_id
 
@@ -1010,6 +1070,23 @@ def test_fits_header_and_survey_def_are_required(tmp_path):
     with pytest.raises(SNANAError, match="lacks SURVEY"):
         read_snana_fits(str(head), str(tmp_path / "X_PHOT.FITS"))
 
+    # fakes overlaid on images are read as data, and DATATYPE is one of three
+    # (RDGLOBAL, snana.F90:3527-3537)
+    phot = tmp_path / "X_PHOT.FITS"
+    fits.BinTableHDU.from_columns(
+        [fits.Column(name='MJD', format='D', array=np.array([60000.]))]).writeto(phot)
+    primary.header['SURVEY'] = 'DES'
+    snid = fits.BinTableHDU.from_columns(
+        [fits.Column(name='SNID', format='8A', array=np.array(['1']))])
+    for datatype in ('SIM_MAGOBS', 'DATA'):
+        primary.header['DATATYPE'] = datatype
+        fits.HDUList([primary, snid]).writeto(head, overwrite=True)
+        assert read_snana_fits(str(head), str(phot))[2]['is_sim'] is False
+    primary.header['DATATYPE'] = 'SIMULATED'
+    fits.HDUList([primary, snid]).writeto(head, overwrite=True)
+    with pytest.raises(SNANAError, match="unrecognised DATATYPE SIMULATED"):
+        read_snana_fits(str(head), str(phot))
+
     assert survey_id('NOT_A_SURVEY') == -9
     saved = os.environ['SNDATA_ROOT']
     os.environ['SNDATA_ROOT'] = str(tmp_path)
@@ -1018,6 +1095,34 @@ def test_fits_header_and_survey_def_are_required(tmp_path):
             survey_id('LSST')
     finally:
         os.environ['SNDATA_ROOT'] = saved
+
+
+def test_fits_written_before_code_iversion_5_have_one_host_match(tmp_path):
+    """FITS files written before CODE_IVERSION 5, or without the key, predate
+    HOSTGAL_NMATCH, and SNANA gives each event NMATCH = NMATCH2 = 1
+    (sntools_dataformat_fits.c:3759-3762, :4499); later files keep what they
+    store."""
+    from astropy.io import fits
+
+    head = tmp_path / "X_HEAD.FITS"
+    phot = tmp_path / "X_PHOT.FITS"
+    fits.BinTableHDU.from_columns(
+        [fits.Column(name='MJD', format='D', array=np.array([60000.]))]).writeto(phot)
+    snid = fits.BinTableHDU.from_columns(
+        [fits.Column(name='SNID', format='8A', array=np.array(['1', '2']))])
+    primary = fits.PrimaryHDU()
+    primary.header['DATATYPE'] = 'DATA'
+    primary.header['SURVEY'] = 'DES'
+    for code_iversion in (None, 4):
+        if code_iversion is not None:
+            primary.header['HIERARCH CODE_IVERSION'] = code_iversion
+        fits.HDUList([primary, snid]).writeto(head, overwrite=True)
+        stored = read_snana_fits(str(head), str(phot))[0]
+        assert list(stored['HOSTGAL_NMATCH']) == [1, 1]
+        assert list(stored['HOSTGAL_NMATCH2']) == [1, 1]
+    primary.header['HIERARCH CODE_IVERSION'] = 5
+    fits.HDUList([primary, snid]).writeto(head, overwrite=True)
+    assert 'HOSTGAL_NMATCH' not in read_snana_fits(str(head), str(phot))[0].colnames
 
 
 def test_unknown_opt_mwcolorlaw_aborts(tmp_path):
@@ -1328,18 +1433,26 @@ def test_text_host_metadata_matches_fits(snana_fixture, fixture):
         ('HOSTGAL_LOGMASS', 6e-4), ('HOSTGAL_LOGMASS_ERR', 6e-4),
         ('REDSHIFT_HELIO_ERR', 6e-7), ('VPEC', 0.006), ('VPEC_ERR', 0.006),
         ('HOSTGAL_MAG_u', 6e-4), ('HOSTGAL_MAG_r', 6e-4),
-        ('HOSTGALz_QUANTILE_ZPHOT', 6e-5),
-        ('HOSTGALz_QUANTILE_PERCENT', 0.006),
     ):
         np.testing.assert_allclose(text[column], fits[column], atol=tolerance, rtol=0)
+    # a quantile vector holds NBIN values; the cells after them are fill
+    slots = ('HOSTGALz', 'HOSTGAL2z') if fixture == 'hostlib_nbr_zphot_q' else ('HOSTGALz',)
+    for slot in slots:
+        np.testing.assert_array_equal(text[f'{slot}_NBIN_QUANTILE_ZPHOT'],
+                                      fits[f'{slot}_NBIN_QUANTILE_ZPHOT'])
+        nbin = np.asarray(fits[f'{slot}_NBIN_QUANTILE_ZPHOT'])
+        for suffix, tolerance in (('QUANTILE_ZPHOT', 6e-5), ('QUANTILE_PERCENT', 0.006)):
+            column = f'{slot}_{suffix}'
+            filled = np.arange(np.shape(fits[column])[1]) < nbin[:, None]
+            np.testing.assert_allclose(np.asarray(text[column])[filled],
+                                       np.asarray(fits[column])[filled], atol=tolerance, rtol=0)
     # These are the arrays used by the Gaussian and quantile photo-z priors.
     text_prior = _host_photoz_columns(text, True)
     fits_prior = _host_photoz_columns(fits, True)
     for actual, expected in zip(text_prior, fits_prior):
         np.testing.assert_allclose(actual, expected, atol=6e-5, rtol=0)
     if fixture == 'hostlib_nbr_zphot_q':
-        for column in ('HOSTGAL2_OBJID', 'HOSTGAL2_PHOTOZ_ERR', 'HOSTGAL2_MAG_r',
-                       'HOSTGAL2z_QUANTILE_ZPHOT'):
+        for column in ('HOSTGAL2_OBJID', 'HOSTGAL2_PHOTOZ_ERR', 'HOSTGAL2_MAG_r'):
             np.testing.assert_allclose(text[column], fits[column], atol=6e-4, rtol=0)
 
 
@@ -1350,6 +1463,7 @@ def test_text_preserves_large_ids_and_variable_host_grids(tmp_path):
 SNID: event-one
 FILTERS: gr
 FAKE: 0
+RA: 1.0  DEC: 2.0
 REDSHIFT_HELIO: 0.2 +- 0.003
 HOSTGAL_OBJID: 9007199254740993
 HOSTGAL_MAG: 21.1
@@ -1359,6 +1473,7 @@ HOSTGALz_NBIN_LOGMASS_ZGRID: 2
 HOSTGALz_LOGMASS_ZGRID: 0.1 0.3
 HOSTGALz_LOGMASS_VALGRID: 9.1 9.3
 HOSTGALz_LOGMASS_ERRGRID: 0.1 0.2
+NOBS: 1
 VARLIST: MJD BAND FLUXCAL FLUXCALERR
 OBS: 60000 g 10 1
 ''')
@@ -1367,7 +1482,9 @@ OBS: 60000 g 10 1
 SNID: event-two
 FILTERS: gr
 FAKE: 0
+RA: 1.0  DEC: 2.0  REDSHIFT_HELIO: 0.3
 HOSTGAL_NMATCH: 0
+NOBS: 1
 VARLIST: MJD BAND FLUXCAL FLUXCALERR
 OBS: 60001 r 20 2
 ''')
@@ -1387,36 +1504,33 @@ OBS: 60001 r 20 2
 
 
 def test_text_empty_host_grids_support_overrides(tmp_path):
-    """Zero-bin TEXT grids have the same null arrays as FITS, ready for overrides."""
-    from jax_snlc_fit.loader import apply_header_override
+    """Zero-bin TEXT grids carry no vectors, as FITS without them, and an
+    override builds each vector at its own length, for any host slot."""
 
     path = tmp_path / 'empty.DAT'
-    path.write_text("SURVEY: DES\nSNID: 1\nFILTERS: g\n"
+    path.write_text("SURVEY: DES\nSNID: 1\nFILTERS: g\nRA: 1.0  DEC: 2.0  REDSHIFT_FINAL: 0.3\n"
                     "HOSTGAL_OBJID: 10\nHOSTGAL2_OBJID: 20\n"
                     "HOSTGAL_PHOTOZ: -9 +- -9\nHOSTGAL2_PHOTOZ: -9 +- -9\n"
                     "HOSTGALz_NBIN_LOGMASS_ZGRID: 0\n"
                     "HOSTGALz_NBIN_QUANTILE_ZPHOT: 0\n"
                     "HOSTGAL2z_NBIN_QUANTILE_ZPHOT: 0\n"
-                    "VARLIST: MJD BAND FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n")
+                    "NOBS: 1\nVARLIST: MJD BAND FLUXCAL FLUXCALERR\nOBS: 60000 g 10 1\n")
     head, _, _ = read_snana_text([path])
-    for prefix in ('HOSTGALz', 'HOSTGAL2z'):
-        for suffix in ('QUANTILE_ZPHOT', 'QUANTILE_PERCENT'):
-            assert head[f'{prefix}_{suffix}'].shape == (1, 20)
-            assert np.all(head[f'{prefix}_{suffix}'] == -9)
+    assert not any(name in head.colnames for name in (
+        'HOSTGALz_QUANTILE_ZPHOT', 'HOSTGAL2z_QUANTILE_ZPHOT', 'HOSTGALz_LOGMASS_VALGRID'))
     values = {f'HOSTGALz_{name}': {'1': row} for name, row in (
         ('LOGMASS_ZGRID', [0.1, 0.3]), ('LOGMASS_VALGRID', [9., 10.]),
         ('LOGMASS_ERRGRID', [0.1, 0.1]))}
-    updated = apply_header_override(head, ('SNID', values))
+    updated = apply_header_override(head, HeaderOverride('SNID', values))
     assert updated['HOSTGALz_NBIN_LOGMASS_ZGRID'][0] == 2
-    np.testing.assert_allclose(updated['HOSTGALz_LOGMASS_VALGRID'][0, :2], [9., 10.])
-    assert np.all(updated['HOSTGALz_LOGMASS_VALGRID'][0, 2:] == -9)
+    np.testing.assert_allclose(updated['HOSTGALz_LOGMASS_VALGRID'], [[9., 10.]])
 
-    quantiles = {'HOSTGALz_QUANTILE_ZPHOT': {'10': [0.1, 0.2], '20': [0.3, 0.4]},
-                 'HOSTGALz_QUANTILE_PERCENT': {'10': [0., 100.], '20': [0., 100.]}}
-    updated = apply_header_override(head, ('HOSTGAL_OBJID', quantiles))
-    for prefix, expected in (('HOSTGALz', [0.1, 0.2]), ('HOSTGAL2z', [0.3, 0.4])):
-        assert updated[f'{prefix}_NBIN_QUANTILE_ZPHOT'][0] == 2
-        np.testing.assert_allclose(updated[f'{prefix}_QUANTILE_ZPHOT'][0, :2], expected)
+    quantiles = {'HOSTGALz_QUANTILE_ZPHOT': {'10': [0.1, 0.2, 0.25], '20': [0.3, 0.4]},
+                 'HOSTGALz_QUANTILE_PERCENT': {'10': [0., 50., 100.], '20': [0., 100.]}}
+    updated = apply_header_override(head, HeaderOverride('HOSTGAL_OBJID', quantiles))
+    for prefix, expected in (('HOSTGALz', [[0.1, 0.2, 0.25]]), ('HOSTGAL2z', [[0.3, 0.4]])):
+        assert updated[f'{prefix}_NBIN_QUANTILE_ZPHOT'][0] == len(expected[0])
+        np.testing.assert_allclose(updated[f'{prefix}_QUANTILE_ZPHOT'], expected)
 
 
 @pytest.mark.parametrize('reverse', [False, True])
@@ -1424,12 +1538,12 @@ def test_text_version_and_optional_epoch_columns(tmp_path, reverse):
     """Version strings and per-event optional columns retain their meanings."""
     first = tmp_path / 'one.DAT'
     second = tmp_path / 'two.DAT'
-    header = 'SURVEY: DES\nFILTERS: g\nSNANA_VERSION: v12_00\n'
-    first.write_text(header + 'SNID: 1\n'
+    header = 'SURVEY: DES\nFILTERS: g\nSNANA_VERSION: v12_00\nRA: 1  DEC: 2  REDSHIFT_FINAL: 0.3\n'
+    first.write_text(header + 'SNID: 1\nNOBS: 2\n'
                      'VARLIST: MJD FLT FLUXCAL FLUXCALERR PHOTFLAG FIELD ZPT\n'
                      'OBS: 60000 g 10 1 8 C3 27.5\n'
                      'OBS: 60001 g 11 1 0 C3 27.5\n')
-    second.write_text(header + 'SNID: 2\n'
+    second.write_text(header + 'SNID: 2\nNOBS: 1\n'
                       'VARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
                       'OBS: 60002 g 20 2\n')
     paths = [second, first] if reverse else [first, second]
@@ -1446,20 +1560,129 @@ def test_text_version_and_optional_epoch_columns(tmp_path, reverse):
     np.testing.assert_array_equal(head['PTROBS_MAX'], [1, 3] if reverse else [2, 3])
 
 
+def test_text_files_read_as_snanas_word_stream(tmp_path):
+    """SNANA reads a TEXT file as one stream of words: keys may share a line,
+    a value may carry units after it and its error after '+_', the
+    photometry takes the first NVAR VARLIST names and row values, and the
+    older key and column spellings read as the FITS ones
+    (sntools_dataformat_text.c:1738, :2195, :3025). A short row, a count of
+    rows other than NOBS and a NaN flux are errors."""
+
+    path = tmp_path / 'one.DAT'
+
+    def write(obs, nobs=2):
+        path.write_text(
+            'SURVEY: DES(X)  SNID: 7  FILTERS: gr  FAKE: 0\n'
+            'RA: 10.5 deg   DECL: -3.25 deg  TYPE: 101  SEARCH_PEAKMJD: 60010.5\n'
+            'REDSHIFT_CMB: 0.3 +_ 0.01 (CMB)  SIM_COMMENT: a b c  PRIVATE(FOO): 2.5\n'
+            f'NOBS: {nobs}  NVAR: 7\n'
+            'VARLIST: MJD FLT FIELD FLUXCAL FLUXCALERR NEA CCDNUM MAGERR\n'
+            f'{obs}END:\n')
+
+    write('OBS: 60000 g NULL 10 1 3.0 5 0.1\nOBS: 60001 r C3 nan 1 4.0 6\n')
+    with pytest.raises(SNANAError, match='FLUXCAL is NaN'):
+        read_snana_text([path])
+    write('OBS: 60000 g NULL 10 1 3.0 5 0.1\nOBS: 60001 r C3 11 1 4.0 6\n')
+    head, phot, metadata = read_snana_text([path])
+    assert metadata['survey'] == 'DES'
+    assert (head['SUBSURVEY'][0], head['RA'][0], head['DEC'][0]) == ('X', 10.5, -3.25)
+    assert (head['SNTYPE'][0], head['PEAKMJD'][0]) == (101, 60010.5)
+    assert (head['REDSHIFT_FINAL'][0], head['REDSHIFT_FINAL_ERR'][0]) == (0.3, 0.01)
+    assert 'SIM_COMMENT' not in head.colnames
+    # PRIVATE variables are read by name, all of them unless a list names some
+    assert _head_extras(head, (), None, None)['PRIVATE(FOO)'][0] == 2.5
+    with pytest.raises(SNANAError, match=r'has no PRIVATE\(BAR\)'):
+        _head_extras(head, ('BAR',), None, None)
+    assert list(phot['BAND']) == ['g', 'r'] and list(phot['FIELD']) == ['VOID', 'C3']
+    assert list(phot['PSF_NEA']) == [3.0, 4.0] and list(phot['DETNUM']) == [5, 6]
+    assert 'MAGERR' not in phot.colnames
+
+    write('OBS: 60000 g NULL 10 1 3.0 5\nOBS: 60001 r C3 11 1 4.0\n')
+    with pytest.raises(SNANAError, match='holds 6 values for the 7'):
+        read_snana_text([path])
+    write('OBS: 60000 g NULL 10 1 3.0 5\n')
+    with pytest.raises(SNANAError, match='holds 1 OBS rows, NOBS 2'):
+        read_snana_text([path])
+
+
+def test_text_obs_columns_are_those_snana_reads(tmp_path):
+    """OBJID, NITE and SNR are passed over, a PHOTFLAG may be written as a
+    float, only the values SNANA reads through get_dbl_sntextio_obs may not
+    be NaN, and any other column is an error (rd_sntextio_varlist_obs,
+    sntools_dataformat_text.c:1782-1884, :3092-3215)."""
+    path = tmp_path / 'one.DAT'
+
+    def write(varlist, obs):
+        path.write_text('SURVEY: DES  SNID: 7  FILTERS: g\nRA: 1  DEC: 2  REDSHIFT_FINAL: 0.3\n'
+                        f'NOBS: 1\nVARLIST: MJD BAND FLUXCAL FLUXCALERR {varlist}\n'
+                        f'OBS: 60000 g 10 1 {obs}\nEND:\n')
+
+    write('PHOTFLAG PHOTPROB OBJID NITE', '4096.0 nan a12b 20240101')
+    _, phot, _ = read_snana_text([path])
+    assert phot['PHOTFLAG'][0] == 4096 and np.isnan(phot['PHOTPROB'][0])
+    assert 'OBJID' not in phot.colnames and 'NITE' not in phot.colnames
+    for name in ('FLUXCALERRR', 'PSF_NEA', 'ZEROPT_ERR'):
+        write(name, '1')
+        with pytest.raises(SNANAError, match=f'{name}, which is not an OBS column'):
+            read_snana_text([path])
+
+
+def test_psf_nea_is_taken_per_event(tmp_path):
+    """An event whose epochs give a positive PSF_NEA takes its PSF as one
+    Gaussian of that area, and any other its PSF_SIG columns
+    (snana.F90:5007-5027), so a version mixing the two keeps both."""
+    for snid, psf in ((1, 'NEA'), (2, 'PSF_SIG1')):
+        (tmp_path / f'{snid}.DAT').write_text(
+            f'SURVEY: DES  SNID: {snid}  FILTERS: g  RA: 1.0  DEC: 2.0  REDSHIFT_FINAL: 0.3\n'
+            f'NOBS: 1  NVAR: 5\nVARLIST: MJD FLT FLUXCAL FLUXCALERR {psf}\n'
+            f'OBS: 60000 g 10 1 {4 * np.pi * 9.0 if psf == "NEA" else 1.5}\nEND:\n')
+    head, phot, metadata = read_snana_text([tmp_path / '1.DAT', tmp_path / '2.DAT'])
+    batch = batch_from_columns(head, phot, is_sim=False, survey=metadata['survey'],
+                               zp_fluxcal=27.5, sim_mw_colour_law=None, keep_obs_extras=True)
+    np.testing.assert_allclose(batch.obs_extras['PSF_SIG1'][:, 0], [3.0, 1.5])
+    np.testing.assert_array_equal(batch.obs_extras['PSF_SIG2'][:, 0], [0.0, 0.0])
+
+
+def test_an_events_field_list_comes_from_its_epochs(tmp_path):
+    """An event's FIELD is the SURVEY.DEF fields its epochs name, whatever
+    FIELD its header gives (snana.F90:19209-19238), matched in any case,
+    where SNANA matches no field to a lower-case epoch FIELD."""
+    for snid, field in ((1, 'D1'), (2, 'd1')):
+        (tmp_path / f'{snid}.DAT').write_text(
+            f'SURVEY: SNLS  SNID: {snid}  FILTERS: g  RA: 1.0  DEC: 2.0  REDSHIFT_FINAL: 0.3\n'
+            f'FIELD: VOID\nNOBS: 1  NVAR: 5\nVARLIST: MJD FLT FIELD FLUXCAL FLUXCALERR\n'
+            f'OBS: 60000 g {field} 10 1\nEND:\n')
+    head, phot, metadata = read_snana_text([tmp_path / '1.DAT', tmp_path / '2.DAT'])
+    batch = batch_from_columns(head, phot, is_sim=False, survey=metadata['survey'],
+                               zp_fluxcal=27.5, sim_mw_colour_law=None)
+    assert list(batch.head_extras['FIELD']) == ['D1', 'D1']
+
+
+def test_every_text_event_gives_the_first_events_private_variables(tmp_path):
+    """Each event gives as many PRIVATE variables as the first
+    (check_head_sntextio, sntools_dataformat_text.c:3007-3016)."""
+    for snid, private in ((1, 'PRIVATE(FOO): 2.5\n'), (2, '')):
+        (tmp_path / f'{snid}.DAT').write_text(
+            f'SURVEY: DES  SNID: {snid}  FILTERS: g  RA: 1.0  DEC: 2.0  REDSHIFT_FINAL: 0.3\n'
+            f'{private}NOBS: 1  NVAR: 4\nVARLIST: MJD FLT FLUXCAL FLUXCALERR\n'
+            f'OBS: 60000 g 10 1\nEND:\n')
+    with pytest.raises(SNANAError, match='gives 0 PRIVATE variables'):
+        read_snana_text([tmp_path / '1.DAT', tmp_path / '2.DAT'])
+
+
 @pytest.mark.parametrize('reverse', [False, True])
 def test_missing_header_values_keep_loader_defaults(tmp_path, reverse):
     """Reading events together preserves redshift fallbacks and trigger defaults."""
-    from jax_snlc_fit.loader import _head_metadata, batch_from_columns
 
     paths = [tmp_path / 'first.DAT', tmp_path / 'second.DAT']
     headers = [
-        'REDSHIFT_HELIO: 0.2 +- 0.001\nREDSHIFT_FINAL: 0.21 +- 0.002\n'
+        'REDSHIFT_HELIO: 0.2 +- 0.001\nREDSHIFT_FINAL: 0.1986 +- 0.002\n'
         'MWEBV: 0.05 +- 0.003\nVPEC: 100\nMJD_TRIGGER: 60001\nPRIVATE: 7\n',
         'REDSHIFT_CMB: 0.25 +- 0.004\n',
     ]
     for i, (path, header) in enumerate(zip(paths, headers)):
-        path.write_text(f'SURVEY: DES\nSNID: {i}\nFILTERS: g\nFAKE: 0\n'
-                        + header + 'VARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
+        path.write_text(f'SURVEY: DES\nSNID: {i}\nFILTERS: g\nFAKE: 0\nRA: 1  DEC: 2\n'
+                        + header + 'NOBS: 1\nVARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
                         'OBS: 60000 g 10 1\n')
     if reverse:
         paths.reverse()

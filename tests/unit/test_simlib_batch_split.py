@@ -52,7 +52,7 @@ def test_each_job_starts_one_slice_further_in(cfg):
 
 def test_gentype_staggers_which_slice_a_job_reads(cfg):
     """GENTYPE rotates the job->slice mapping so different models do not all
-    hammer the same part of the SIMLIB (snlc_sim.c:19108)."""
+    hammer the same part of the SIMLIB (snlc_sim.c:19127)."""
     slice_len = _POOL // 4
     starts = [simlib_job_start(_batched(cfg, j, 4, gentype=1), _POOL)
               for j in (1, 2, 3, 4)]
@@ -62,7 +62,7 @@ def test_gentype_staggers_which_slice_a_job_reads(cfg):
 
 
 def test_small_pool_is_not_split(cfg):
-    """SNANA only splits a pool of more than 100 entries (snlc_sim.c:19091)."""
+    """SNANA only splits a pool of more than 100 entries (snlc_sim.c:19110)."""
     assert simlib_job_start(_batched(cfg, 2, 4), 100) == 0
     assert simlib_job_start(_batched(cfg, 2, 4), 101) > 0
 
@@ -92,7 +92,7 @@ def test_jobs_draw_disjoint_libids_covering_the_pool(cfg):
 
 
 def test_idlock_cannot_combine_with_batch_mode(tmp_path):
-    """One pins a single LIBID, the other splits the library (snlc_sim.c:19150)."""
+    """One pins a single LIBID, the other splits the library (snlc_sim.c:19171)."""
     inp = tmp_path / "in.input"
     inp.write_text(open(_A_FIXTURE_INPUT).read() + "\nSIMLIB_IDLOCK: 3\n")
     with pytest.raises(SNANAError, match="IDLOCK"):

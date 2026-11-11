@@ -6,25 +6,25 @@ from dataclasses import replace
 import numpy as np
 
 
-# blindflag bits, mirroring SALT2mu.c:1619-1621.
+# blindflag bits, mirroring SALT2mu.c:1621-1623.
 BLINDMASK_MUz = 1        # add cos(10*z) to each M0DIF bin
 BLINDMASK_FIXPAR = 2     # offset the fixed reference OL/w0
 BLINDMASK_SIM = 64       # extend blinding to sims, which are otherwise unblinded
 
 
-# blind offset = amplitude * cos(phase), per fit-parameter slot (SALT2mu.c:6749-6753).
+# blind offset = amplitude * cos(phase), per fit-parameter slot (SALT2mu.c:6759-6763).
 BLINDPAR_DEFAULT = {9: (0.06, 23434.0), 11: (0.20, 8430.0)}
-BLIND_COSINE_M0 = 10.0   # cos(BLIND_COSINE_M0 * z) for MUz (SALT2mu.c:25191)
+BLIND_COSINE_M0 = 10.0   # cos(BLIND_COSINE_M0 * z) for MUz (SALT2mu.c:25225)
 
 
 def resolve_blinding(config, isdata_real: bool):
     """The config with the reference cosmology offset by ``amp * cos(phase)`` and
     ``blindflag`` reduced to what actually applies (apply_blindpar / ISBLIND_FIXPAR,
-    SALT2mu.c:3154/25141).
+    SALT2mu.c:3157/25175).
 
     ``unblind`` keeps the pre-offset values, which SNANA holds in COSPAR_UNBLIND
-    (:22195) and the CC prior reads. Called once the data read has established
-    real-vs-sim, before any reference distance is computed (:6905).
+    (:22209) and the CC prior reads. Called once the data read has established
+    real-vs-sim, before any reference distance is computed (:6915).
     """
     blindflag = config.blindflag
     if not isdata_real and not (blindflag & BLINDMASK_SIM):
@@ -43,7 +43,7 @@ def resolve_blinding(config, isdata_real: bool):
 
 def unblinded(config):
     """The config with the reference cosmology back at the values the user gave
-    (COSPAR_UNBLIND, SALT2mu.c:22195)."""
+    (COSPAR_UNBLIND, SALT2mu.c:22209)."""
     return replace(config, **config._unblind) if config._unblind else config
 
 

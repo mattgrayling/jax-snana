@@ -452,7 +452,7 @@ def _write_input_with_shared_field_redcov(tmp_path, band):
 def test_redcov_groups_sharing_an_observed_field_abort(tmp_path):
     """SNANA looks up an epoch's REDCOV entry as it simulates the epoch, and
     aborts when its band and field match more than one entry
-    (INDEX_REDCOV_FLUXERRMODEL, snlc_sim.c:28090). Two groups that both hold
+    (INDEX_REDCOV_FLUXERRMODEL, snlc_sim.c:28148). Two groups that both hold
     the observed field TOY_A, each with a g entry, load and then abort on
     the first g epoch in TOY_A."""
     inp = _write_input_with_shared_field_redcov(tmp_path, "g")
@@ -463,7 +463,7 @@ def test_redcov_groups_sharing_an_observed_field_abort(tmp_path):
 
 def test_redcov_overlap_in_a_band_the_model_cannot_generate_is_not_fatal(tmp_path):
     """SNANA generates no epoch in a band the model does not cover at the
-    event's redshift (OBSFLAG_GEN, snlc_sim.c:13881-13885, :27604), so those
+    event's redshift (OBSFLAG_GEN, snlc_sim.c:13899-13903, :27662), so those
     epochs never look up a REDCOV entry. At z = 1.2-1.4 the u band lies below
     the SALT3 surfaces' 2000 A edge: the u epochs observed in TOY_A, where
     two entries overlap, are not generated and the run completes."""
@@ -500,7 +500,7 @@ def test_redcov_override_replaces_the_files_entries(tmp_path):
 
 def test_fluxerrmodel_file_without_maps_turns_the_model_off(tmp_path):
     """With NMAP_FLUXERRMODEL = 0 the simulation skips the whole
-    FLUXERRMODEL block, REDCOV included (snlc_sim.c:28035), so a file
+    FLUXERRMODEL block, REDCOV included (snlc_sim.c:28093), so a file
     holding only REDCOV leaves the noise model off."""
     fluxerr = tmp_path / "REDCOV_ONLY.DAT"
     fluxerr.write_text("REDCOV: g:0.300,r:0.300\n")

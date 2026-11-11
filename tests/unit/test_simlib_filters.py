@@ -70,7 +70,7 @@ def test_named_population_ranges_constrain_simlib_entries(native):
 
 def test_minseason_drops_the_season_not_its_epochs():
     """A short season leaves the entry's season bookkeeping but its epochs stay
-    (remove_short_SIMLIB_SEASON, snlc_sim.c:21584). SNANA narrows
+    (remove_short_SIMLIB_SEASON, snlc_sim.c:21624). SNANA narrows
     MJDRANGE_SEASON/SURVEY and never touches the observations."""
     mjds = np.concatenate([
         np.linspace(60000.0, 60200.0, 20),
@@ -86,7 +86,7 @@ def test_minseason_drops_the_season_not_its_epochs():
 
 def test_minseason_keeps_a_libid_with_no_surviving_season():
     """SNANA leaves such a LIBID in the cycle with MJDRANGE_SURVEY = -9
-    (snlc_sim.c:21649); dropping it would shift every later event's entry."""
+    (snlc_sim.c:21689); dropping it would shift every later event's entry."""
     mjds = np.concatenate([
         np.linspace(60000.0, 60010.0, 5),
         np.linspace(60500.0, 60510.0, 5),
@@ -137,7 +137,7 @@ def test_genrange_narrow_filter(attr, values, bounds, kept):
 def test_genrange_ra_is_a_plain_window():
     """GENRANGE_RA compares the entry's RA as written, with no wrap, so the
     default -360 to 360 still rejects an entry that gives DEC but no RA
-    (RA 9999, snlc_sim.c:20133-20134)."""
+    (RA 9999, snlc_sim.c:20173-20174)."""
     fields = [_make_field(libid=0, ra=355.0), _make_field(libid=1, ra=9999.0),
               _make_field(libid=2, ra=-5.0)]
     sim = SimlibData(simlib_file='', fields=fields)
@@ -179,7 +179,7 @@ def test_filter_band_takes_the_last_character_as_intfilter_does():
 def test_entry_peakmjd_outside_the_input_range_is_skipped():
     """USE_SIMLIB_PEAKMJD: an entry whose PEAKMJD value is not strictly
     inside GENRANGE_PEAKMJD is skipped, the edges included
-    (check_SIMLIB_GENRANGE, snlc_sim.c:22288, :20167-20180); without the
+    (check_SIMLIB_GENRANGE, snlc_sim.c:22327, :20207-20220); without the
     flag the value is not read and every entry stays."""
     values = [58999.0, 59000.0, 59500.0, 62000.0, 62500.0]
     def entries():
@@ -219,7 +219,7 @@ def test_entry_genranges_are_clipped_or_the_entry_skipped():
 def test_entry_salt2_values_are_checked_under_use_simlib_salt2():
     """USE_SIMLIB_SALT2: an entry's SALT2c value or GENRANGE_SALT2c is checked
     against the input's range for the parameter, as PEAKMJD is
-    (snlc_sim.c:20184-20205); without the flag the entry is not read."""
+    (snlc_sim.c:20226-20247); without the flag the entry is not read."""
     def entries():
         fields = [_make_field(libid=i) for i in range(3)]
         fields[0].header_values = {'SALT2c': '0.1'}

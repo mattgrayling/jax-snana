@@ -477,9 +477,9 @@ def test_hdibc_blend_matches_wfit_per_event(name):
     wfit.exe's, event by event.
 
     `wfit.exe` writes mu_bcor0/1_hdibc and f_interp_hdibc per event with
-    -outfile_resid (wfit.c:5366-5408); tests/fixtures/wfit/hdibc/README.md
+    -outfile_resid (wfit.c:5646-5688); tests/fixtures/wfit/hdibc/README.md
     records the runs. wfit removes the mean residual from the mu it prints
-    (wfit.c:5377), so the blended distance is compared about its own mean.
+    (wfit.c:5657), so the blended distance is compared about its own mean.
     """
     columns, omega_m = _hdibc_reference(name)
     data = load_hubble_diagrams(_hdibc_config())
@@ -533,7 +533,7 @@ def test_covariance_npz_without_nsn_is_refused(tmp_path):
 
 def test_labelled_covariance_text_roundtrips(tmp_path):
     """--label_cov_rows appends a comment to each value line; wfit reads the
-    first token only (wfit.c:2011), so the file still loads."""
+    first token only (wfit.c:2078), so the file still loads."""
     matrix = np.array([[4.0, 1.0], [1.0, 3.0]])
     rows = (np.array(["1234", "5678"]), np.array([10, 10]),
             np.array([0.1, 0.2]))

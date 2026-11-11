@@ -274,7 +274,7 @@ def _component_mass(branch, peak, sig_lo, sig_hi, pr_lo, pr_hi, lo, hi, range_sh
     """Accepted mass (probability of no outer restart) for one component.
 
     The skew branch has mass 1: getRan_skewGauss rejects proposals outside
-    [xmin, xmax] inside its own loop (sntools.c:7591-7593), so the outer
+    [xmin, xmax] inside its own loop (sntools.c:7286-7288), so the outer
     range check never fires for it. The flat and delta branches draw within
     range by construction. The bifurcated and peakrange branches draw
     untruncated values that the outer loop rejects, so their mass is the
@@ -749,7 +749,7 @@ def _sample_exp_halfgauss_shifted(key, dist, shifts, bounds=None):
     return jnp.where(point_distribution, range_lo, value)
 
 
-# SIM_WGT_POPULATION population functions (rewgt_genPDF, snlc_sim.c:31492)
+# SIM_WGT_POPULATION population functions (rewgt_genPDF, snlc_sim.c:31552)
 def pdf_gengauss_asym(x, g, rewgt=1.0):
     """funVal_GENGAUSS_ASYM (sntools_genGauss_asym.c:186): the peakrange
     plateau with Gaussian wings, plus the second peak scaled by the width

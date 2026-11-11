@@ -32,7 +32,9 @@ def main():
             keys = []
             for item in overrides:
                 key, value = item.split("=", 1)
-                if key in ("datafile", "simfile_biascor", "simfile_ccprior"):
+                # simfile_ccprior=H11 names SNANA's built-in prior, not a file
+                if (key in ("datafile", "simfile_biascor", "simfile_ccprior")
+                        and value != "H11"):
                     source = ROOT / value
                     target = work / f"{name}_{key}.FITRES"
                     with open_text(source) as stream:

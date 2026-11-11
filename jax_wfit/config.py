@@ -211,7 +211,7 @@ class WFITConfig:
             self.cospar_yaml = f"{primary}.wfit.yaml"
         if self.outfile_cospar is None:
             # wfit writes the cospar unconditionally, naming it from the HD
-            # input when no -outfile_cospar is given (wfit.c:5151-5153)
+            # input when no -outfile_cospar is given (wfit.c:5431-5433)
             self.outfile_cospar = f"{primary}.cospar"
 
     def bounds(self, name: str) -> tuple[float, float]:
@@ -234,7 +234,7 @@ class WFITConfig:
         """Whether the Gaussian Omega_m prior contributes to the chi-square.
 
         A BAO prior replaces it rather than adding to it: ``get_chi2_priors``
-        takes one branch or the other (wfit.c:4446-4460).
+        takes one branch or the other (wfit.c:4726-4740).
         """
         return self.ompri_enabled and not self.bao
 
@@ -520,7 +520,7 @@ def cli_keys(args: argparse.Namespace) -> dict[str, object]:
         raw["bao"] = args.bao or args.bao_sim
         raw["bao_sim"] = args.bao_sim
     if args.om_sim is not None and args.ompri is None:
-        raw["ompri"] = args.om_sim   # -om_sim recentres the prior (wfit.c:1051)
+        raw["ompri"] = args.om_sim   # -om_sim recentres the prior (wfit.c:1097)
     if args.prior_perturbation_seed is not None:
         # SNANA's -ranseed_Rcmb is the trigger as well as the seed
         raw["perturb_priors"] = args.prior_perturbation_seed > 0

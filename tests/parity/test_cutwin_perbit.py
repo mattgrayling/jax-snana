@@ -96,7 +96,7 @@ def _run_kernel(cuts, snrs, mjds, epoch_mask, filter_names=("LSST-g", "LSST-r"))
 
 def test_cutwin_epochs_selects_fast_transients():
     """CUTWIN_EPOCHS passes when TIME_ABOVE_SNRMIN < TRANGE[1]
-    (snlc_sim.c:24295-24297), with strict SNR > (:24277) and pass when no
+    (snlc_sim.c:24347-24349), with strict SNR > (:24329) and pass when no
     epoch qualifies (TIME_ABOVE=0)."""
     from dataclasses import replace
     from jax_snlc_sim.simulation import Cuts
@@ -119,7 +119,7 @@ def test_cutwin_epochs_selects_fast_transients():
 
 def test_nobs_mjddif_counts_like_snana():
     """MJD_last starts at -99999 so the first accepted epoch counts, and
-    diffs skip rejected epochs (snlc_sim.c:24194, 24272-24273)."""
+    diffs skip rejected epochs (snlc_sim.c:24252, 24324-24325)."""
     from dataclasses import replace
     from jax_snlc_sim.simulation import Cuts
 
@@ -142,7 +142,7 @@ def test_nobs_mjddif_counts_like_snana():
 
 def test_nobs_snr_counts_filtered_epochs_inclusive():
     """The CUTWIN_NEPOCH SNR count uses SNR >= threshold over the filtered
-    epoch set (snlc_sim.c:24251): an epoch at exactly the threshold counts,
+    epoch set (snlc_sim.c:24303): an epoch at exactly the threshold counts,
     and epochs outside the mask never do."""
     from dataclasses import replace
     from jax_snlc_sim.simulation import Cuts

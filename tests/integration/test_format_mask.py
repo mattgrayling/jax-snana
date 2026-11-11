@@ -172,7 +172,7 @@ def test_genprefix_and_simlib_survey(tmp_path):
 
     The override has to name a real SURVEY.DEF survey: SNANA resolves IDSURVEY
     from it while reading the SIMLIB header and aborts otherwise
-    (SIMLIB_prepGlobalHeader, snlc_sim.c:18577). CSP differs from the fixture's
+    (SIMLIB_prepGlobalHeader, snlc_sim.c:18594). CSP differs from the fixture's
     native LSST.
     """
     fdir = _run_extra(32, str(tmp_path / "gp"),
@@ -210,13 +210,13 @@ def test_prescale_simgen_dump(tmp_path):
 
 def test_no_dump_without_simgen_dump(fits_baseline):
     """No SIMGEN dump is written without a SIMGEN_DUMP/SIMGEN_DUMPALL key
-    (wr_SIMGEN_DUMP returns when NVAR_SIMGEN_DUMP < 0, snlc_sim.c:14833)."""
+    (wr_SIMGEN_DUMP returns when NVAR_SIMGEN_DUMP < 0, snlc_sim.c:14851)."""
     assert not os.path.exists(os.path.join(fits_baseline, "JAX_FMASK.DUMP"))
 
 
 def test_simgen_dump_zero_lists_and_stops(tmp_path, capsys):
     """SIMGEN_DUMP: 0 prints the available dump variables and stops before
-    generating (PREP_SIMGEN_DUMP(0) + debugexit, snlc_sim.c:14860-14862).
+    generating (PREP_SIMGEN_DUMP(0) + debugexit, snlc_sim.c:14878-14880).
     `prepare` returns no compiled simulator, so every caller stops, not only
     the command line."""
     outdir = str(tmp_path / "d0")
@@ -234,7 +234,7 @@ def test_simgen_dump_zero_lists_and_stops(tmp_path, capsys):
 
 def test_fits_list_names_head_file(fits_baseline):
     """The FITS-mode .LIST carries the actual HEAD file name
-    (WR_SNFITSIO_INIT returns it, snlc_sim.c:31000-31008)."""
+    (WR_SNFITSIO_INIT returns it, snlc_sim.c:31058-31066)."""
     listtxt = Path(fits_baseline, "JAX_FMASK.LIST").read_text()
     assert listtxt == "JAX_FMASK_HEAD.FITS\n"
 
@@ -254,7 +254,7 @@ def test_readme_reports_resolved_config(tmp_path):
 
 def test_readme_sntype_defaults_without_sntype_keys(tmp_path):
     """Without SNTYPE_Ia/SNTYPES_Ia the README writes SNANA's defaults, 1 and
-    101 (snlc_sim.c:811-812), whatever GENTYPE is."""
+    101 (snlc_sim.c:813-814), whatever GENTYPE is."""
     outdir = tmp_path / "st"
     os.makedirs(outdir)
     inp = outdir / "in.input"
@@ -274,7 +274,7 @@ def test_readme_sntype_defaults_without_sntype_keys(tmp_path):
 def test_wgt_population_undoes_the_exponent_reweighting(tmp_path):
     """GENPDF_EXPON_REWGT draws stretch and colour from prob^e; the written
     weight is prob(nominal)/prob(drawn), as SNANA's rewgt_genPDF computes it
-    (snlc_sim.c:31492), so reweighting the output recovers the population."""
+    (snlc_sim.c:31552), so reweighting the output recovers the population."""
     fdir = _run_extra(32, str(tmp_path / "wp"), "GENPDF_EXPON_REWGT: 2.0\n")
     with fits.open(resolve_fits_path(os.path.join(fdir, "JAX_FMASK_HEAD.FITS"))) as h:
         x1 = np.asarray(h[1].data["SIM_SALT2x1"], dtype=float)

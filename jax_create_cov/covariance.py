@@ -39,7 +39,7 @@ WRITE_MASK_FACTORIZED = 8
 
 
 def mu_difference(df1: pd.DataFrame, df2: pd.DataFrame, scale: float) -> np.ndarray:
-    """Scaled distance-modulus difference between two variants (:1168).
+    """Scaled distance-modulus difference between two variants (:1203).
 
     Subtracting MUREF from each side as well as MU is what makes this work for
     systematics that move redshifts (zshift, vpec, every zPHOT variant): the
@@ -72,14 +72,14 @@ class Contribution:
 
 
 def covsys_from_covfile(base: pd.DataFrame, path: str) -> np.ndarray:
-    """Read an externally supplied covariance, e.g. a vpec systematic (:1223).
+    """Read an externally supplied covariance, e.g. a vpec systematic (:1380).
 
     A text file holds ``CID1 IDSURVEY1 CID2 IDSURVEY2 MU_COV`` rows, comma-
     or space-separated, each placed where it names. An ``.npz`` file holds
     arrays ``CID``, ``IDSURVEY`` and ``MU_COV``, the last the upper triangle
     of the covariance over those events, which is read as the whole symmetric
     matrix; SNANA places only one triangle of it
-    (get_covsy_from_npzcovfile, create_covariance.py:1243). Neither form
+    (get_covsy_from_npzcovfile, create_covariance.py:1258). Neither form
     carries a FIELD, so events are matched on CID_IDSURVEY only, coarser than
     the CID_IDSURVEY_FIELD the diagrams are indexed by. Events outside the
     diagram are skipped.
@@ -182,7 +182,7 @@ def contributions(diagrams: dict[str, pd.DataFrame],
             fitopt_label, muopt_label, diff=diff)
 
     for label, weight, path in extra_covs:
-        # SNANA stores the weight and never applies it (:1453)
+        # SNANA stores the weight and never applies it (:1472)
         result[f"DEFAULT|{label}"] = Contribution(
             "DEFAULT", label, cov=covsys_from_covfile(base, path) * weight ** 2)
     return list(result.values())
@@ -192,7 +192,7 @@ def covsys_from_covopt(covopt: Covopt, contribs: list[Contribution],
                        base: pd.DataFrame,
                        calibrators: list[str] | None = None, *,
                        factorized: bool = False) -> np.ndarray | dict:
-    """Sum the contributions this covopt selects into one covariance (:1407)."""
+    """Sum the contributions this covopt selects into one covariance (:1503)."""
     calib_mask = None
     if calibrators:
         cid = base.reset_index()["CID"] if "CID" in base.columns else None
@@ -206,8 +206,7 @@ def covsys_from_covopt(covopt: Covopt, contribs: list[Contribution],
                      f"none of the {len(calibrators)} CALIBRATORS match a CID; "
                      "no redshift-systematic masking will be applied")
 
-    # External covariance contributions keep their existing dense treatment.
-    # Only matched contributions determine whether this COVOPT needs fallback.
+    # only the matched contributions decide whether this COVOPT has compact factors
     selected = [c for c in contribs
                 if apply_filter(c.fitopt_label, covopt.fitopt_filter)
                 and apply_filter(c.muopt_label, covopt.muopt_filter)]
@@ -220,23 +219,25 @@ def covsys_from_covopt(covopt: Covopt, contribs: list[Contribution],
 
         has_systematic |= (fitopt_label, muopt_label) != ("DEFAULT", "DEFAULT")
         if compact:
-            vector = contribution.diff.copy() * covopt.scale
+            # a zero difference adds no column, judged before the scale and mask (:1602)
+            if not np.any(contribution.diff):
+                continue
+            vector = contribution.diff * covopt.scale
             if calib_mask is not None and _is_redshift_systematic(fitopt_label, muopt_label):
                 vector[calib_mask] = 0.
-            if np.any(vector):
-                vectors.append(vector)
-                labels.append(f"{fitopt_label}|{muopt_label}")
+            vectors.append(vector)
+            labels.append(f"{fitopt_label}|{muopt_label}")
             continue
         cov = contribution.matrix()
         # Cepheid calibrators carry no redshift systematic, so a VPEC or ZSHIFT
-        # term must not touch their rows or columns (:1493)
+        # term must not touch their rows or columns (:1617-1622)
         if calib_mask is not None and _is_redshift_systematic(fitopt_label,
                                                               muopt_label):
             cov = cov.copy()
             cov[calib_mask, :] = 0.0
             cov[:, calib_mask] = 0.0
 
-        # .scale is the error scale, so the covariance takes its square (:1436)
+        # .scale is the error scale, so the covariance takes its square (:1542)
         scaled = cov * covopt.scale ** 2
         total = scaled if total is None else total + scaled
 
@@ -264,7 +265,7 @@ def _is_redshift_systematic(fitopt_label: str, muopt_label: str) -> bool:
 def require_finite_errors(diagram: pd.DataFrame) -> None:
     """A distance with no finite error cannot enter the statistical diagonal.
     BBC writes MUDIFERR 999 for a bin with no events (MUDIFERR_EMPTY,
-    SALT2mu.c:501), read here as NaN, and a bin too thin to fit leaves NaN
+    SALT2mu.c:503), read here as NaN, and a bin too thin to fit leaves NaN
     itself; either way the diagram, not the inversion, is what to fix."""
     bad = ~np.isfinite(diagram["MUERR"].to_numpy(dtype=float))
     if not bad.any():
@@ -284,7 +285,7 @@ def require_finite_errors(diagram: pd.DataFrame) -> None:
 
 def cov_invert(cov_sys: np.ndarray, muerr_stat: np.ndarray,
                mxsize_test_posdef: int = 6000, label: str = "") -> np.ndarray:
-    """Invert the total covariance: systematic plus the statistical diagonal (:1522).
+    """Invert the total covariance: systematic plus the statistical diagonal (:1667).
 
     The cosmology fitter consumes this rather than covsys, so the statistical term
     is added here rather than there.
@@ -297,7 +298,7 @@ def cov_invert(cov_sys: np.ndarray, muerr_stat: np.ndarray,
                          function_name="cov_invert") from exc
 
     # SNANA reports, but does not abort on, an inverse that is not unitary
-    # (:1541). The product is rounded first, as it does.
+    # (:1696-1699). The product is rounded first, as it does.
     product = np.round(covtot @ covtot_inv, 2)
     residual = np.linalg.norm(np.eye(len(product)) - product
                               @ product.conjugate().T)
@@ -306,7 +307,7 @@ def cov_invert(cov_sys: np.ndarray, muerr_stat: np.ndarray,
                  f"{label or 'covtot'} inverse is not unitary "
                  f"(residual {residual:.3e})")
 
-    # skipped above mxsize_test_posdef, as SNANA (:1531)
+    # skipped above mxsize_test_posdef, as SNANA (:1677)
     if len(covtot) <= mxsize_test_posdef:
         if not np.all(np.linalg.eigvals(covtot_inv) > 0):
             log.warn(logger, "CREATE_COV",
@@ -322,7 +323,7 @@ def cov_invert(cov_sys: np.ndarray, muerr_stat: np.ndarray,
 
 
 def muerr_sys(covsys: np.ndarray) -> np.ndarray:
-    """Per-entry systematic error, sqrt of the covariance diagonal (:1744).
+    """Per-entry systematic error, sqrt of the covariance diagonal (:1910).
 
     Not clipped: a negative diagonal can only come from an EXTRA_COVS file, and
     SNANA lets the NaN through to the MUERR_SYS column rather than hide it.
@@ -341,7 +342,7 @@ _ERR_SENTINEL = 999.0
 
 
 def load_hubble_diagram(path: Path, mode: str) -> pd.DataFrame:
-    """Read one M0DIF (binned) or FITRES (unbinned/rebin) grid file (:592)."""
+    """Read one M0DIF (binned) or FITRES (unbinned/rebin) grid file (:612)."""
     return hubble_diagram_from(read_fitres(str(path)).df.copy(), mode,
                                source=path)
 
@@ -357,7 +358,7 @@ def hubble_diagram_from(df: pd.DataFrame, mode: str,
     path = source
 
     if "zHD" not in df.columns and "z" in df.columns:
-        # really old M0DIF files carry z instead of zHD (:666)
+        # really old M0DIF files carry z instead of zHD (:688)
         df = df.rename(columns={"z": "zHD"})
 
     for column in ("MUERR", "MUDIFERR"):
@@ -381,7 +382,7 @@ def hubble_diagram_from(df: pd.DataFrame, mode: str,
     df = df.sort_values(["zHD", "CID"])
     df = df.rename(columns={"MUMODEL": "MUREF"})
 
-    # CID alone is not unique once several surveys are combined (:638)
+    # CID alone is not unique once several surveys are combined (:678)
     df["CIDindex"] = (df["CID"] + "_" + df["IDSURVEY"].astype(str)
                       + "_" + df["FIELD"].astype(str))
     duplicated = df["CIDindex"][df["CIDindex"].duplicated()].tolist()
@@ -431,14 +432,14 @@ def subtract_vpec(diagrams: dict[str, pd.DataFrame], *, renormalised: bool = Fal
 
 
 def use_muerr_renorm(diagrams: dict[str, pd.DataFrame]) -> None:
-    """Swap in MUERR_RENORM, which carries the BEAMS 1/sqrt(P_Ia) term (:804)."""
+    """Swap in MUERR_RENORM, which carries the BEAMS 1/sqrt(P_Ia) term (:824)."""
     for df in diagrams.values():
         if "MUERR_RENORM" in df.columns:
             df["MUERR"] = df["MUERR_RENORM"]
 
 
 def common_set_of_sne(diagrams: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    """Restrict every diagram to the SNe present in all of them (:778)."""
+    """Restrict every diagram to the SNe present in all of them (:798)."""
     combined = None
     for df in diagrams.values():
         combined = df.index if combined is None else combined.intersection(df.index)
@@ -449,7 +450,7 @@ def common_set_of_sne(diagrams: dict[str, pd.DataFrame]) -> dict[str, pd.DataFra
 
 
 def remove_nans(diagrams: dict[str, pd.DataFrame]):
-    """Drop rows the reference diagram cannot use, from every diagram (:2567).
+    """Drop rows the reference diagram cannot use, from every diagram (:2788).
 
     The mask comes from the reference alone, so the grid stays row-aligned.
     """
@@ -493,7 +494,7 @@ def rebin_indices(base: pd.DataFrame, bins):
 
 def rebin_hubble_diagram(df: pd.DataFrame, index, coordinates,
                          z_grid, mu_grid, *, labels=None, limit=None) -> pd.DataFrame:
-    """Collapse a per-SN diagram onto the occupied coordinate bins (:885).
+    """Collapse a per-SN diagram onto the occupied coordinate bins (:920).
 
     Two different weights are in play and they are not interchangeable: MUREF is
     averaged with 1/MUERR**2, while MU and its error use 1/MUERR_RENORM**2, the
@@ -536,13 +537,13 @@ def rebin_hubble_diagram(df: pd.DataFrame, index, coordinates,
 
 def reference_grid(cosmology: Cosmology | None, n: int = 4000, *,
                    radiation: bool = True):
-    """(z, mu) on the biasCor cosmology, for inverting mu -> z (get_HDcalc, :962).
+    """(z, mu) on the biasCor cosmology, for inverting mu -> z (get_HDcalc, :997).
 
     SNANA hardcodes H0=70 here regardless of the sim's own H0, and covers
     0.001 < z < 4.001 on a geometric grid.
     """
     if cosmology is None:
-        # SNANA falls back to flat LCDM with Om0=0.315 here (:982)
+        # SNANA falls back to flat LCDM with Om0=0.315 here (:1017)
         raise SNANAError(
             "The reference distance grid needs the biasCor simulation's "
             "cosmology, which the BBC output does not record; set COSMOLOGY.",
@@ -559,7 +560,7 @@ def reference_grid(cosmology: Cosmology | None, n: int = 4000, *,
 def grid_files(config: CreateCovConfig) -> dict[str, Path]:
     """Map ``FITOPT<i>_MUOPT<j>`` to its Hubble-diagram file.
 
-    Binned reads ``.M0DIF``; unbinned and rebin both read ``.FITRES`` (:713-717).
+    Binned reads ``.M0DIF``; unbinned and rebin both read ``.FITRES`` (:725-736).
     """
     suffix = "M0DIF" if config.mode == "binned" else "FITRES"
     folder = config.data_dir
@@ -591,7 +592,7 @@ def read_submit_info(input_dir: Path) -> dict:
 
 def sys_scales(which_opt: str, submit_info: dict,
                scales: dict[str, float]) -> dict[int, tuple[str, float]]:
-    """Map each FITOPT/MUOPT number to its ``(label, scale)`` (:1011).
+    """Map each FITOPT/MUOPT number to its ``(label, scale)`` (:1046).
 
     Index 0 is always ``('DEFAULT', 1.0)``: it is the reference the others are
     differenced against, so scaling it would be meaningless.
@@ -618,18 +619,21 @@ def apply_sys_scales(options, scales):
 
 
 def version_photometry(header: dict[str, str]) -> dict[str, str]:
-    """The VERSION_PHOTOMETRY keys of a grid FITRES's comment header (:2408).
-
-    SNANA reads the value as ``wdlist[2]`` and raises IndexError when a key has
-    none, which SALT2mu writes whenever its input carried no version. jax
-    records the empty string instead.
-    """
-    return {key: value.split()[0] if value else ""
-            for key, value in header.items() if "VERSION_PHOTOMETRY" in key}
+    """The VERSION_PHOTOMETRY keys of a grid FITRES's comment header, each
+    one's first word; a key without a value is an error (:2638-2646)."""
+    versions = {}
+    for key, value in header.items():
+        if "VERSION_PHOTOMETRY" not in key:
+            continue
+        if not value.split():
+            raise SNANAError(f"missing argument for '{key}' in the BBC output header",
+                             function_name="version_photometry")
+        versions[key] = value.split()[0]
+    return versions
 
 
 def isdata_real(header: dict[str, str]) -> int:
-    """ISDATA_REAL from a grid file's comment header, -1 when absent (:531)."""
+    """ISDATA_REAL from a grid file's comment header, -1 when absent (:551)."""
     return int(header["ISDATA_REAL"].split()[0]) if "ISDATA_REAL" in header else -1
 
 
@@ -676,12 +680,16 @@ class CovResult:
     mu_grid: tuple | None = None
     systematic_diagrams: dict = field(default_factory=dict)
 
+    def covsys(self, label: str = "ALL") -> np.ndarray:
+        """The dense systematic covariance of one covopt."""
+        if label not in self.covariances:
+            raise SNANAError(f"no COVOPT labelled {label!r}", function_name="covsys")
+        entry = self.covariances[label]
+        return entry["U"] @ entry["U"].T if entry["kind"] == "factorized" else entry["matrix"]
+
     def covtot_inv(self, label: str = "ALL") -> np.ndarray:
         """Inverted total covariance for one covopt, as the fitters consume it."""
-        if label not in self.covariances:
-            raise SNANAError(f"no COVOPT labelled {label!r}", function_name="covtot_inv")
-        entry = self.covariances[label]
-        cov = entry["U"] @ entry["U"].T if entry["kind"] == "factorized" else entry["matrix"]
+        cov = self.covsys(label)
         require_finite_errors(self.hubble_diagram)
         return cov_invert(cov, self.hubble_diagram["MUERR"].to_numpy())
 
@@ -723,7 +731,7 @@ def build_covariance(diagrams: dict[str, pd.DataFrame],
                 function_name="build_covariance")
         labels.add(option.label)
 
-    # order per get_hubble_diagrams (:751-773). MUERR_RENORM is swapped in for
+    # order per get_hubble_diagrams (:764-793). MUERR_RENORM is swapped in for
     # unbinned but not rebin, where it enters through the rebin weights instead.
     rebin_info = None
     if mode != "rebin" and rebin_bins is not None:
@@ -780,9 +788,9 @@ def cov_filename(index: int, prefix: str, fmt: str) -> str:
 
 
 def write_covariance_text(path: Path, cov: np.ndarray, rows=None) -> None:
-    """Row count then the full flattened matrix, one value per line (:2091).
+    """Row count then the full flattened matrix, one value per line (:2257).
 
-    ``rows`` adds SNANA's per-element diagnostic label (:2272); it changes no
+    ``rows`` adds SNANA's per-element diagnostic label (:2478); it changes no
     number, only readability.
     """
     cov = np.asarray(cov)
@@ -801,10 +809,10 @@ def write_covariance_text(path: Path, cov: np.ndarray, rows=None) -> None:
 
 
 def _cov_label(index: int, nrow: int, rows) -> str:
-    """SNANA's diagnostic label for one flattened covariance element (:2272)."""
+    """SNANA's diagnostic label for one flattened covariance element (:2478)."""
     cid, idsurvey, zhd = rows
     col, row = index // nrow, index % nrow
-    # both brackets carry the row's zHD, as SNANA writes it (:2290)
+    # both brackets carry the row's zHD, as SNANA writes it (:2496-2497)
     label = (f"# CID,IDSURVEY,zHD,index = "
              f"[ {cid[row]:>8}, {idsurvey[row]:3d}, {zhd[row]:.5f}, {row} ] x "
              f"[ {cid[col]:>8}, {idsurvey[col]:3d}, {zhd[row]:.5f}, {col} ]")
@@ -844,7 +852,7 @@ def _comments(unbinned: bool, isdata_real: int, syserr: bool,
 def write_hd_binned(path: Path, base: pd.DataFrame, isdata_real: int,
                     muerr_sys: np.ndarray | None = None,
                     musim: np.ndarray | None = None, rebin=None) -> None:
-    """Binned Hubble diagram (:1873). zHEL is written as a copy of zHD."""
+    """Binned Hubble diagram (:2039). zHEL is written as a copy of zHD."""
     nevt = "NEVT" in base.columns
     varlist = "ROW zHD zHEL MU MUERR"
     if nevt:
@@ -883,7 +891,7 @@ def write_hd_binned(path: Path, base: pd.DataFrame, isdata_real: int,
 def write_hd_unbinned(path: Path, base: pd.DataFrame, isdata_real: int,
                       muerr_sys: np.ndarray | None = None,
                       musim: np.ndarray | None = None) -> None:
-    """Unbinned Hubble diagram, one row per SN (:1937)."""
+    """Unbinned Hubble diagram, one row per SN (:2103)."""
     vpec = "MUERR_VPEC" in base.columns
     pbeams = "PROBCC_BEAMS" in base.columns
     varlist = "CID IDSURVEY zHD zHEL MU MUERR"
@@ -893,7 +901,7 @@ def write_hd_unbinned(path: Path, base: pd.DataFrame, isdata_real: int,
         varlist += " MUERR_SYS"
     if pbeams:
         # the column is PROBIA_BEAMS; only SNANA's comment line above
-        # spells it with a digit (:260 vs :2044)
+        # spells it with a digit (:267 vs :2210)
         varlist += " PROBIA_BEAMS"
     if musim is not None:
         varlist += " MUSIM"
@@ -932,17 +940,16 @@ def write_hd_unbinned(path: Path, base: pd.DataFrame, isdata_real: int,
 def write_info_yml(path: Path, *, covsys_labels, size_hd: int, isdata_real: int,
                    bin_method: tuple[str, str], cospar, version_photometry: dict,
                    bbc_dir, bbc_info_file, sys_scale_file,
-                   covsys_names, covtot_inv_names, factorized_names=None) -> None:
-    """The summary a cosmology fitter reads to discover what it has (:2297).
+                   covsys_names, covtot_inv_names, factorized_names) -> None:
+    """The summary a cosmology fitter reads to discover what it has (:2503).
 
     Two key-sorted YAML blocks then two appended lines, matching SNANA's own
     write order. COSPAR_BIASCOR is written empty when the biasCor cosmology is
     unknown, so a consumer can tell "unknown" from "absent".
     """
-    covopts = {i: f"{label:<20} {covsys_names[i]}   {covtot_inv_names[i]}"
+    covopts = {i: f"{label:<20} {covsys_names[i]}   {covtot_inv_names[i]}   "
+                  f"{factorized_names[i]}"
                for i, label in enumerate(covsys_labels)}
-    if factorized_names is not None:
-        covopts = {i: f"{entry}   {factorized_names[i]}" for i, entry in covopts.items()}
     info = {"HD": HD_FILENAME, "ISDATA_REAL": isdata_real, "SIZE_HD": size_hd,
             "COVOPTS": covopts, "SNANA_VERSION": SNANA_VERSION_STRING,
             **version_photometry}
@@ -963,7 +970,7 @@ def write_info_yml(path: Path, *, covsys_labels, size_hd: int, isdata_real: int,
     with open(path, "w") as f:
         f.write("# Dictionary arguments for COVOPTS:\n"
                 "# index:  <sysLabel>  <name of covsys file>   "
-                "<name of covtot_inv file> [name of factorized file]\n"
+                "<name of covtot_inv file>   <name of factorized file>\n"
                 "#  (file name = None -> not written)\n#\n")
         yaml.safe_dump(info, f)
         f.write("\n")
@@ -973,7 +980,7 @@ def write_info_yml(path: Path, *, covsys_labels, size_hd: int, isdata_real: int,
 
 
 def bin_method(mode: str, nbin_z: int, edges) -> tuple[str, str]:
-    """BINNED / REBIN / UNBIN plus its comment (:2378)."""
+    """BINNED / REBIN / UNBIN plus its comment (:2596)."""
     if mode == "unbinned":
         return "UNBIN", "no binning"
     if mode == "rebin":
@@ -989,7 +996,7 @@ def write_outputs(outdir: Path, result: CovResult, config: CreateCovConfig) -> N
     mask, fmt = config.write_mask_cov, config.write_format_cov
     unbinned = config.mode == "unbinned"
 
-    # the reference cell keeps the plain name; only the others are labelled (:1657)
+    # the reference cell keeps the plain name; only the others are labelled (:1801-1807)
     base_name = fitopt_muopt_name((0, 0))
     diagrams = {HD_FILENAME: result.hubble_diagram}
     if config.systematic_hd:
@@ -1034,14 +1041,16 @@ def write_outputs(outdir: Path, result: CovResult, config: CreateCovConfig) -> N
                 factorized_names[i] = f"covtot_factorized_{i:03d}.npz"
                 write_factorized_covariance(outdir / factorized_names[i], entry)
             else:
-                logger.warning("COVOPT %s has no vector factors; writing a dense inverse fallback", label)
+                log.warn(logger, "CREATE_COV", f"Factorized output for {label} SKIPPED: at "
+                         "least one matched contribution (e.g. an EXTRA_COV file) cannot "
+                         "be represented as a rank-1 vector")
         if compact and not mask & 7:
             continue  # Compact-only output needs no dense reconstruction.
-        cov = entry["U"] @ entry["U"].T if compact else entry["matrix"]
+        cov = result.covsys(label)
         if mask & WRITE_MASK_COVSYS:
             covsys_names[i] = cov_filename(i, PREFIX_COVSYS, fmt)
             write(outdir / covsys_names[i], cov)
-        if mask & WRITE_MASK_COVTOT_INV or (mask & 8 and not compact):
+        if mask & WRITE_MASK_COVTOT_INV:
             covtot_inv_names[i] = cov_filename(i, PREFIX_COVTOT_INV, fmt)
             write(outdir / covtot_inv_names[i],
                   cov_invert(cov, muerr, config.mxsize_test_posdef, label))
@@ -1063,7 +1072,7 @@ def write_outputs(outdir: Path, result: CovResult, config: CreateCovConfig) -> N
         bbc_info_file=submit_info if submit_info is not None and submit_info.is_file() else None,
         sys_scale_file=config.sys_scale_file,
         covsys_names=covsys_names, covtot_inv_names=covtot_inv_names,
-        factorized_names=factorized_names if mask & 8 else None)
+        factorized_names=factorized_names)
 
 
 def select_covariance_grid(grid, muopt):

@@ -31,10 +31,10 @@ class FitParBias:
     npercell: np.ndarray   # [ncell] int
 
 
-MINEVT_SIGINT_COMPUTE = 50  # SALT2mu.c:14220
-NCELL_INTERP_MIN = 3    # SALT2mu.c:15558
-BIASCOR_MINSUM = 10     # SALT2mu.c:563
-_MAXBIAS = 20.0         # |bias| > this aborts (:15647)
+MINEVT_SIGINT_COMPUTE = 50  # SALT2mu.c:14233
+NCELL_INTERP_MIN = 3    # SALT2mu.c:15571
+BIASCOR_MINSUM = 10     # SALT2mu.c:565
+_MAXBIAS = 20.0         # |bias| > this aborts (:15660)
 
 
 @dataclass
@@ -172,7 +172,7 @@ class BiasCorMaps:
     coeff_nbin: tuple = ()         # (N_alpha, N_beta, ...) grid shape
     sigint_biascor: float = 0.0    # sigInt derived from the biasCor
     gammadm_offset: float = 0.0    # the biasCor mass-step axis midpoint (:15335)
-    dust_flag: bool = False        # a BS21 dust-model biasCor (SALT2mu.c:965)
+    dust_flag: bool = False        # a BS21 dust-model biasCor (SALT2mu.c:967)
 
 
 @dataclass
@@ -214,10 +214,10 @@ def biascor_events(biascor_tv, coeff_bins, model, config,
 
 
 def _apply_biascor_grid_cut(tv, idsample, samples, model, config):
-    """outside_biasCor_grid (SALT2mu.c:19239): a biasCor event outside any
+    """outside_biasCor_grid (SALT2mu.c:19253): a biasCor event outside any
     per-event axis of its sample's biasCor grid fails that axis's bit,
     using model compatibility bits or the generic bias-correction bit. Only
-    events with no other cut are checked (:18967) and the first failing axis wins."""
+    events with no other cut are checked (:18981) and the first failing axis wins."""
     z = np.asarray(tv.zhd)
     zlo = np.full(z.shape, -np.inf)
     zhi = np.full(z.shape, np.inf)
@@ -328,10 +328,10 @@ def sample_counts(idsample, keep, samples):
 
 @jax.enable_x64(True)
 def calc_zM0_biascor(biascor_tv, events, sig_grid, zbins, config):
-    """Weighted mean z per z bin over the biasCor (calc_zM0_biasCor, SALT2mu.c:14774).
+    """Weighted mean z per z bin over the biasCor (calc_zM0_biasCor, SALT2mu.c:14787).
 
     WGT is WGT_biasCor(opt=1), the population weight over muerrsq at COVFIT+COVINT+ZMUERR
-    (:12750). Bins with no biasCor fall back to the bin centre (:14820). Global across
+    (:12760). Bins with no biasCor fall back to the bin centre (:14833). Global across
     IDSAMPLEs, matching the single INFO_BIASCOR.zM0 array.
     """
 
@@ -513,7 +513,7 @@ def biascor_1d_grids(biascor_tv, samples, config, model):
         in_range |= ((bc_idsample == s.idsample) & (zc >= zlo0) & (zc <= zhi0))
     in_range &= biascor_tv.cutmask
 
-    # the high-SNR reference is global, not per-sample (SALT2mu.c:12160, :12221)
+    # the high-SNR reference is global, not per-sample (SALT2mu.c:12170, :12231)
     hisnr = in_range & (snr > config.snrmin_sigint_biascor)
     w_all = np.where(in_range, wgt_all, 0.0)
     sw_hi = w_all[hisnr].sum()
@@ -578,7 +578,7 @@ def sigint_coeff_grid(biascor_tv, events, coeff_bins, config,
 
     tv = biascor_tv
     # selection without the biasCor z cut, keeping the global z cut, so
-    # high-z-only fits still find SNR>snrmin events (SALT2mu.c:14326-14335)
+    # high-z-only fits still find SNR>snrmin events (SALT2mu.c:14339-14348)
     passing = (tv.cutbits & ~(1 << CUTBIT_zBIASCOR)) == 0
     # SNR membership depends on the correction catalogue and configuration,
     # not the data realisation. Project this fixed population once; keep cuts
@@ -602,11 +602,7 @@ def sigint_coeff_grid(biascor_tv, events, coeff_bins, config,
             f"snrmin_sigint_biascor={config.snrmin_sigint_biascor}; "
             f"sigInt needs at least {MINEVT_SIGINT_COMPUTE}",
             function_name="sigint_coeff_grid")
-    for condition, message in zip(diagnostics, (
-            "Invalid MUCOV in intrinsic-scatter sample",
-            "Cannot compute sigint because STD < AVG_MUERR",
-            "Cannot compute sigint because sig trial < -0.300000",
-            "ONE NOT CONTAINED by rmsPull array")):
+    for condition, message in zip(diagnostics, map_kernels.SCATTER_FAILURES):
         if np.any(np.asarray(condition)):
             raise SNANAError(message, function_name="sigint_coeff_grid")
     return np.array(result)
@@ -687,11 +683,12 @@ def build_mucovscale_map(biascor_tv, events, fitpar_map, coeff_bins, sig_grid,
         do_mad=bool(config.opt_biascor & MASK_BIASCOR_MAD),
         do_add=bool(config.opt_biascor & MASK_BIASCOR_MUCOVADD),
         add_mad=not config.restore_sn_unite)
+    bad_covariance, _, _, unbracketed, cap, zero_width = map_kernels.SCATTER_FAILURES
     for failed, message in zip(errors, (
             "Invalid bias interpolation weights or value",
             "muCOVscale weighted median undefined",
-            "ONE NOT CONTAINED by rmsPull array",
-            "biasCor event is outside the muCOVscale z grid")):
+            "biasCor event is outside the muCOVscale z grid",
+            bad_covariance, unbracketed, cap, zero_width)):
         if bool(failed):
             raise SNANAError(message, function_name="build_mucovscale_map")
     return MuCovScaleMap(

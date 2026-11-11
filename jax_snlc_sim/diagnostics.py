@@ -27,7 +27,7 @@ MJDGAP_IGNORE = 50.0
 def maglimit_calculator(zpt: float, psf: float, skymag: float,
                         snr: float) -> float:
     """Point-source mag at signal-to-noise ``snr`` (MAGLIMIT_calculator,
-    sntools.c:5259; Belov & Glazov 2010).
+    sntools.c:5256; Belov & Glazov 2010).
 
     ``zpt`` is the zero point in photoelectrons (``Npe =
     10**[-0.4*(mag-ZPT)]``); ``psf`` is the PSF FWHM in arcsec; ``skymag``
@@ -89,8 +89,8 @@ def _obs_photometry(field, i):
 
 def _keep_obs(field, mjd_range, peakmjd_range):
     """Per-obs keep mask: GENRANGE_MJD always and GENRANGE_PEAKMJD in dump
-    mode (keep_SIMLIB_OBS, snlc_sim.c:21200-21233), plus the dump's ZPTERR
-    skip; NOBS_TOT counts what survives all three (snlc_sim.c:32015-32019)."""
+    mode (keep_SIMLIB_OBS, snlc_sim.c:21240-21273), plus the dump's ZPTERR
+    skip; NOBS_TOT counts what survives all three (snlc_sim.c:32075-32079)."""
     mjds = np.asarray(field.mjds, dtype=np.float64)
     keep = np.asarray(field.zpterrs) <= ZPTERR_MAX
     keep &= (mjds >= mjd_range[0]) & (mjds <= mjd_range[1])
@@ -196,7 +196,7 @@ def run_simlib_dump(config, output_dir=None):
     prefix = Path(simlib.simlib_file).name.split('.')[0]
 
     # GENRANGE_MJD becomes the MJD_RANGE cut (filename suffix + DOCANA line);
-    # unset means SNANA's wide-open init 20000-80000 (snlc_sim.c:856-857).
+    # unset means SNANA's wide-open init 20000-80000 (snlc_sim.c:858-859).
     grm = config.rates.genrange_mjd
     if grm:
         cut = f"_{int(grm[0])}-{int(grm[1])}"
@@ -204,7 +204,7 @@ def run_simlib_dump(config, output_dir=None):
         cut = ""
         grm = (20000.0, 80000.0)
     mjd_range = f"{int(grm[0])} {int(grm[1])}"
-    # PEAKMJD window as an obs cut, unset -> GENRANGE_MJD (snlc_sim.c:21220-21223, :32568-32571)
+    # PEAKMJD window as an obs cut, unset -> GENRANGE_MJD (snlc_sim.c:21260-21263, :32628-32631)
     pkr = config.rates.peakmjd_range
     if pkr[0] == 0.0:
         pkr = grm
@@ -263,7 +263,7 @@ def run_dashboard(simulation, resources):
     _row('WRONGHOST_FILE', simulation.host.wronghost_file)
 
     _row('FLUXERRMODEL_FILE', simulation.instrument.fluxerr_file)
-    # declined keys, printed unset as SNANA does (snlc_sim.c:31677, :31688)
+    # declined keys, printed unset as SNANA does (snlc_sim.c:31737, :31688)
     _row('NONLINEARITY_FILE', None)
     _row('ZVARIATION_FILE', simulation.model.zvariation_file)
     _row('WEAKLENS_PROBMAP_FILE', simulation.lensing.probmap_file)
@@ -271,8 +271,8 @@ def run_dashboard(simulation, resources):
 
     searcheff = simulation.survey
     _row('SEARCHEFF_PIPELINE_LOGIC_FILE', searcheff.searcheff_pipeline_logic_file)
-    # SNANA prints TIME_SINGLE_DETECT here (snlc_sim.c:31691-31692), which is
-    # NEWMJD_DIF (snlc_sim.c:7523).
+    # SNANA prints TIME_SINGLE_DETECT here (snlc_sim.c:31751-31752), which is
+    # NEWMJD_DIF (snlc_sim.c:7535).
     log.line(logger, f"Logic: {resources.searcheff_trigger_logic or '(none)'}  "
              f"(epoch-sep > {float(simulation.survey.newmjd_dif):.3f} days)",
              indent=2)

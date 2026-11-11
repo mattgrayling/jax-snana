@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from astropy.io import fits
 
 from jax_snlc_core.filters import KcorReader
 from jax_snlc_core.logging import SNANAError
@@ -9,7 +10,7 @@ from jax_snlc_core.logging import SNANAError
 
 def test_leakage_cut_drops_transmission_below_the_cut(lsst_kcor_path):
     """LEAKAGE_CUT drops each bin below the cut times the filter's peak, as
-    kcor.exe's cutOOBTrans_filter does (kcor.c:2513), and keeps the rest as
+    kcor.exe's cutOOBTrans_filter does (kcor.c:2525), and keeps the rest as
     stored; the default of 0 keeps every bin."""
     stored = KcorReader(str(lsst_kcor_path))
     cut = KcorReader(str(lsst_kcor_path), leakage_cut=1e-3)
@@ -24,45 +25,87 @@ def test_leakage_cut_drops_transmission_below_the_cut(lsst_kcor_path):
     assert dropped, "the fixture filters carry no leakage for the cut to drop"
 
 
-def test_kcor_reader_zpoff_missing_columns_fatal(tmp_path):
-    """SNANA reads the ZPT table positionally for every filter and treats a
-    read failure as fatal (read_calib_zpoff, sntools_calib.c:563-611); a
-    ZPoff table without the calibration columns aborts instead of leaving
-    silent zero defaults."""
-    from astropy.io import fits
-
-    cols = [
-        fits.Column(name='Filter Name', format='20A', array=np.array(['X-g'])),
-        fits.Column(name='Primary Name', format='20A', array=np.array(['AB'])),
-    ]
-    zpoff_hdu = fits.BinTableHDU.from_columns(cols)
-    # kcor.exe writes the extension name in mixed case
-    zpoff_hdu.header['EXTNAME'] = 'ZPoff'
-    hdul = fits.HDUList([fits.PrimaryHDU(), zpoff_hdu])
-    path = tmp_path / "bad_zpoff.fits"
-    hdul.writeto(str(path))
-    with pytest.raises(SNANAError, match="Primary Mag"):
-        KcorReader(str(path))
+def _rewritten_kcor(source, path, edit):
+    """A copy of the kcor file ``source`` at ``path``, changed by ``edit``."""
+    with fits.open(f"{source}.gz") as hdul:
+        edit(hdul)
+        hdul.writeto(path)
+    return str(path)
 
 
-def test_kcor_reader_filtertrans_without_wavelength_fatal(tmp_path):
-    """SNANA reads the FilterTrans table and aborts on a read failure; a table
-    with no wavelength column aborts rather than leaving no filters."""
-    from astropy.io import fits
+def _replace_table(hdul, name, columns):
+    index = hdul.index_of(name)
+    hdul[index] = fits.BinTableHDU.from_columns(columns)
+    hdul[index].header['EXTNAME'] = name
 
-    trans = fits.BinTableHDU.from_columns(
-        [fits.Column(name='X-g', format='E', array=np.ones(3))])
-    trans.header['EXTNAME'] = 'FilterTrans'
-    path = tmp_path / "no_wave.fits"
-    fits.HDUList([fits.PrimaryHDU(), trans]).writeto(str(path))
-    with pytest.raises(SNANAError, match="wavelength"):
-        KcorReader(str(path))
+
+def _renamed_columns(hdu):
+    return [fits.Column(name=f'C{i}', format=column.format, array=column.array)
+            for i, column in enumerate(hdu.columns)]
+
+
+def test_kcor_tables_are_read_by_position(tmp_path, lsst_kcor_path):
+    """SNANA reads every kcor table by column position and takes the filter
+    and primary names from the FILTnnn and PRIMnnn cards
+    (sntools_calib.c:280-312, 552-611, 1404-1429), so column names, extra
+    ZPoff columns (v12_02f adds 'Primary synthetic mag'), the case of a
+    table name and names longer than the 20-character ZPoff column, even
+    names alike in their first 20 characters, do not change what is read."""
+    long_names = ["LSST-wide-survey-band-u", "LSST-wide-survey-band-g"]
+
+    def edit(hdul):
+        _replace_table(hdul, 'ZPoff', _renamed_columns(hdul['ZPoff']) + [
+            fits.Column(name='Primary synthetic mag', format='E', array=np.ones(6))])
+        for i, name in enumerate(long_names):
+            hdul[0].header[f'FILT{i + 1:03d}'] = name
+            hdul['ZPoff'].data['C0'][i] = name[:20]
+        for table in ('FilterTrans', 'PrimarySED'):
+            _replace_table(hdul, table, _renamed_columns(hdul[table]))
+        for hdu in hdul[1:]:
+            hdu.name = hdu.name.lower()
+
+    stored = KcorReader(str(lsst_kcor_path))
+    renamed = KcorReader(_rewritten_kcor(lsst_kcor_path, tmp_path / "kcor.fits", edit))
+    assert renamed.filter_names == long_names + stored.filter_names[2:]
+    for old, new in zip(stored.filter_names, renamed.filter_names):
+        for field in ('wavelength', 'transmission'):
+            np.testing.assert_array_equal(stored.filter_data[old][field],
+                                          renamed.filter_data[new][field])
+        assert stored.filter_primary[old] == renamed.filter_primary[new]
+        assert stored.filter_primary_mag[old] == renamed.filter_primary_mag[new]
+        assert stored.filter_zpoff_snpot[old] == renamed.filter_zpoff_snpot[new]
+        assert stored.filter_survey[old] == renamed.filter_survey[new]
+    np.testing.assert_array_equal(stored.get_primary_sed('AB'), renamed.get_primary_sed('AB'))
+
+
+def _drop_last_zpoff_column(hdul):
+    _replace_table(hdul, 'ZPoff', hdul['ZPoff'].columns[:4])
+
+
+def _swap_zpoff_rows(hdul):
+    names = hdul['ZPoff'].data['Filter Name']
+    names[0], names[1] = names[1], names[0]
+
+
+@pytest.mark.parametrize("edit, message", [
+    (lambda hdul: hdul[0].header.remove('NFILTERS'), "has no NFILTERS header card"),
+    (lambda hdul: hdul[0].header.remove('PRIM001'), "has no PRIM001 header card"),
+    (lambda hdul: hdul.pop(hdul.index_of('PrimarySED')), "has no PrimarySED table"),
+    (_drop_last_zpoff_column, "ZPoff table has no column for SNpot zero-point offset"),
+    (_swap_zpoff_rows, "ZPoff row 1 is for LSST-g, but FILT001 is LSST-u"),
+])
+def test_malformed_kcor_aborts(tmp_path, lsst_kcor_path, edit, message):
+    """A kcor file SNANA cannot read is an error naming what is missing, and
+    ZPoff rows must follow the FILTnnn order that SNANA assumes."""
+    path = _rewritten_kcor(lsst_kcor_path, tmp_path / "kcor.fits", edit)
+    with pytest.raises(SNANAError, match=message):
+        KcorReader(path)
 
 
 def test_filter_letters_keep_their_case():
     """SNANA's filter alphabet holds b and B as distinct filters
-    (FILTERSTRING_DEFAULT, sntools.h:162; INTFILTER compares the letter
-    exactly, sntools.c:11205), and a combined low-z kcor carries both. The
+    (FILTERSTRING_DEFAULT, sntools.h:163; INTFILTER compares the letter
+    exactly, sntools.c:10898), and a combined low-z kcor carries both. The
     band table, the SIMLIB letter lookup and the trigger logic must keep
     the case, or one band takes the other's observations."""
     from types import SimpleNamespace

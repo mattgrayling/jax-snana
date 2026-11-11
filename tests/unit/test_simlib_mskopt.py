@@ -50,7 +50,7 @@ def test_bit_256_keeps_all_epochs():
     mskopt = 256
     # Narrow Trest window covering only the first epochs: the default branch
     # would mask the rest, bit 256 keeps the whole survey. The window has to
-    # overlap the survey — SNANA's -9 return (snlc_sim.c:21411) applies whatever
+    # overlap the survey — SNANA's -9 return (snlc_sim.c:21451) applies whatever
     # the mskopt, so an event that misses the survey entirely gets nothing.
     peak = jnp.array([60005.0])
     out = schedule_all(tables,
@@ -119,7 +119,7 @@ def test_bit_256_takes_precedence_over_128():
 
 # Bit 16 (IGNORE_TEMPLATENOISE): template noise suppressed at the SIMLIB
 # boundary, so no template variance reaches any error term
-# (SNANA never stores the template keys under the bit, snlc_sim.c:19288-19289).
+# (SNANA never stores the template keys under the bit, snlc_sim.c:19307-19308).
 
 
 def test_bit_16_zeroes_template_arrays_at_boundary():
@@ -136,7 +136,7 @@ def test_bit_16_zeroes_template_arrays_at_boundary():
 
 
 # Construction-time SIMLIB observation validation
-# (snlc_sim.c:20573-20580 reader ranges; :27753-27764 and :27808-27813
+# (snlc_sim.c:20613-20620 reader ranges; :27753-27764 and :27866-27871
 # fatal per-epoch bounds).
 
 
@@ -152,11 +152,11 @@ def test_validate_simlib_observations_accepts_valid_entry():
 
 def test_validate_simlib_observations_rejects_bad_values():
     cases = [
-        ('zptavgs', 8.0, 'ZPTAVG'),          # < 10 (snlc_sim.c:27757)
+        ('zptavgs', 8.0, 'ZPTAVG'),          # < 10 (snlc_sim.c:27815)
         ('zptavgs', np.nan, 'ZPTAVG'),
-        ('skysigs', 0.0, 'SKYSIG'),          # < 1e-4 (snlc_sim.c:27759)
-        ('psf1s', 0.0, 'PSFSIG1'),           # < 1e-4 (snlc_sim.c:27758)
-        ('psf_ratios', 1.5, 'PSFRATIO'),     # > 1 (snlc_sim.c:20578)
+        ('skysigs', 0.0, 'SKYSIG'),          # < 1e-4 (snlc_sim.c:27817)
+        ('psf1s', 0.0, 'PSFSIG1'),           # < 1e-4 (snlc_sim.c:27816)
+        ('psf_ratios', 1.5, 'PSFRATIO'),     # > 1 (snlc_sim.c:20618)
         ('gains', 0.0, 'GAIN'),
         ('nexposes', 0.0, 'NEXPOSE'),
         ('readnoises', -1.0, 'READNOISE'),

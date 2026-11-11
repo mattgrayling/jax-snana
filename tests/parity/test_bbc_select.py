@@ -33,19 +33,19 @@ _BASE = ["radiation=0",
     ("DATA.FITRES", "prescale_simIa=2", "SALT2mu_ps_simia.M0DIF", 807),
     # z-cheat: zHD <- SIM_ZCMB; no event crosses the z cut on this sample
     ("DATA.FITRES", "uzsim=1", "SALT2mu_uzsim.M0DIF", 1624),
-    # CUTBIT_BADERR: an LC-fit error <= the threshold is cut (SALT2mu.c:18885)
+    # CUTBIT_BADERR: an LC-fit error <= the threshold is cut (SALT2mu.c:18899)
     ("DATA.FITRES", "maxerr_abort_x1=0.5", "SALT2mu_maxerr_x1.M0DIF", 1084),
     ("DATA.FITRES", "maxerr_abort_c=0.05", "SALT2mu_maxerr_c.M0DIF", 749),
     ("DATA.FITRES", "nmax=200", "SALT2mu_nmax.M0DIF", 200),
     ("DATA.FITRES", "powzbin=2.0", "SALT2mu_powzbin.M0DIF", 1624),
     ("DATA.FITRES", "vpecerr=250", "SALT2mu_vpecerr.M0DIF", 1624),
-    # a generic CUTWIN reads any column of the table (SALT2mu.c:8359, :8809):
+    # a generic CUTWIN reads any column of the table (SALT2mu.c:8359, :8819):
     # SNRMAX1 is not otherwise read, PROBIA is DES-SN5YR's BEAMS selection
     ("DATA.FITRES", "CUTWIN SNRMAX1 20 1000", "SALT2mu_cutwin_snrmax.M0DIF", 545),
     ("CONTAM_DATA.FITRES", "CUTWIN PROBIA 0.5 1.0", "SALT2mu_cutwin_probia.M0DIF",
      1624),
     # CUTWIN NONE lifts the x1 cut beside it and the model's default windows,
-    # keeping the z cut (setbit_CUTMASK, SALT2mu.c:19016)
+    # keeping the z cut (setbit_CUTMASK, SALT2mu.c:19030)
     ("DATA.FITRES", "x1min=-2.0 CUTWIN NONE", "SALT2mu_cutwin_none.M0DIF", 1775),
     # nlogzbin/zbinuser replace nzbin entirely; _BASE's nzbin=10 is dropped below.
     ("DATA.FITRES", "nlogzbin=8", "SALT2mu_nlogzbin.M0DIF", 1624),
@@ -58,7 +58,7 @@ def test_selection_key_matches_salt2mu(datafile, key, ref, nsnfit):
     refpath = f"{_DIR}/{ref}"
     base = _BASE
     if key.startswith(("nlogzbin=", "zbinuser=")):
-        # SALT2mu.c:21951 aborts unless exactly one binning form is given.
+        # SALT2mu.c:21965 aborts unless exactly one binning form is given.
         base = [k for k in base if not k.startswith("nzbin=")]
     cfg = parse_bbc_input(None, overrides=[f"datafile={_DIR}/{datafile}", key] + base)
     _, out, _, _, _ = run_bbc_fit(cfg)
@@ -71,9 +71,9 @@ def test_selection_key_matches_salt2mu(datafile, key, ref, nsnfit):
 
 def test_min_per_zbin_matches_salt2mu():
     """min_per_zbin=40 empties the first z bin: setup_zbins_fit sets CUTBIT_MINBIN
-    on its 19 events (SALT2mu.c:3127), so it is not floated and writes MUDIFERR=999.
+    on its 19 events (SALT2mu.c:3130), so it is not floated and writes MUDIFERR=999.
 
-    NFIT is SNANA's NEVT_zFIT, counted before that pass (:3091), so one SALT2mu exec
+    NFIT is SNANA's NEVT_zFIT, counted before that pass (:3094), so one SALT2mu exec
     writes 19 there. This reference reads 0 because that run repeated its fit ("3 fit
     M0ERR had crazy values --> fit repeated" in its own header) and the second exec
     re-counted with the bits already set. jax never repeats a fit, so it writes the
@@ -113,7 +113,7 @@ def test_prescale_simcc_on_mixed_templates():
 def test_iflag_duplicate(flag, ref, nsnfit):
     """iflag_duplicate 0 keeps duplicate CIDs as separate events; 2 merges each set by
     inverse-covariance weight and cuts the rest (CUTBIT_DUPL). force_realdata is needed
-    because SNANA only checks duplicates for real data (SALT2mu.c:2270)."""
+    because SNANA only checks duplicates for real data (SALT2mu.c:2273)."""
     cfg = parse_bbc_input(None, overrides=[f"datafile={_DIR}/DATA_DUP.FITRES",
                                            "force_realdata=1",
                                            f"iflag_duplicate={flag}"] + _BASE)
@@ -144,10 +144,20 @@ def test_cid_reject_file():
     assert np.max(np.abs(out.m0dif - np.asarray(r.get("MUDIF")))) < 2e-5
 
 
-def test_cid_select_file():
-    """cid_select_file keeps only the 1700 listed CIDs (1624 -> 1553)."""
+@pytest.mark.parametrize("as_table", [False, True])
+def test_cid_select_file(tmp_path, as_table):
+    """cid_select_file keeps only the 1700 listed CIDs (1624 -> 1553),
+    listed bare or as a table whose rows an SNID column names, as SNANA
+    names a table's rows by its first ID column (SNTABLE_AUTOSTORE_INIT,
+    sntools_output.cpp:2253-2266)."""
+    cid_file = f"{_DIR}/cid_select.list"
+    if as_table:
+        with open_text(cid_file) as fh:
+            cids = fh.read().split()
+        cid_file = tmp_path / "cid_select.TEXT"
+        cid_file.write_text("VARNAMES: SNID\n" + "".join(f"SN: {cid}\n" for cid in cids))
     cfg = parse_bbc_input(None, overrides=[f"datafile={_DIR}/DATA.FITRES",
-                                           f"cid_select_file={_DIR}/cid_select.list"] + _BASE)
+                                           f"cid_select_file={cid_file}"] + _BASE)
     _, out, _, _, _ = run_bbc_fit(cfg)
     r = read_fitres(f"{_DIR}/SALT2mu_cid_select.M0DIF")
     assert int(out.nfit.sum()) == 1553
@@ -170,7 +180,7 @@ def test_izbin_from_bare_cid_list_contributes_nothing():
 
 
 def test_fieldlist_substring_match():
-    """select_FIELD (SALT2mu.c:20797) matches by substring: VOID keeps every event in
+    """select_FIELD (SALT2mu.c:20811) matches by substring: VOID keeps every event in
     this fixture, an absent field keeps none."""
     keep = parse_bbc_input(None, overrides=[f"datafile={_DIR}/DATA.FITRES",
                                             "fieldlist=VOID"] + _BASE)
@@ -183,7 +193,7 @@ def test_fieldlist_substring_match():
 
 
 def test_zrate_scale_file():
-    """Deterministic z-dependent downsampling (accept_zrate_scale, SALT2mu.c:22503):
+    """Deterministic z-dependent downsampling (accept_zrate_scale, SALT2mu.c:22517):
     the last three digits of the CID are the draw, kept when <= the interpolated
     scale(z). A flat scale of 0.5 keeps 816 of 1624 -- not 198, because the last-digit
     distribution is not uniform, which is exactly why it must match SNANA event for
@@ -262,7 +272,7 @@ def test_bcor_loss_counts_match_snana(caplog):
 
 
 def test_force_realdata_makes_a_sim_blind():
-    """force_realdata ignores the SIM columns (SALT2mu.c:8825), so a simulated input
+    """force_realdata ignores the SIM columns (SALT2mu.c:8835), so a simulated input
     counts as real data -- which turns blinding on, since sims are otherwise exempt.
     Run without blindflag=0 so the default BLINDMASK_FIXPAR applies."""
     base = [k for k in _BASE if not k.startswith("blindflag=")]
@@ -276,7 +286,7 @@ def test_force_realdata_makes_a_sim_blind():
 
 def test_uave0_reports_mu_against_nominal_m0():
     """uave=0 reports MU against M0_DEFAULT instead of the fitted average M0
-    (SNANA SNMAG0, SALT2mu.c:24382) -- a constant offset on every event. Compared on
+    (SNANA SNMAG0, SALT2mu.c:24396) -- a constant offset on every event. Compared on
     the FITRES MU column, since MUDIF is unaffected."""
     cfg = parse_bbc_input(None, overrides=[f"datafile={_DIR}/DATA.FITRES",
                                            "uave=0"] + _BASE)
@@ -286,9 +296,9 @@ def test_uave0_reports_mu_against_nominal_m0():
 
 
 def test_fixpar_all_computes_mu_from_initial_values():
-    """fixpar_all turns BBC into a distance calculator (SALT2mu.c:21939): no nuisance
+    """fixpar_all turns BBC into a distance calculator (SALT2mu.c:21953): no nuisance
     floats, one z bin, no sigint iteration, and M0 clamped to the +/-0.001 uM0-constant
-    window (:2634). Nuisances freeze at SNANA's parval[] defaults -- 0 for alpha0/beta0
+    window (:2637). Nuisances freeze at SNANA's parval[] defaults -- 0 for alpha0/beta0
     -- not at the model's nuisance_spec values, so MU is the comparison that matters."""
     cfg = parse_bbc_input(None, overrides=[f"datafile={_DIR}/DATA.FITRES",
                                            "fixpar_all=1"] + _BASE)
@@ -324,7 +334,7 @@ def test_append_varname_missing_values():
     where the column is absent from one of the datafiles.
 
     SNANA re-emits the input words rather than reformatting them
-    (write_fitres_line, SALT2mu.c:24501), so the comparison is on the text: a
+    (write_fitres_line, SALT2mu.c:24515), so the comparison is on the text: a
     numeric check would pass while silently dropping the input's precision.
     """
     tv = _passthrough(_SPLIT, "PROB*")
@@ -348,8 +358,8 @@ def test_append_varname_missing_values():
     (1, "SALT2mu_idsample1.M0DIF", 743),
 ])
 def test_idsample_select_matches_salt2mu(bbc_biascor_variants, idsample, ref, nsnfit):
-    """An unselected IDSAMPLE gets no biasCor (prep_IDSAMPLE_SELECT, SALT2mu.c:20646),
-    so its events fail the biasCor cut. SNANA's explicit idsample cut (:18927) is
+    """An unselected IDSAMPLE gets no biasCor (prep_IDSAMPLE_SELECT, SALT2mu.c:20660),
+    so its events fail the biasCor cut. SNANA's explicit idsample cut (:18941) is
     guarded by idsample >= 0 and never fires for data, where the label is not yet set.
     """
     group = ("SDSS(zbin=0.15:x1bin=2.0:cbin=0.2),"
@@ -368,7 +378,7 @@ def test_idsample_select_matches_salt2mu(bbc_biascor_variants, idsample, ref, ns
 
 def test_idsurvey_select_excludes_the_survey_from_the_partition(bbc_biascor_variants):
     """prepare_IDSAMPLE_biasCor skips an excluded survey before it can become an
-    IDSAMPLE (SALT2mu.c:10011-10014), so on this two-survey file DES alone is
+    IDSAMPLE (SALT2mu.c:10021-10024), so on this two-survey file DES alone is
     IDSAMPLE 0. Counting the excluded survey as a sample of its own would sort
     SDSS (IDSURVEY=1) below DES (10) and label every DES event IDSAMPLE 1.
     """
@@ -393,7 +403,7 @@ def test_idsurvey_select_excludes_the_survey_from_the_partition(bbc_biascor_vari
 
 def test_chi2max_pass_starts_logmass_cen_at_parval():
     """applyCut_chi2max evaluates the FCN at INPUTS.parval, whose logmass_cen is
-    10 (set_defaults, SALT2mu.c:6708), so leaving p7 out cuts as p7=10 does."""
+    10 (set_defaults, SALT2mu.c:6718), so leaving p7 out cuts as p7=10 does."""
     keys = [f"datafile={_DIR}/DATA_MASS.FITRES", "p5=0.1", "p8=0.01",
             "chi2max=4"] + _BASE
     unset = prepare_cell(parse_bbc_input(None, overrides=keys))
@@ -404,7 +414,7 @@ def test_chi2max_pass_starts_logmass_cen_at_parval():
 
 def test_logmass_window_cuts_the_data():
     """logmass_min/logmass_max cut on the host mass as well as sizing the biasCor
-    logmass grid (set_CUTMASK, SALT2mu.c:18872). With no biasCor there is nothing
+    logmass grid (set_CUTMASK, SALT2mu.c:18886). With no biasCor there is nothing
     else to reject an out-of-window host, so the window is the whole difference.
     """
     keys = [f"datafile={_DIR}/DATA_MASS.FITRES"] + _BASE

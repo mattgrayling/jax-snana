@@ -27,7 +27,7 @@ def test_generated_zphot_mean_above_ztrue_for_asymmetric():
     (zphoterr_asym), so the generated ZPHOT mean lies above ztrue.
 
     Uses the engine's own draw (GEN_SNHOST_ZPHOT_from_CALC via the truncated
-    bifurcated inverse CDF, sntools_host.c:6916-6952).
+    bifurcated inverse CDF, sntools_host.c:7354-7390).
     """
     n = 5000
     rng = np.random.default_rng(7)

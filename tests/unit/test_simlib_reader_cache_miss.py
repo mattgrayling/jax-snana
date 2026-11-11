@@ -43,13 +43,11 @@ def test_simlib_cache_roundtrip(lsst_simlib_path, cache_dir, tmp_path):
     assert (cached.template_texpose_spectrograph
             == parsed.template_texpose_spectrograph)
     # the SIMLIB header's own saturation values: SNANA reads them on every
-    # job (snlc_sim.c:18479-18481), so a cache that drops them turns
+    # job (snlc_sim.c:18499-18507), so a cache that drops them turns
     # saturation off from the second run onwards
-    assert parsed.global_npe_pixel_saturate is not None
-    assert parsed.global_photflag_saturate is not None
-    assert (cached.global_npe_pixel_saturate
-            == parsed.global_npe_pixel_saturate)
-    assert cached.global_photflag_saturate == parsed.global_photflag_saturate
+    assert set(parsed.instrument_defaults) == {'npe_pixel_saturate', 'photflag_saturate'}
+    assert cached.instrument_defaults == parsed.instrument_defaults
+    assert cached.genskip_peakmjd == parsed.genskip_peakmjd
     assert len(cached.fields) == len(parsed.fields)
     for f_parsed, f_cached in zip(parsed.fields, cached.fields):
         for fld in dataclass_fields(SimlibField):

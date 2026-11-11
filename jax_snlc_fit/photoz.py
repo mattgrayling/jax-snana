@@ -46,13 +46,13 @@ from jax_snlc_core.snana_files import SNANA_NULLFLOAT
 
 from . import parameters
 
-# MASK_REDSHIFT_SOURCE bits marking a spec-z: 1 host, 2 SN (sndata.h:106-107)
+# MASK_REDSHIFT_SOURCE bits marking a spec-z: 1 host, 2 SN (sndata.h:108-109)
 ZSPEC_SOURCE_MASK = 3
 
 # SNANA MXRATIO_INIVAL_ZPHOT (snlc_fit.F90:8568)
 LZDONE_FRACTIONAL_THRESHOLD = 0.05
 
-# a best-z error below this replaces PHOTODZ_REJECT (snlc_fit.F90:8448)
+# a best-z error below this replaces PHOTODZ_REJECT (snlc_fit.F90:8492)
 PHOTODZ_REJECT_ZERR_MAX = 0.05
 
 # NBIN = int(42*(PARMAX-PARMIN)) + 1 (snlc_fit.F90:9452)
@@ -64,7 +64,7 @@ def photoz_zot_window(cfg, z_prior, z_prior_err, lzdone, xp):
 
     RANGEz_COURSE_PHOTOZ overrides the prior-derived window when its lower edge
     is positive (snlc_fit.F90:9436); a pinned SN keeps its delta function,
-    inside PHOTOZ_BOUND (snlc_fit.F90:8459-8467).
+    inside PHOTOZ_BOUND (snlc_fit.F90:8503-8511).
     Shared by the sizing pass and the search itself, so the two cannot drift:
     ``xp`` is numpy for the former and jax.numpy for the latter.
     """
@@ -100,7 +100,7 @@ def photoz_nz_per_sn(cfg, zot_lo, zot_hi, xp):
 # distance stays within 1e-6 mag of the exact one across PHOTOZ_BOUND
 DISTANCE_PRIOR_NZ = 4000
 # SNANA's correlation between the W0_REF and WA_REF uncertainties in the
-# PRIOR_MUERRSCALE width (PRIOR_MUPULL, snlc_fit.F90:12610)
+# PRIOR_MUERRSCALE width (PRIOR_MUPULL, snlc_fit.F90:12765)
 RHO_W0WA = -0.8
 
 
@@ -113,7 +113,7 @@ def distance_prior_tables(config):
     The width is how far the reference distance moves when OMAT_REF, W0_REF
     and WA_REF each shift by their uncertainty, added in quadrature with the
     W0_REF-WA_REF correlation; OLAM_REF stays put and H0_REF's uncertainty is
-    not used (PRIOR_MUPULL, snlc_fit.F90:12544-12621).
+    not used (PRIOR_MUPULL, snlc_fit.F90:12699-12776).
     """
     photoz, fit = config.photoz, config.fit
     if photoz.prior_muerrscale is None and photoz.prior_dmu_range is None:
@@ -300,7 +300,7 @@ def coarse_grid_axes(config, fit_parameters):
     coarse grid, the input's range and bin count taking precedence and
     SCALE_NBIN_COURSE_PHOTOZ multiplying every axis (snlc_fit.F90:9455).
     With NBINT_COURSE_PHOTOZ above 1, a PEAKMJD axis of offsets from each
-    event's estimate joins them (snlc_fit.F90:9352-9364)."""
+    event's estimate joins them (snlc_fit.F90:9475-9487)."""
     scale = config.photoz.scale_nbin_course
     axes = {}
     if config.photoz.nbint_course > 1:
@@ -371,7 +371,7 @@ def coarse_z_grids(cfg, n_z, z_priors):
 def band_z_ranges(restlambda, lam):
     """Each fit band's valid ``(z_min, z_max)``, each [n_filters]: the z range
     over which its SNANA-convention mean wavelength ``lam`` de-redshifts into
-    ``restlambda``, the fit's RESTLAMBDA_USEFIT (snlc_fit.F90:3334-3335)."""
+    ``restlambda``, the fit's RESTLAMBDA_USEFIT (snlc_fit.F90:3366-3367)."""
     restlam_lo, restlam_hi = restlambda
     return lam / restlam_hi - 1.0, lam / restlam_lo - 1.0
 
@@ -386,11 +386,11 @@ def margin_dropped_filters(
     """PHOTOZ_DROPFILTER as ``[n_sne, n_filters]``, True where dropped.
 
     A band is dropped when the fitted z sits within PHOTODZ_REJECT of either
-    edge of its :func:`band_z_ranges` (snlc_fit.F90:3357-3389). Every fit
+    edge of its :func:`band_z_ranges` (snlc_fit.F90:3389-3421). Every fit
     band is tested, present in the light curve or not (:3355). In the best-z
     Gaussian mode FITINI_PHOTOZ replaces PHOTODZ_REJECT with the event's own
-    z error when that is below a fixed 0.05 (:8448-8449); LFIXPAR_ALL skips
-    FITINI_PHOTOZ (:8385).
+    z error when that is below a fixed 0.05 (:8492-8493); LFIXPAR_ALL skips
+    FITINI_PHOTOZ (:8433).
     """
     z_min, z_max = band_z_ranges(restlambda, lam)
     z_min, z_max = z_min[None, :], z_max[None, :]
@@ -455,7 +455,7 @@ def dropped_epochs(config, restlambda, lam, filter_indices, physical,
                    z_priors, which):
     """The epochs of every band the margin test drops at the fitted redshift,
     for the events ``which`` selects (LTEST_ZPHFILTER,
-    snlc_fit.F90:3569); ``lam`` is each band's mean wavelength."""
+    snlc_fit.F90:3601); ``lam`` is each band's mean wavelength."""
     dropped = margin_dropped_filters(config, restlambda, lam, physical[:, -1],
                                      z_priors.z_prior_width)
     dropped = dropped & jnp.reshape(which, (-1, 1))
@@ -563,7 +563,7 @@ def chi2_z_prior_quantile(z_fit, z_fine, pdf_fine, pdf_slopes):
         2. PDF evaluated on fine z-grid from spline derivative (at setup)
         3. Runtime: Catmull-Rom Hermite interpolation of PDF on fine grid
         4. chi2 = -2 * log(PDF / PDF_max), or 1000 where the PDF is not
-           positive (snlc_fit.F90:4893)
+           positive (snlc_fit.F90:4944)
 
     The fine-grid Hermite interpolation is C1-continuous, so the AD
     gradients and Hessians are exact inside the PDF's support.
@@ -584,7 +584,7 @@ def chi2_z_prior_quantile(z_fit, z_fine, pdf_fine, pdf_slopes):
 def z_prior_chi2(settings, z, z_prior):
     """One event's redshift-prior chi2 at ``z``: SNANA's
     CHI2PRIOR(IPAR_zPHOT) (snlc_fit.F90:4903-4921), zero where OPT_PRIOR
-    leaves it out (:4868)."""
+    leaves it out (:4919)."""
     if settings['config'].model.opt_prior <= 0:
         return jnp.zeros(())
     def gaussian():
@@ -603,15 +603,15 @@ def z_prior_chi2(settings, z, z_prior):
 
 # SNANA tabulates the PRIOR_MUERRSCALE prior over pulls of -10 to 10 and
 # CHI2_PRIOR clamps into the table, so a larger pull costs no more
-# (FITINI_MUPRIOR, snlc_fit.F90:11706; CHI2_PRIOR, :12413)
+# (FITINI_MUPRIOR, snlc_fit.F90:11861; CHI2_PRIOR, :12568)
 MUPULL_MAX = 10.0
 
 
 def _distance_prior_chi2(settings, mu, z):
     """The distance-prior chi2 of a source at distance modulus ``mu`` and
     redshift ``z``, which broadcast: CHI2PRIOR(IPAR_DLMAG) under photo-z
-    (snlc_fit.F90:4910-4917), zero where OPT_PRIOR leaves priors out
-    (:4868). PRIOR_MUERRSCALE is a Gaussian on the offset from the reference
+    (snlc_fit.F90:4961-4968), zero where OPT_PRIOR leaves priors out
+    (:4919). PRIOR_MUERRSCALE is a Gaussian on the offset from the reference
     distance, PRIOR_DMU_RANGE a flat window on it."""
     cfg = settings['config']
     if cfg.model.opt_prior <= 0:

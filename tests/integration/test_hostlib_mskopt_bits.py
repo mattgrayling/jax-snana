@@ -231,7 +231,7 @@ def test_useonce_off_baseline_allows_galaxy_reuse(tmp_path):
 
 def test_usesnpar_override(tmp_path):
     """USESNPAR (bit 64): host SN-param columns replace the sampled values,
-    and x0 is recomputed from the overridden values (sntools_host.c:671-686;
+    and x0 is recomputed from the overridden values (sntools_host.c:679-694;
     override_modelPar_from_SNHOST, snlc_sim.c:13053-13107)."""
     with open_text(os.path.expandvars(_HOSTLIB)) as stream:
         lines = stream.read().splitlines()
@@ -268,7 +268,7 @@ def test_usesnpar_override(tmp_path):
 
 def test_usesnpar_without_snpar_columns_aborts(tmp_path):
     """Bit 64 with a HOSTLIB carrying no SN-param column is fatal
-    (sntools_host.c:2616-2624)."""
+    (sntools_host.c:2630-2638)."""
     from jax_snlc_core.logging import SNANAError
     inp = tmp_path / "input.input"
     _write_input(inp, mskopt=322)
@@ -278,7 +278,7 @@ def test_usesnpar_without_snpar_columns_aborts(tmp_path):
 
 def test_hostlib_must_span_the_generation_redshift_range(tmp_path):
     """SNANA aborts when the HOSTLIB does not cover GENRANGE_REDSHIFT
-    (check_redshift_HOSTLIB, sntools_host.c:3322). Without the check jax
+    (check_redshift_HOSTLIB, sntools_host.c:3347). Without the check jax
     assigned the nearest galaxy instead, breaching HOSTLIB_DZTOL for most
     of the sample: verified against snlc_sim.exe, which aborts here."""
     from jax_snlc_core.logging import SNANAError
@@ -301,7 +301,7 @@ def test_hostlib_spanning_the_range_does_not_abort(tmp_path):
 
 def test_usesnpar_snmagshift_only_column(tmp_path):
     """A HOSTLIB whose only SN-param column is SNMAGSHIFT satisfies bit 64
-    and lands as the SNMAGSHIFT (sntools_host.c:680; snlc_sim.c:13060)."""
+    and lands as the SNMAGSHIFT (sntools_host.c:688; snlc_sim.c:13078)."""
     with open_text(os.path.expandvars(_HOSTLIB)) as stream:
         lines = stream.read().splitlines()
     rewritten = []
@@ -375,9 +375,9 @@ def _catalogue(path):
 def test_sn2gal_z_takes_the_hosts_redshift(snana_fixture, tmp_path, name):
     """SN2GAL_Z: zHEL is the host's ZTRUE, which already holds its velocity,
     and zCMB is its CMB-frame value with the SN's VPEC removed
-    (TRANSFER_SNHOST_REDSHIFT, sntools_host.c:9160-9172). Dust is drawn after
+    (TRANSFER_SNHOST_REDSHIFT, sntools_host.c:9557-9569). Dust is drawn after
     the host in either order, so an RV with a redshift variation and no width
-    reads the final zCMB (snlc_sim.c:12912); so does x1 when the model follows
+    reads the final zCMB (snlc_sim.c:12930); so does x1 when the model follows
     the host too, which it does unless a weight map reads it."""
     for side, h in _heads(snana_fixture, name, tmp_path).items():
         zhel, zcmb = _f(h, "SIM_REDSHIFT_HELIO"), _f(h, "SIM_REDSHIFT_CMB")
@@ -396,7 +396,7 @@ def test_sn2gal_z_takes_the_hosts_redshift(snana_fixture, tmp_path, name):
 def test_sn2gal_radec_recomputes_zhel_at_the_host(snana_fixture, tmp_path):
     """SN2GAL_RADEC alone: the SN is written at its host, zCMB stays and zHEL
     is its heliocentric value at the new position with the SN's VPEC
-    (sntools_host.c:9176-9189, :7867)."""
+    (sntools_host.c:9573-9586, :8305)."""
     for side, h in _heads(snana_fixture, "hostlib_sn2galradec",
                           tmp_path).items():
         zcmb, ra, dec = (_f(h, "SIM_REDSHIFT_CMB"), _f(h, "SIM_RA"),
@@ -418,7 +418,7 @@ def test_sn2gal_radec_recomputes_zhel_at_the_host(snana_fixture, tmp_path):
 def test_usevpec_with_sn2gal_z_uses_the_hosts_velocity(snana_fixture,
                                                        tmp_path):
     """USEVPEC with SN2GAL_Z: the SN's VPEC is its host's, and it is the one
-    removed from zCMB (GEN_SNHOST_VPEC, sntools_host.c:7464)."""
+    removed from zCMB (GEN_SNHOST_VPEC, sntools_host.c:7902)."""
     table, row = _catalogue(
         "$JAX_TEST_FIXTURE_ROOT/hostlib/JAX_TEST_VPEC.HOSTLIB")
     for side, h in _heads(snana_fixture, "hostlib_usevpec_sn2galz",
@@ -439,9 +439,9 @@ def test_usevpec_with_sn2gal_z_uses_the_hosts_velocity(snana_fixture,
 def test_wrong_host_photoz_follows_the_lookup_redshift(snana_fixture,
                                                        tmp_path):
     """WRONGHOST_FILE: SIM_REDSHIFT_HOST is the drawn galaxy's ZTRUE
-    (GEN_SNHOST_GALID, sntools_host.c:6481), and the host photo-z is the
+    (GEN_SNHOST_GALID, sntools_host.c:6910), and the host photo-z is the
     catalogue's shifted by the lookup redshift ZGEN, not the SN's
-    (GEN_SNHOST_ZPHOT_from_HOSTLIB, :7185). So on a wrong host the implied
+    (GEN_SNHOST_ZPHOT_from_HOSTLIB, :7623). So on a wrong host the implied
     ZGEN sits by the galaxy, far from the SN."""
     table, row = _catalogue(_HOSTLIB)
     for side, h in _heads(snana_fixture, "hostlib_wronghost",
@@ -485,7 +485,7 @@ def test_host_rv_preserves_drawn_av(tmp_path, data_root, host_dust, drawn_rv):
     parameters = results['parameters']
     for name in ('rv', 'sim_rv'):
         np.testing.assert_allclose(parameters[name], 2.7)
-    # snlc_sim.c:13072-13082 preserves AV unless a host AV/EBV column replaces it.
+    # snlc_sim.c:13090-13100 preserves AV unless a host AV/EBV column replaces it.
     expected_av = {'RV': .1 * drawn_rv, 'RV AV': .4, 'RV EBV': .54}[host_dust]
     for name in ('av', 'sim_av'):
         np.testing.assert_allclose(parameters[name], expected_av)

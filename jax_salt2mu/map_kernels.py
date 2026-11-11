@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from .binning import below_centroid
 
 
-MINPERCELL_BIASCOR_RMS = 10  # SALT2mu.c:449 (used at :12564)
+MINPERCELL_BIASCOR_RMS = 10  # SALT2mu.c:451 (used at :12574)
 
 
 def map_bounds(bins, z_capacity=None):
@@ -276,12 +276,16 @@ def error_map(coords, mcoords, bounds, mbounds, node, coeff_valid, bcoef,
             use_mad=add_mad, minimum=5)
         scatter = jnp.where(use & (scatter == 0.), 1e-12, scatter)
         added = scatter * jnp.abs(scatter)
-        badadd = use & (diagnostics[0] | diagnostics[3])
+        # a map cell may be narrower than its noise and stop at the floor
+        # (SALT2mu.c:13426-13445); the scan's other failures are fatal
+        bad_covariance, _, _, unbracketed, cap, zero_width = diagnostics
+        scatter_failed = tuple(jnp.any(use & failed)
+                               for failed in (bad_covariance, unbracketed, cap, zero_width))
     else:
         added = jnp.zeros(mn)
-        badadd = jnp.zeros(mn, bool)
+        scatter_failed = (False,) * 4
     errors = (jnp.any(invalid & mask & coeff_valid), badmedian,
-              jnp.any(badadd), jnp.any(mask & (mix[0] < 0)))
+              jnp.any(mask & (mix[0] < 0)), *scatter_failed)
     return scale, use, mav, added, errors
 
 
@@ -379,14 +383,35 @@ def _median(values, cell, count):
     return jax.lax.cond(nonfinite, sorted_median, selected_median)
 
 
+# the scan's trial-count bound, fatal when reached (sigint_muresid_list, sntools.c:6054)
+MXSTORE_PULL = 120
+
+# the message for each of estimate_intrinsic_scatter's diagnostics, in order
+SCATTER_FAILURES = ("Invalid MUCOV in intrinsic-scatter sample",
+                    "Cannot compute sigint because STD < AVG_MUERR",
+                    "Cannot compute sigint because sig trial < the scan floor",
+                    "ONE is NOT CONTAINED by stdPull_store array",
+                    "NBIN_SIGINT exceeds bound MXSTORE_PULL",
+                    "Invalid stdPull = 0: no residual differs from the mean")
+
 @partial(jax.jit, static_argnames=("ncell", "use_mad", "minimum"))
 def estimate_intrinsic_scatter(residual, covariance, weights, cell, valid, *, ncell,
              use_mad=False, minimum=1):
-    """Return scatter, diagnostics and counts for each cell.
+    """Return scatter, diagnostics and counts for each cell
+    (sigint_muresid_list, sntools.c:5985-6279).
 
-    Diagnostics are (invalid covariance, initial width below noise,
-    reached scatter floor, unbracketed first trial). The caller decides which
-    are fatal: covariance-map cells permit negative intrinsic scatter.
+    The scan starts 0.6 above the approximate scatter, raised once when the
+    pull width there already exceeds one, and steps down by 0.01 to the first
+    trial whose width exceeds one, interpolating to width one. It stops at
+    the floor, 0.5 below the approximate scatter, which is returned. The MAD
+    width can only grow as the trial scatter falls, so its first crossing is
+    found by bisection over the trials rather than one trial at a time.
+
+    Diagnostics are (invalid covariance, initial width below noise, reached
+    the scatter floor, unbracketed first trial, MXSTORE_PULL trials, zero
+    pull width). The caller chooses which of the first three to accept:
+    covariance-map cells permit negative intrinsic scatter. The last three
+    are always fatal.
     """
     cell = jnp.where(valid, cell, ncell)
     safe = jnp.minimum(cell, ncell - 1)
@@ -416,7 +441,9 @@ def estimate_intrinsic_scatter(residual, covariance, weights, cell, valid, *, nc
         return jnp.sqrt(jnp.maximum(variance, 0.))
 
     width0 = 1.48 * median(jnp.abs(residual)) if use_mad else rms(residual)
-    initial = jnp.sqrt(jnp.maximum(width0**2 - mean_cov, 0.)) + .5
+    excess = width0**2 - mean_cov
+    approx = jnp.where(excess < 0, -1., 1.) * jnp.sqrt(jnp.abs(excess))
+    floor_value = approx - .5 - 1e-7
     centred = residual - mean[safe]
 
     def pulls(scatter):
@@ -425,83 +452,66 @@ def estimate_intrinsic_scatter(residual, covariance, weights, cell, valid, *, nc
         total = jnp.where(added[safe] < 0, jnp.maximum(total, .0004), total)
         return centred / jnp.sqrt(total)
 
+    def width(scatter):
+        return (1.48 * median(jnp.abs(pulls(scatter))) if use_mad
+                else rms(pulls(scatter)))
+
+    # a pull width above one at the top cannot fall to one below it, so the
+    # top is raised once by the excess and 0.1
+    top = approx + .6
+    top_width = width(top)
+    start = jnp.where(top_width > 1., top + ((top_width - 1.) + .1), top)
+
+    # every trial of each cell, stepped down from the start as SNANA steps
+    _, trials = jax.lax.scan(lambda scatter, _: (scatter - .01, scatter), start,
+                             None, length=MXSTORE_PULL)
+    trials = trials.T
+
+    def trial(index):
+        return jnp.take_along_axis(trials, jnp.minimum(index, MXSTORE_PULL - 1)[:, None],
+                                   axis=1)[:, 0]
+
+    # the first trial below the floor, and the first whose width exceeds one;
+    # MXSTORE_PULL where there is none
+    below = trials < floor_value[:, None]
+    first_below = jnp.where(below.any(axis=1), jnp.argmax(below, axis=1), MXSTORE_PULL)
+    none = jnp.full(ncell, MXSTORE_PULL)
     if use_mad:
-        def trial(index):
-            return jax.lax.fori_loop(
-                0, jnp.max(index),
-                lambda i, s: jnp.where(i < index, s - .01, s), initial)
-
-        def crosses(index):
-            scatter = trial(index)
-            absolute = jnp.abs(pulls(scatter))
-            below = 1.48 * absolute <= 1.
-            number_below = sums(below.astype(jnp.int32))
-            lower = jax.ops.segment_max(
-                jnp.where(below, absolute, -jnp.inf), cell, ncell)
-            upper = jax.ops.segment_min(
-                jnp.where(below, jnp.inf, absolute), cell, ncell)
-            half = count // 2
-            even = jnp.where(number_below < half, True,
-                            jnp.where(number_below > half, False,
-                                      1.48 * (.5 * (lower + upper)) > 1.))
-            crossing = jnp.where(count % 2, number_below <= half, even)
-            return (scatter < -.3) | crossing
-
-        # Carry the crossing result so the condition and body do not both
-        # reduce the full event arrays at the same upper bound.
-        def expand(bounds):
-            lo, hi, pending = bounds
-            lo = jnp.where(pending, hi, lo)
-            hi = jnp.where(pending, 2 * hi, hi)
-            return lo, hi, used & ~crosses(hi)
-
-        hi = jnp.full(ncell, 50)
-        lo, hi, _ = jax.lax.while_loop(
-            lambda bounds: jnp.any(bounds[2]), expand,
-            (jnp.full(ncell, -1), hi, used & ~crosses(hi)))
-
-        def bisect(bounds):
-            lo, hi = bounds
-            mid = (lo + hi) // 2
-            crossing = crosses(mid)
-            pending = used & (hi - lo > 1)
-            return (jnp.where(pending & ~crossing, mid, lo),
-                    jnp.where(pending & crossing, mid, hi))
-
-        _, index = jax.lax.while_loop(
-            lambda bounds: jnp.any(used & (bounds[1] - bounds[0] > 1)),
-            bisect, (lo, hi))
-        scatter = trial(index)
-        previous = trial(jnp.maximum(index - 1, 0))
-        width = 1.48 * median(jnp.abs(pulls(scatter)))
-        previous_width = 1.48 * median(jnp.abs(pulls(previous)))
-        fraction = (width - 1.) / jnp.where(width != previous_width,
-                                           width - previous_width, 1.)
-        answer = scatter + (previous - scatter) * fraction
-        answer = jnp.where(index == 0, scatter, answer)
-        floor = scatter < -.3
-        bad = (index == 0) & (width > 1.) & (jnp.abs(width - 1.) >= .001)
+        def halve(_, bounds):
+            low, high = bounds
+            middle = (low + high) // 2
+            crosses = width(trial(middle)) > 1.
+            return (jnp.where(crosses, low, middle + 1), jnp.where(crosses, middle, high))
+        _, first_crossing = jax.lax.fori_loop(
+            0, MXSTORE_PULL.bit_length(), halve, (jnp.zeros(ncell, int), none))
     else:
         def step(state):
-            scatter, previous_width, answer, active, bad, floor = state
-            width = rms(pulls(scatter))
-            crossing = width > 1.
-            first = jnp.isinf(previous_width)
-            fraction = (width - 1.) / jnp.where(width != previous_width,
-                                               width - previous_width, 1.)
-            root = jnp.where(first, scatter, scatter + .01 * fraction)
-            at_floor = scatter < -.3
-            finished = active & (crossing | at_floor)
-            answer = jnp.where(finished, root, answer)
-            bad |= active & ~at_floor & crossing & first & (jnp.abs(width - 1.) >= .001)
-            floor |= active & at_floor
-            return (scatter - .01, width, answer, active & ~finished, bad, floor)
+            index, first_crossing = state
+            searching = used & (first_crossing == MXSTORE_PULL) & (index < first_below)
+            crosses = searching & (width(trials[:, index]) > 1.)
+            return index + 1, jnp.where(crosses, index, first_crossing)
+        _, first_crossing = jax.lax.while_loop(
+            lambda state: (state[0] < MXSTORE_PULL) & jnp.any(
+                used & (state[1] == MXSTORE_PULL) & (state[0] < first_below)),
+            step, (0, none))
 
-        _, _, answer, _, bad, floor = jax.lax.while_loop(
-            lambda state: jnp.any(state[3]), step,
-            (initial, jnp.full(ncell, -jnp.inf), jnp.zeros(ncell), used,
-             jnp.zeros(ncell, bool), jnp.zeros(ncell, bool)))
-    answer = jnp.where(used, jnp.where(floor, -.3, answer), 0.)
+    # the floor is checked before each trial, and the scan ends at its last
+    # stored trial whether or not that trial crosses
+    floor = first_below <= jnp.minimum(first_crossing, MXSTORE_PULL - 1)
+    cap = ~floor & (first_crossing >= MXSTORE_PULL - 1)
+    scatter = trial(first_crossing)
+    previous = trial(first_crossing - 1)
+    trial_width = width(scatter)
+    previous_width = width(previous)
+    # linear between the last two trials at width one (interp_1DFUN)
+    fraction = (trial_width - 1.) / jnp.where(trial_width != previous_width,
+                                             trial_width - previous_width, 1.)
+    first = first_crossing == 0
+    root = jnp.where(first, scatter, scatter + (previous - scatter) * fraction)
+    bad = ~floor & ~cap & first & (jnp.abs(trial_width - 1.) >= .001)
+    answer = jnp.where(used, jnp.where(floor, floor_value, root), 0.)
+    # a zero pull width stays zero at every trial
     diagnostics = (sums((covariance <= 0).astype(jnp.int32)) > 0,
-                   used & (width0 < jnp.sqrt(mean_cov)), used & floor, used & bad)
+                   used & (width0 < jnp.sqrt(mean_cov)), used & floor, used & bad,
+                   used & cap, used & (top_width == 0.))
     return answer, diagnostics, count

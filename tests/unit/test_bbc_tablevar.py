@@ -89,7 +89,7 @@ def test_covariance_quality_cut_survives_cutwin_none(disable, event_type):
 
 def test_cutwin_on_an_absent_column_aborts():
     """SNANA reads any named column for a CUTWIN and aborts when the table
-    has no such column (set_DOFLAG_SELECT_VAR, SALT2mu.c:21380)."""
+    has no such column (set_DOFLAG_SELECT_VAR, SALT2mu.c:21394)."""
     cfg = _salt_config(nzbin=10)
     cfg.cutwin = [("NOSUCHVAR", 0.0, 1.0)]
     with pytest.raises(SNANAError, match="NOSUCHVAR"):
@@ -98,7 +98,7 @@ def test_cutwin_on_an_absent_column_aborts():
 
 def test_absent_idsurvey_reads_as_minus_9(tmp_path):
     """SNTABLE_READPREP_TABLEVAR leaves IDSURVEY at -9 when the column is
-    absent (SALT2mu.c:8533)."""
+    absent (SALT2mu.c:8543)."""
     out, ivar = [], None
     for line in open(_SALT_FITRES):
         w = line.split()
@@ -113,10 +113,47 @@ def test_absent_idsurvey_reads_as_minus_9(tmp_path):
     assert np.all(tv.idsurvey == -9)
 
 
+def test_a_negative_redshift_aborts_unless_varname_z_names_it(tmp_path):
+    """A negative zHD aborts, but not in a column varname_z names, nor when
+    only zphot_shift makes it negative, which is added after the check
+    (compute_more_TABLEVAR, SALT2mu.c:9224, :9326)."""
+    out, ivar, iopt = [], None, None
+    for line in open(_SALT_FITRES):
+        w = line.split()
+        if line.startswith("VARNAMES:"):
+            ivar, iopt = w.index("zHD"), w.index("OPT_PHOTOZ")
+        elif ivar is not None and w[:1] == ["SN:"]:
+            w[ivar], w[iopt] = "0.005", "1"
+        out.append(" ".join(w) + "\n")
+    path = tmp_path / "SHIFTED_Z.TEXT"
+    path.write_text("".join(out))
+    tv = read_tablevar([str(path)], EVENT_TYPE_DATA, _salt_config(nzbin=10, zphot_shift=-0.01),
+                       SALTModel)
+    np.testing.assert_allclose(tv.zhd, -0.005)
+
+    out, ivar = [], None
+    for line in open(_SALT_FITRES):
+        w = line.split()
+        if line.startswith("VARNAMES:"):
+            ivar = w.index("zHD")
+            w = w + ["zNEG"]
+        elif ivar is not None and w[:1] == ["SN:"]:
+            w[ivar] = "-9"
+            w = w + ["-9"]
+        out.append(" ".join(w) + "\n")
+    path = tmp_path / "NEGATIVE_Z.TEXT"
+    path.write_text("".join(out))
+    with pytest.raises(SNANAError, match="Invalid redshift -9"):
+        read_tablevar([str(path)], EVENT_TYPE_DATA, _salt_config(nzbin=10), SALTModel)
+    tv = read_tablevar([str(path)], EVENT_TYPE_DATA, _salt_config(nzbin=10, varname_z="zNEG"),
+                       SALTModel)
+    assert np.all(tv.zhd == -9)
+
+
 def test_vpec_err_is_read_before_vpecerr(tmp_path):
     """With both columns present, VPEC_ERR is read: SNTABLE_READPREP_VARDEF
     takes the first name of 'VPEC_ERR:F VPECERR:F' the table has
-    (SALT2mu.c:8651)."""
+    (SALT2mu.c:8661)."""
     out, ivar = [], None
     for line in open(_SALT_FITRES):
         w = line.split()
@@ -134,7 +171,7 @@ def test_vpec_err_is_read_before_vpecerr(tmp_path):
     np.testing.assert_allclose(tv.zmuerr * LIGHT_KM, 111.0, rtol=1e-6)
 
 def test_zrate_scale_outside_the_table_aborts(tmp_path):
-    """interp_1DFUN aborts when z lies outside the table (sntools.c:7962), where
+    """interp_1DFUN aborts when z lies outside the table (sntools.c:7657), where
     np.interp would clamp."""
     table = tmp_path / "zrate.txt"
     table.write_text("0.1 0.5\n0.5 0.5\n")
@@ -188,14 +225,14 @@ def _simps_matches_cid_draw(tv):
 
 def test_zrate_scale_cuts_simulated_snia_at_their_true_redshift(tmp_path):
     """prescale_reject_simData evaluates the scale only for a simulated SNIa,
-    at SIM_ZCMB (SALT2mu.c:19185-19189): a CC event, or a zHD outside the
+    at SIM_ZCMB (SALT2mu.c:19199-19203): a CC event, or a zHD outside the
     table, neither aborts nor is cut."""
     fitres, cfg = _zrate_inputs(tmp_path)
     _simps_matches_cid_draw(read_tablevar([str(fitres)], EVENT_TYPE_DATA, cfg, SALTModel))
 
 
 def test_zrate_scale_ignores_real_data(tmp_path):
-    """Real data return before any prescale (SALT2mu.c:19162)."""
+    """Real data return before any prescale (SALT2mu.c:19176)."""
     table = tmp_path / "zrate.txt"
     table.write_text("0.0 0.0\n0.01 0.0\n")
     cfg = _salt_config(nzbin=10)
@@ -206,7 +243,7 @@ def test_zrate_scale_ignores_real_data(tmp_path):
 
 def test_zrate_scale_on_biascor_looks_up_every_event(tmp_path):
     """prescale_reject_biasCor looks up every event at SIM_ZCMB and rejects
-    only SNIa (SALT2mu.c:19223-19231), so a CC event outside the table aborts,
+    only SNIa (SALT2mu.c:19237-19245), so a CC event outside the table aborts,
     and with every event inside it only the SNIa are cut."""
     fitres, cfg = _zrate_inputs(tmp_path)
     with pytest.raises(SNANAError, match="outside the zrate_scale_file range"):
@@ -220,7 +257,7 @@ def test_zrate_scale_on_biascor_looks_up_every_event(tmp_path):
 def test_simulated_input_without_sim_zcmb_aborts(tmp_path, event_type):
     """SALT2mu counts SIM_ZCMB as a required variable of any simulated input,
     one with SIM_TEMPLATE_INDEX, and aborts at the read when it is missing
-    (SALT2mu.c:8918-8921, :8954-8957)."""
+    (SALT2mu.c:8928-8931, :8964-8967)."""
     fitres, cfg = _zrate_inputs(tmp_path, sim_zcmb_name="SIM_ZCMB_RENAMED")
     with pytest.raises(SNANAError, match="SIM_ZCMB"):
         read_tablevar([str(fitres)], event_type, cfg, SALTModel)
@@ -249,7 +286,7 @@ def _renamed_template_index(tmp_path, name):
 
 def test_sim_nonia_index_is_the_template_index(tmp_path):
     """SALT2mu reads SIM_NONIA_INDEX or SIM_TEMPLATE_INDEX into the template
-    index (SALT2mu.c:8822)."""
+    index (SALT2mu.c:8832)."""
     path = _renamed_template_index(tmp_path, "SIM_NONIA_INDEX")
     tv = read_tablevar([path], EVENT_TYPE_BIASCOR, _salt_config(nzbin=10), SALTModel)
     ref = read_tablevar([_SALT_FITRES], EVENT_TYPE_BIASCOR, _salt_config(nzbin=10),
@@ -260,10 +297,41 @@ def test_sim_nonia_index_is_the_template_index(tmp_path):
 
 def test_input_without_a_template_index_is_real_data(tmp_path):
     """Without a template-index column SALT2mu treats the input as real data
-    and reads no SIM column (SALT2mu.c:8822-8832)."""
+    and reads no SIM column (SALT2mu.c:8832-8842)."""
     path = _renamed_template_index(tmp_path, None)
     tv = read_tablevar([path], EVENT_TYPE_DATA, _salt_config(nzbin=10), SALTModel)
     assert tv.sim_truth == {}
+
+
+def test_salt2mu_column_spellings(tmp_path):
+    """SALT2mu's other column spellings read the same values, and a missing
+    SIM_gammaDM reads as 0 (SALT2mu.c:8594, 8666, 8705-8713, 8863-8920, 9835)."""
+    spellings = {"CID": "CCID", "SNRMAX1": "SNRMAX", "zHD": "zSPEC", "COV_x1_x0": "COVx0x1",
+                 "COV_c_x0": "COVx0c", "COV_x1_c": "COVx1c", "SIM_x0": "SIMx0",
+                 "SIM_x1": "SIMx1", "SIM_c": "SIMc", "SIM_alpha": "SIMalpha",
+                 "SIM_beta": "SIMbeta"}
+    lines, igamma = [], None
+    for line in open(_SALT_FITRES):
+        w = line.split()
+        if w[:1] == ["VARNAMES:"]:
+            igamma = w.index("SIM_gammaDM")
+            w = [spellings.get(name, name) for name in w]
+        if igamma is not None and w[:1] in (["VARNAMES:"], ["SN:"]):
+            del w[igamma]
+            line = " ".join(w) + "\n"
+        lines.append(line)
+    path = tmp_path / "SPELLINGS.FITRES"
+    path.write_text("".join(lines))
+    cfg = _salt_config(nzbin=10)
+    tv = read_tablevar([str(path)], EVENT_TYPE_BIASCOR, cfg, SALTModel)
+    ref = read_tablevar([_SALT_FITRES], EVENT_TYPE_BIASCOR, cfg, SALTModel)
+    np.testing.assert_array_equal(tv.name, ref.name)
+    np.testing.assert_array_equal(tv.snrmax, ref.snrmax)
+    np.testing.assert_array_equal(tv.zhd, ref.zhd)
+    np.testing.assert_array_equal(tv.covmat_fit, ref.covmat_fit)
+    for name in ("SIM_x0", "SIM_x1", "SIM_c", "SIM_alpha", "SIM_beta"):
+        np.testing.assert_array_equal(tv.sim_truth[name], ref.sim_truth[name])
+    assert np.all(tv.sim_truth["SIM_gammaDM"] == 0.0)
 
 
 def test_make_zbins_uniform_log_user():
@@ -294,7 +362,7 @@ def _resolved(**zbins):
 
 def test_resolve_normalises_nzbin_and_range():
     """nzbin/zmin/zmax end up describing the bins actually built, whichever key
-    supplied them (SALT2mu.c:2896, :21965) -- the biasCor z cut reads them."""
+    supplied them (SALT2mu.c:2899, :21979) -- the biasCor z cut reads them."""
     z = _resolved(zbinuser=[0.01, 0.05, 0.2, 0.6])
     assert (z.nzbin, z.zmin, z.zmax) == (3, 0.01, 0.6)
     assert _resolved(nlogzbin=3, zmin=0.01, zmax=1.0).nzbin == 3
@@ -353,7 +421,7 @@ def test_resolve_effective_values(cfg, opt_biascor, fitflag):
 
 
 def test_resolve_applies_fixpar_all():
-    """fixpar_all forces one z bin and no sigint iteration (SALT2mu.c:21939). It used
+    """fixpar_all forces one z bin and no sigint iteration (SALT2mu.c:21953). It used
     to be applied while parsing, so a config built in Python never got it."""
     cfg = BBCConfig(nlogzbin=8, zmin=0.1, zmax=1.0,
                     fitflag_sigmb=1)
@@ -379,8 +447,8 @@ def test_resolve_agrees_between_parsed_and_built(tmp_path):
     ({"alpha0": True}, ["alpha0"], 0.14),     # u1=1: alpha floats from its own default
 ])
 def test_floated_and_defaults_follows_snana(floats, expect_floated, expect_alpha):
-    """SNANA inits every float flag to 0 (SALT2mu.c:6701), so a config with no u<N>
-    floats nothing and its nuisances hold parval -- 0 unless p<N> was given (:22354).
+    """SNANA inits every float flag to 0 (SALT2mu.c:6711), so a config with no u<N>
+    floats nothing and its nuisances hold parval -- 0 unless p<N> was given (:22368).
     SALT2mu.exe on such a config prints `alpha0 0.0000 fixed`; jax used to fall back to
     floating alpha0/beta0, fitting them to 0.158/3.487 and moving MUDIF by 0.13."""
     cfg = BBCConfig(nzbin=10, zmin=0.1, zmax=1.0)
@@ -393,8 +461,8 @@ def test_floated_and_defaults_follows_snana(floats, expect_floated, expect_alpha
 
 
 def test_fixpar_all_freezes_the_h11_coefficients_at_their_parval():
-    """fixpar_all holds every fitted parameter at SNANA's parval (SALT2mu.c:21939),
-    and set_defaults leaves parval[18..20] at 0.1 rather than 0 (:6710). BBC's own
+    """fixpar_all holds every fitted parameter at SNANA's parval (SALT2mu.c:21953),
+    and set_defaults leaves parval[18..20] at 0.1 rather than 0 (:6720). BBC's own
     parameters take those values from the same table their bounds come from, so
     halving that table cannot silently move them."""
     cfg = BBCConfig(nzbin=10, zmin=0.1, zmax=1.0, use_h11=True, fixpar_all=True)
@@ -406,7 +474,7 @@ def test_fixpar_all_freezes_the_h11_coefficients_at_their_parval():
     assert frozen["scalePCC"] == 0.0          # parval[IPAR_scalePCC] (:6701)
 
 
-@pytest.mark.parametrize("error_column", ["DLMAGERR", "MU_LCFITERR", "MUERR_LCFIT"])
+@pytest.mark.parametrize("error_column", ["DLMAGERR", "MUERR_LCFIT"])
 def test_bayesn_distance_error_spellings(tmp_path, error_column):
     """BBC preserves the fitted distance covariance for each supported format."""
     from pathlib import Path

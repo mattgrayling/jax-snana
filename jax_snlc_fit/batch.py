@@ -51,7 +51,7 @@ FIT_REASON_DESCRIPTIONS = {
     ERRFLAG_MNFIT_NAN: 'Non-finite fitted parameters',
 }
 
-# round-1 window codes, in FITPAR_ANA's precedence (snlc_fit.F90:2139-2155)
+# round-1 window codes, in FITPAR_ANA's precedence (snlc_fit.F90:2171-2187)
 ITER1_ERRFLAG = (('PROB', ERRFLAG_FIT_FITPROB_ITER1),
                  ('SHAPE', ERRFLAG_FIT_SHAPE_ITER1),
                  ('COLOR', ERRFLAG_FIT_COLOR_ITER1),

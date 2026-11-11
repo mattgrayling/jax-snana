@@ -29,8 +29,8 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.filters import filter_band
 from jax_snlc_core.interpolation import interp_nd_regular
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import (MAG_ZEROFLUX, check_file_docana, is_ignorefile,
-                                       open_text, skip_docana)
+from jax_snlc_core.snana_files import (MAG_ZEROFLUX, check_file_docana, gridmap,
+                                       is_ignorefile, key_runs, leading_values, split_names)
 from jax_snlc_sim.spectroscopic_efficiency import (
     resolve_searcheff_file, resolve_fieldlist_indices)
 
@@ -64,8 +64,6 @@ class PhotoprobMap:
     grid_axes: List[np.ndarray]   # unique values per dimension
     grid_cdf: np.ndarray          # (*axis_sizes, nfun_cdf), cumulative CDF weights
     cdf_bins: np.ndarray          # [0, 1/K, ..., 1], length K+1
-    valmin: np.ndarray            # per-variable clamp range
-    valmax: np.ndarray
     fieldlist: str = 'ALL'
     filterlist: str = 'ALL'
     require_detection: bool = False
@@ -77,64 +75,30 @@ class PhotoprobMap:
 
 
 def build_photprob_map(info: dict, data_rows: list) -> PhotoprobMap:
-    """Build a PhotoprobMap from parsed data.
-
-    The grid is filled by each row's coordinates rather than assuming row
-    order; a duplicate coordinate, a missing cell, a negative weight or a
-    zero-mass weight row is malformed input and fatal.
-    """
+    """Build a PhotoprobMap from parsed data; a negative weight or a grid
+    point whose weights sum to zero is malformed input and fatal."""
     name = info['name']
-    nvar_map = info['nvar_map']
     nfun_cdf = info['nfun_cdf']
-    data = np.array(data_rows)
-    var_data = data[:, :nvar_map]
-    wgt_data = data[:, nvar_map:]
-
-    if np.any(wgt_data < 0.0):
+    grid_axes, weights = gridmap(data_rows, info['varnames'], f"PHOTPROB map {name!r}")
+    if np.any(weights < 0.0):
         raise SNANAError(
             f"PHOTPROB map {name!r} has negative PHOTPROB_WGTLIST entries.",
             function_name='build_photprob_map')
-    row_sums = wgt_data.sum(axis=1, keepdims=True)
-    if np.any(row_sums <= 0.0):
+    totals = weights.sum(axis=-1, keepdims=True)
+    if np.any(totals <= 0.0):
         raise SNANAError(
             f"PHOTPROB map {name!r} has ROW(s) whose PHOTPROB_WGTLIST sums to "
             f"zero; the CDF is undefined.",
             function_name='build_photprob_map')
-    # Convert weights to cumulative CDF (SNANA LOAD_PHOTPROB_CDF)
-    cumulative = np.cumsum(wgt_data, axis=1) / row_sums
-
-    # Track VALMIN/VALMAX per variable (sntools_trigger.c:631-636)
-    valmin = var_data.min(axis=0)
-    valmax = var_data.max(axis=0)
-
-    grid_axes = [np.unique(var_data[:, d]) for d in range(nvar_map)]
-    shape = tuple(len(ax) for ax in grid_axes)
-    idx_per_dim = tuple(
-        np.searchsorted(grid_axes[d], var_data[:, d]) for d in range(nvar_map))
-    filled = np.zeros(shape, dtype=bool)
-    filled[idx_per_dim] = True
-    flat_cell = np.ravel_multi_index(idx_per_dim, shape)
-    if len(np.unique(flat_cell)) < len(data_rows):
-        raise SNANAError(
-            f"PHOTPROB map {name!r} defines the same grid coordinate more "
-            f"than once.",
-            function_name='build_photprob_map')
-    if not filled.all():
-        raise SNANAError(
-            f"PHOTPROB map {name!r} is missing "
-            f"{int(filled.size - filled.sum())} grid cell(s) of the "
-            f"{shape} outer-product grid.",
-            function_name='build_photprob_map')
-
-    grid_cdf = np.zeros(shape + (nfun_cdf,), dtype=np.float64)
-    grid_cdf[idx_per_dim] = cumulative
+    # the weights as a cumulative distribution (LOAD_PHOTPROB_CDF)
+    grid_cdf = np.cumsum(weights, axis=-1) / totals
     cdf_bins = np.linspace(0.0, 1.0, nfun_cdf + 1)
 
     return PhotoprobMap(
         name=info['name'],
         varnames=info['varnames'],
         ivarabs=info['ivarabs'],
-        nvar_map=nvar_map,
+        nvar_map=info['nvar_map'],
         nfun_cdf=nfun_cdf,
         grid_axes=grid_axes,
         grid_cdf=grid_cdf,
@@ -144,8 +108,6 @@ def build_photprob_map(info: dict, data_rows: list) -> PhotoprobMap:
         require_detection=info['require_detection'],
         cutval=info['cutval'],
         reduced_corr=info['reduced_corr'],
-        valmin=valmin,
-        valmax=valmax,
     )
 
 
@@ -158,7 +120,7 @@ def prepare_photprob(maps, filter_names):
     filter names (e.g., ['LSST-u', ...]). Returns prepared maps with JAX arrays.
 
     Raises `SNANAError` when more than one map matches a (field, filter)
-    observation (setObs_for_PHOTPROB, sntools_trigger.c:2589-2594).
+    observation (setObs_for_PHOTPROB, sntools_trigger.c:2591-2596).
     """
     filt_chars = [filter_band(fn) for fn in filter_names]
 
@@ -178,13 +140,11 @@ def prepare_photprob(maps, filter_names):
             grid_cdf=jnp.asarray(m.grid_cdf, dtype=jnp.float32),
             cdf_bins=jnp.asarray(m.cdf_bins, dtype=jnp.float32),
             filter_mask=jnp.asarray(filter_mask),
-            valmin=jnp.asarray(m.valmin, dtype=jnp.float32),
-            valmax=jnp.asarray(m.valmax, dtype=jnp.float32),
             fieldlist_mask=(None if m.fieldlist_mask is None
                             else jnp.asarray(m.fieldlist_mask)),
         ))
 
-    # setObs_for_PHOTPROB NMATCH>1 aborts (sntools_trigger.c:2589-2594)
+    # setObs_for_PHOTPROB NMATCH>1 aborts (sntools_trigger.c:2591-2596)
     n_entries = max((len(m.fieldlist_mask) for m in maps
                      if m.fieldlist_mask is not None), default=1)
     n_match = np.zeros((n_entries, len(filter_names)), dtype=np.int32)
@@ -275,10 +235,10 @@ def evaluate_photprob(prepared_maps, snr_2d, filter_indices_2d,
             obs_points = obs_points.at[:, :, d].set(vals)
 
         for d in range(n_vars):
-            safety = 1e-9 * (pm.valmax[d] - pm.valmin[d])
+            lo, hi = pm.grid_axes[d][0], pm.grid_axes[d][-1]
+            safety = 1e-9 * (hi - lo)
             obs_points = obs_points.at[:, :, d].set(
-                jnp.clip(obs_points[:, :, d],
-                         pm.valmin[d] + safety, pm.valmax[d] - safety))
+                jnp.clip(obs_points[:, :, d], lo + safety, hi - safety))
 
         flat_points = obs_points.reshape(-1, n_vars)
         cdf_values = jnp.zeros((n_sne * max_obs, pm.nfun_cdf + 1))
@@ -310,8 +270,6 @@ jax.tree_util.register_dataclass(
         'grid_axes',
         'grid_cdf',
         'cdf_bins',
-        'valmin',
-        'valmax',
         'cutval',
         'reduced_corr',
         'fieldlist_mask',
@@ -356,98 +314,84 @@ class PipelineEffFile:
 
 def read_pipeline_eff_file(filepath: str, photflag_detect: int,
                            photflag_trigger: int) -> PipelineEffFile:
-    """Read the file once. ``photflag_detect``/``photflag_trigger`` are the
-    input file's own values, which the file fills in only while they are 0."""
-    expanded = Path(os.path.expandvars(filepath))
-    check_file_docana(expanded)
+    """Read the file once, as init_SEARCHEFF_PIPELINE does
+    (sntools_trigger.c:244-660). ``photflag_detect``/``photflag_trigger``
+    are the input file's own values, which the file fills in only while they
+    are 0.
+
+    A detection map is a MAPNAME_DETECT ... ENDMAP block, or in the older
+    form starts at each FILTER key; its rows are ``SNR:``, ``ABS(SNR):`` or
+    ``MAG:`` value and efficiency. A PHOTPROB map is a MAPNAME_PHOTPROB ...
+    ENDMAP block whose NVAR precedes VARNAMES, whose VARNAMES end with
+    PHOTPROB_WGTLIST, and whose rows hold NVAR values.
+    """
+    path = Path(os.path.expandvars(filepath))
+    check_file_docana(path)
 
     curves: List[DetectionCurve] = []
     photprob_maps: List[PhotoprobMap] = []
-    detect_map = None
+    detect = None           # the detection map being read
     named_detect = False    # inside MAPNAME_DETECT ... ENDMAP
-    photprob = None
+    photprob = None         # the PHOTPROB map being read
     photprob_rows: List[List[float]] = []
 
-    def flush_detect():
-        nonlocal detect_map
-        if detect_map is not None and detect_map['vals']:
+    def finish_detect():
+        nonlocal detect
+        if detect is not None and detect['vals']:
             curves.append(DetectionCurve(
-                filterlist=detect_map['filterlist'],
-                fieldlist=detect_map['fieldlist'],
-                vals=np.array(detect_map['vals']),
-                effs=np.array(detect_map['effs']),
-                use_abs=detect_map['use_abs'],
-                is_mag=detect_map['is_mag']))
-        detect_map = None
+                filterlist=detect['filterlist'], fieldlist=detect['fieldlist'],
+                vals=np.array(detect['vals']), effs=np.array(detect['effs']),
+                use_abs=detect['use_abs'], is_mag=detect['is_mag']))
+        detect = None
 
-    with open_text(expanded) as f:
-        for raw_line in skip_docana(f):
-            line = raw_line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            parts = line.split()
-            key = parts[0]
-
-            if key == 'PHOTFLAG_DETECT:' and not photflag_detect:
-                photflag_detect = int(parts[1])
-                continue
-            if key == 'PHOTFLAG_TRIGGER:' and not photflag_trigger:
-                photflag_trigger = int(parts[1])
-                continue
-            if key in ('PHOTFLAG_DETECT:', 'PHOTFLAG_TRIGGER:'):
-                continue
-
-            if key == 'MAPNAME_PHOTPROB:':
-                flush_detect()
-                photprob = {
-                    'name': parts[1] if len(parts) > 1 else 'UNNAMED',
-                    'fieldlist': 'ALL', 'filterlist': 'ALL', 'nvar_tot': 0,
-                    'require_detection': False, 'cutval': -999.0,
-                    'reduced_corr': 0.0, 'varnames': [], 'ivarabs': [],
-                    'nvar_map': 0, 'nfun_cdf': 0,
-                }
-                photprob_rows = []
-                continue
-
-            if key == 'ENDMAP:':
-                if photprob is not None:
-                    photprob_maps.append(build_photprob_map(photprob,
-                                                            photprob_rows))
-                    photprob, photprob_rows = None, []
-                else:
-                    flush_detect()
-                    named_detect = False
-                continue
-
-            if photprob is not None:
-                _read_photprob_line(photprob, photprob_rows, key, parts)
-                continue
-
-            if key == 'MAPNAME_DETECT:':
-                flush_detect()
-                detect_map = _new_detect_map()
-                named_detect = True
-                continue
-            if key in ('FILTER:', 'BAND:'):
-                if not (named_detect and detect_map is not None):
-                    flush_detect()
-                    detect_map = _new_detect_map()
-                detect_map['filterlist'] = parts[1]
-                continue
-            if key == 'FIELD:' and detect_map is not None:
-                detect_map['fieldlist'] = parts[1]
-                continue
-            if detect_map is not None and len(parts) >= 3:
-                if key == 'ABS(SNR):':
-                    detect_map['use_abs'] = True
-                elif key == 'MAG:':
-                    detect_map['is_mag'] = True
-                elif key != 'SNR:':
-                    continue
-                detect_map['vals'].append(float(parts[1]))
-                detect_map['effs'].append(float(parts[2]))
-    flush_detect()
+    for key, values in key_runs(path):
+        if key == 'PHOTFLAG_DETECT':
+            photflag_detect = photflag_detect or int(leading_values(path, key, values, 1)[0])
+        elif key == 'PHOTFLAG_TRIGGER':
+            photflag_trigger = photflag_trigger or int(leading_values(path, key, values, 1)[0])
+        elif key == 'MAPNAME_PHOTPROB':
+            if detect is not None and not named_detect:
+                raise SNANAError(f"{path}: a PHOTPROB map cannot follow a detection map "
+                                 f"without MAPNAME_DETECT and ENDMAP keys",
+                                 function_name='read_pipeline_eff_file')
+            photprob = {'name': leading_values(path, key, values, 1)[0],
+                        'fieldlist': 'ALL', 'filterlist': 'ALL',
+                        'nvar_tot': None, 'require_detection': False, 'cutval': -999.0,
+                        'reduced_corr': 0.0, 'varnames': None}
+            photprob_rows = []
+        elif photprob is not None:
+            _read_photprob_key(path, photprob, photprob_rows, key, values)
+            if key == 'ENDMAP':
+                photprob_maps.append(build_photprob_map(photprob, photprob_rows))
+                photprob = None
+        elif key == 'MAPNAME_DETECT':
+            finish_detect()
+            leading_values(path, key, values, 1)
+            detect, named_detect = _new_detect_map(), True
+        elif key in ('FILTER', 'BAND'):
+            if not named_detect:
+                finish_detect()
+                detect = _new_detect_map()
+            detect['filterlist'] = leading_values(path, key, values, 1)[0]
+        elif key == 'FIELD' and detect is not None:
+            detect['fieldlist'] = leading_values(path, key, values, 1)[0]
+        elif key in ('SNR', 'ABS(SNR)', 'MAG') and detect is not None:
+            value, efficiency = leading_values(path, key, values, 2)
+            detect['use_abs'] |= key == 'ABS(SNR)'
+            detect['is_mag'] |= key == 'MAG'
+            detect['vals'].append(float(value))
+            detect['effs'].append(float(efficiency))
+        elif key == 'ENDMAP' and detect is not None:
+            finish_detect()
+            named_detect = False
+        else:
+            log.warn(logger, "SEARCHEFF", f"{path}: {key}: is not a key here and is not read")
+    # a PHOTPROB map is built at its ENDMAP:, a detection map row by row
+    # (sntools_trigger.c:354-425, :640-660)
+    if photprob is not None:
+        raise SNANAError(f"{path}: the last PHOTPROB map has no ENDMAP:",
+                         function_name='read_pipeline_eff_file')
+    finish_detect()
 
     return PipelineEffFile(curves=curves, photprob_maps=photprob_maps,
                            photflag_detect=photflag_detect,
@@ -459,38 +403,51 @@ def _new_detect_map() -> dict:
             'use_abs': False, 'is_mag': False}
 
 
-def _read_photprob_line(photprob: dict, rows: List[List[float]], key: str,
-                        parts: List[str]) -> None:
-    """One line inside a MAPNAME_PHOTPROB block."""
-    if key in ('FIELD:', 'FIELDLIST:'):
-        photprob['fieldlist'] = parts[1] if len(parts) > 1 else 'ALL'
-    elif key in ('FILTER:', 'BAND:'):
-        photprob['filterlist'] = parts[1] if len(parts) > 1 else 'ALL'
-    elif key == 'NVAR:':
-        photprob['nvar_tot'] = int(parts[1])
-    elif key == 'REQUIRE_DETECTION:':
-        photprob['require_detection'] = int(parts[1]) != 0
-    elif key == 'CUTVAL:':
-        photprob['cutval'] = float(parts[1])
-    elif key == 'REDUCED_CORR:':
-        photprob['reduced_corr'] = float(parts[1])
-    elif key == 'VARNAMES:':
-        varnames = []
-        for token in parts[1:]:
-            if token == 'PHOTPROB_WGTLIST':
-                break
-            if token.upper() not in VARNAME_TO_IVARABS:
-                raise SNANAError(
-                    f"Invalid PHOTPROB variable '{token}'. "
-                    f"Valid: {list(VARNAME_TO_IVARABS.keys())}",
-                    function_name='read_pipeline_eff_file')
-            varnames.append(token.upper())
-        photprob['varnames'] = varnames
-        photprob['ivarabs'] = [VARNAME_TO_IVARABS[v] for v in varnames]
-        photprob['nvar_map'] = len(varnames)
+def _read_photprob_key(path, photprob: dict, rows: List[List[float]], key: str,
+                       values: List[str]) -> None:
+    """One key of a MAPNAME_PHOTPROB block (readMap_SEARCHEFF_PHOTPROB,
+    sntools_trigger.c:537-660)."""
+    if key in ('FIELD', 'FIELDLIST'):
+        photprob['fieldlist'] = leading_values(path, key, values, 1)[0]
+    elif key in ('FILTER', 'BAND'):
+        photprob['filterlist'] = leading_values(path, key, values, 1)[0]
+    elif key == 'NVAR':
+        photprob['nvar_tot'] = int(leading_values(path, key, values, 1)[0])
+    elif key == 'REQUIRE_DETECTION':
+        photprob['require_detection'] = int(leading_values(path, key, values, 1)[0]) != 0
+    elif key == 'CUTVAL':
+        photprob['cutval'] = float(leading_values(path, key, values, 1)[0])
+    elif key == 'REDUCED_CORR':
+        photprob['reduced_corr'] = float(leading_values(path, key, values, 1)[0])
+    elif key == 'NDUMP':
+        # SNANA's debug dump of the drawn probabilities
+        leading_values(path, key, values, 1)
+    elif key == 'VARNAMES':
+        # the names up to PHOTPROB_WGTLIST, which ends the list
+        names = split_names(' '.join(values))
+        if photprob['nvar_tot'] is None or 'PHOTPROB_WGTLIST' not in names:
+            raise SNANAError(
+                f"{path}: PHOTPROB map {photprob['name']!r} needs NVAR before VARNAMES, "
+                f"and VARNAMES ending in PHOTPROB_WGTLIST", function_name='read_pipeline_eff_file')
+        names = names[:names.index('PHOTPROB_WGTLIST')]
+        invalid = [name for name in names if name.upper() not in VARNAME_TO_IVARABS]
+        if invalid:
+            raise SNANAError(
+                f"Invalid PHOTPROB variable(s) {invalid}. "
+                f"Valid: {list(VARNAME_TO_IVARABS.keys())}",
+                function_name='read_pipeline_eff_file')
+        photprob['varnames'] = [name.upper() for name in names]
+        photprob['ivarabs'] = [VARNAME_TO_IVARABS[v] for v in photprob['varnames']]
+        photprob['nvar_map'] = len(photprob['varnames'])
         photprob['nfun_cdf'] = photprob['nvar_tot'] - photprob['nvar_map']
-    elif key == 'ROW:':
-        rows.append([float(x) for x in parts[1:]])
+    elif key == 'ROW':
+        if photprob['varnames'] is None:
+            raise SNANAError(f"{path}: PHOTPROB map {photprob['name']!r} has a ROW "
+                             f"before VARNAMES", function_name='read_pipeline_eff_file')
+        rows.append([float(v) for v in leading_values(path, key, values, photprob['nvar_tot'])])
+    elif key != 'ENDMAP':
+        log.warn(logger, "SEARCHEFF", f"{path}: {key}: is not a PHOTPROB map key and is "
+                 f"not read")
 
 
 def read_pipeline_logic(logic_file, survey_name: str,
@@ -500,9 +457,9 @@ def read_pipeline_logic(logic_file, survey_name: str,
     Mirrors init_SEARCHEFF_LOGIC (sntools_trigger.c:877-923): 'DEFAULT'
     names SEARCHEFF_PIPELINE_LOGIC.DAT, and the file is found as the other
     SEARCHEFF files are (`resolve_searcheff_file`). The key is required: an
-    unset key is SNANA's NONE, which names no file (snlc_sim.c:1301). The
-    survey match is the exact token "<SURVEY>:" over the file's token
-    stream with the last match winning; an absent survey entry is fatal.
+    unset key is SNANA's NONE, which names no file (snlc_sim.c:1304). The
+    file holds ``<SURVEY>: NMJD logic`` entries; the run's survey must have
+    one, and the last of several wins (sntools_trigger.c:943-949).
     """
     if logic_file is None or is_ignorefile(logic_file):
         raise SNANAError(
@@ -513,28 +470,23 @@ def read_pipeline_logic(logic_file, survey_name: str,
             else logic_file)
     logic_path = resolve_searcheff_file(
         name, 'SEARCHEFF_PIPELINE_LOGIC_FILE', path_user_input)
-    # DOCANA required whatever REQUIRE_DOCANA says (snlc_sim.c:1297)
+    # DOCANA required whatever REQUIRE_DOCANA says (snlc_sim.c:1300)
     check_file_docana(logic_path)
 
-    survey_key = f'{survey_name}:'
-    with open_text(logic_path) as fp:
-        tokens = fp.read().split()
-    n_mjd, logic_string = 0, ''
-    for i, token in enumerate(tokens[:-2]):
-        if token == survey_key:
-            try:
-                n_mjd = int(tokens[i + 1])
-            except ValueError:
-                raise SNANAError(
-                    f"Malformed NMJD '{tokens[i + 1]}' for survey "
-                    f"'{survey_name}' in {logic_path}",
-                    function_name="read_pipeline_logic")
-            logic_string = tokens[i + 2]
-    if n_mjd == 0:
-        raise SNANAError(
-            f"Could NOT find search pipeline logic for {survey_name}; "
-            f"check {logic_path}",
-            function_name="read_pipeline_logic")
+    entries = [values for key, values in key_runs(logic_path) if key == survey_name]
+    if not entries:
+        raise SNANAError(f"{logic_path} has no search pipeline logic for {survey_name}",
+                         function_name="read_pipeline_logic")
+    n_mjd, logic_string = leading_values(logic_path, survey_name, entries[-1], 2)
+    try:
+        n_mjd = int(n_mjd)
+    except ValueError:
+        raise SNANAError(f"Malformed NMJD '{n_mjd}' for survey '{survey_name}' in "
+                         f"{logic_path}", function_name="read_pipeline_logic") from None
+    # SNANA finds no logic in an entry needing no detections (sntools_trigger.c:946)
+    if n_mjd < 1:
+        raise SNANAError(f"{logic_path}: the {survey_name} logic needs NMJD of at least "
+                         f"1, not {n_mjd}", function_name="read_pipeline_logic")
     log.line(logger, f"SEARCHEFF logic: {n_mjd} MJDs require filters="
              f"{logic_string}")
     return n_mjd, logic_string
@@ -572,7 +524,7 @@ def load_pipeline_curves(config, simlib, filter_name_to_index) -> dict:
     """
     sc = config.survey
     # no file, or DEFAULT: every event pipeline-found (sntools_trigger.c:258-310,
-    # :2037-2044)
+    # :2039-2046)
     if (sc.searcheff_pipeline_eff_file == 'DEFAULT'
             or is_ignorefile(sc.searcheff_pipeline_eff_file)):
         return {
@@ -623,7 +575,7 @@ def build_searcheff_config(searcheff_curves, filter_logic_masks,
 
     ``searcheff_curves`` is the file's DetectionCurve records: `fieldlist`
     is 'ALL' or a FIELDLIST string matched by substring like SNANA's
-    MATCH_SEARCHEFF_FIELD (sntools_trigger.c:3266-3307), and `vals` is SNR,
+    MATCH_SEARCHEFF_FIELD (sntools_trigger.c:3268-3309), and `vals` is SNR,
     ``|SNR|`` under use_abs, or observed magnitude under is_mag (SNR/ABS(SNR)/
     MAG rows, sntools_trigger.c:412-423). ``filter_logic_masks`` is the list
     of int bitmasks for trigger logic; ``n_trigger_detections`` the number
@@ -632,11 +584,11 @@ def build_searcheff_config(searcheff_curves, filter_logic_masks,
     (e.g., ['LSST-u', ...]); ``simlib_field_names`` the FIELD name per
     SIMLIB entry, which the per-SN field_idx indexes into the (entry,
     filter) map-index table. ``apply_detect_single``, if True, applies
-    curves per exposure, combining across NEXPOSE (sntools_trigger.c:2506,
-    2527-2531).
+    curves per exposure, combining across NEXPOSE (sntools_trigger.c:2508,
+    2529-2533).
 
     Raises `SNANAError` when more than one map matches an (entry, filter)
-    observation (GETEFF_PIPELINE_DETECT, sntools_trigger.c:2449-2456).
+    observation (GETEFF_PIPELINE_DETECT, sntools_trigger.c:2451-2458).
     """
     n_filters = len(filter_names)
     n_maps = len(searcheff_curves)
@@ -667,7 +619,7 @@ def build_searcheff_config(searcheff_curves, filter_logic_masks,
         val_hi[i] = vals[-1]
 
     # FIELD matches as a substring of FIELDLIST; -1 = no curve, EFF=0
-    # (MATCH_SEARCHEFF_FIELD, sntools_trigger.c:2428-2446, :3266-3307)
+    # (MATCH_SEARCHEFF_FIELD, sntools_trigger.c:2430-2448, :3268-3309)
     map_index = np.full((len(simlib_field_names), n_filters), -1, dtype=np.int32)
     for e, field_name in enumerate(simlib_field_names):
         for f, fchar in enumerate(filter_chars):
@@ -703,25 +655,25 @@ def build_searcheff_config(searcheff_curves, filter_logic_masks,
 def _detect_one_sn(snrs_model, fluxcals_true, nexposes, filter_indices, valid,
                    field_idx, rng_key, config):
     """Per-obs SEARCHEFF detection for one SN (GETEFF_PIPELINE_DETECT,
-    sntools_trigger.c:2387-2540).
+    sntools_trigger.c:2389-2542).
 
     The map serving each obs comes from config['map_index'][field_idx,
     filter]; an obs with no matching map gets EFF=0 (other maps exist,
     else this kernel is never built). Curve type selects the x-axis:
-      - is_mag=False, use_abs=False: SNR, with SNR<=0 -> EFF=0 (:2492)
+      - is_mag=False, use_abs=False: SNR, with SNR<=0 -> EFF=0 (:2494)
       - is_mag=False, use_abs=True:  |SNR|
       - is_mag=True: TRUE observed magnitude, from the noise-free obs mag
-        (genmag_obs, fed into SEARCHEFF at snlc_sim.c:24721); non-positive
+        (genmag_obs, fed into SEARCHEFF at snlc_sim.c:24773); non-positive
         true flux is the model's null magnitude, 99.
 
     Out-of-range values return the curve's endpoint efficiencies
     (VAL>VAL_atmax -> EFF_atmax, VAL<VAL_atmin -> EFF_atmin;
-    sntools_trigger.c:2518-2519).
+    sntools_trigger.c:2520-2521).
 
     When config['apply_detect_single'] is True, SNR is divided by
-    sqrt(NEXPOSE) before evaluation (MAG is not shifted; :2506) and the
+    sqrt(NEXPOSE) before evaluation (MAG is not shifted; :2508) and the
     interpolated in-range eff combines as 1-(1-eff_1)^NEXPOSE for
-    NEXPOSE>1 (:2527-2534); the endpoint returns skip the combine, as
+    NEXPOSE>1 (:2529-2536); the endpoint returns skip the combine, as
     SNANA returns them before it.
     """
     apply_single = config['apply_detect_single']
@@ -750,12 +702,12 @@ def _detect_one_sn(snrs_model, fluxcals_true, nexposes, filter_indices, valid,
     eff_interp = jax.vmap(jnp.interp)(val, val_grid, eff_grid)
     in_range = (val >= val_lo) & (val <= val_hi)
     # per-exposure curves combine over NEXPOSE, not at the endpoints
-    # (sntools_trigger.c:2527-2534)
+    # (sntools_trigger.c:2529-2536)
     eff_combined = 1.0 - jnp.power(1.0 - eff_interp, nexpose_f)
     eff = jnp.where(apply_single & in_range & (nexpose_f > 1.0),
                     eff_combined, eff_interp)
 
-    # raw SNR<=0 -> 0 for SNR curves only (sntools_trigger.c:2492)
+    # raw SNR<=0 -> 0 for SNR curves only (sntools_trigger.c:2494)
     zero_snr = ~is_mag_o & ~use_abs_o & (snrs_model <= 0.0)
     eff = jnp.where(zero_snr | ~has_map | ~valid, 0.0, eff)
     random_vals = jax.random.uniform(rng_key, snrs_model.shape)
@@ -765,9 +717,9 @@ def _detect_one_sn(snrs_model, fluxcals_true, nexposes, filter_indices, valid,
 def _periods_one_sn(mjds, valid, threshold):
     """Detection-period IDs for one SN, matching SNANA
     gen_SEARCHEFF_PIPELINE's fabs(MJD - MJD_LAST) > TDIF_NEXT rule
-    (sntools_trigger.c:2150-2179).
+    (sntools_trigger.c:2152-2181).
 
-    SNANA advances MJD_LAST only when a period starts (:2175), so the
+    SNANA advances MJD_LAST only when a period starts (:2177), so the
     comparison is against the period's first MJD, not the previous obs.
 
     Iterative refinement: seed from consecutive gaps, then split each period
@@ -815,7 +767,7 @@ def _trigger_one_sn(detected, filter_indices, period_ids, valid, mjds,
     filter-combination + n_trigger test; ``n_det_periods`` the number of
     detection periods that passed logic; ``mjd_detect_first``/
     ``mjd_detect_last`` the earliest/latest detected-obs MJD (1e6 if none,
-    as SNANA initialises it, sntools_trigger.c:2027); ``mjd_trigger`` the
+    as SNANA initialises it, sntools_trigger.c:2029); ``mjd_trigger`` the
     first detected-obs MJD inside the n_trigger-th passing period (1e6 when
     not triggered); ``trigger_mask`` a (max_obs,) bool array, True at the
     single obs where the trigger fires.

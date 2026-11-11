@@ -191,7 +191,7 @@ def test_host_dependent_population_keeps_the_wronghost_draw(tmp_path):
     population, so a population that reads the host (conditional GENPDF)
     reports the same CORRECT_HOSTMATCH and SIM_REDSHIFT_HOST as one that
     does not (plain Gaussian colour) under one seed. SIM_REDSHIFT_HOST is
-    the drawn galaxy's redshift (GENLC.REDSHIFT_HOST, sntools_host.c:6481),
+    the drawn galaxy's redshift (GENLC.REDSHIFT_HOST, sntools_host.c:6910),
     the wrong one included."""
     genpdf_path = tmp_path / "GENPDF_C_LOGMASS.DAT"
     _write_genpdf_c_logmass(genpdf_path)
@@ -225,7 +225,7 @@ def test_host_dependent_population_keeps_the_wronghost_draw(tmp_path):
 
 def test_genpdf_conditioning_column_is_loaded_without_storepar(tmp_path):
     """A GENPDF conditioning variable joins the HOSTLIB store list on its own
-    (sntools_host.c:951-969), so a map on a column nothing else requests runs
+    (sntools_host.c:962-980), so a map on a column nothing else requests runs
     without the user naming it in HOSTLIB_STOREPAR."""
     genpdf_path = tmp_path / "GENPDF_C_LOGsSFR.DAT"
     rows = []
@@ -411,7 +411,7 @@ def test_variation_recovers_the_declared_slope(tmp_path):
 def test_variation_host_column_loads_without_storepar(tmp_path):
     """The host column a VARIATION depends on joins the HOSTLIB store list
     on its own, as a GENPDF's conditioning variable does
-    (sntools_host.c:951-969). LOGsSFR is not an essential column, so only
+    (sntools_host.c:962-980). LOGsSFR is not an essential column, so only
     the scan can have loaded it."""
     resources, results = _run_variation(
         tmp_path, storepar="LOGMASS",
@@ -687,7 +687,7 @@ def test_a_host_property_resolves_under_either_spelling(tmp_path):
 def test_host_coordinates_resolve_under_any_of_their_names(tmp_path):
     """A HOSTLIB spelling its coordinates RA/DEC or RA_HOST/DEC_HOST places
     the same hosts as one spelling them RA_GAL/DEC_GAL
-    (sntools_host.c:2740-2750)."""
+    (sntools_host.c:2758-2768)."""
     source = Path(os.environ["JAX_TEST_FIXTURE_ROOT"]) / "hostlib" / "JAX_TEST.HOSTLIB"
     with open_text(source) as stream:
         fixture_text = stream.read()
@@ -719,7 +719,7 @@ def test_host_coordinates_resolve_under_any_of_their_names(tmp_path):
 def test_the_wgtmap_is_evaluated_only_over_reachable_galaxies(tmp_path):
     """A galaxy beyond the read-time redshift window is never weighted, so a
     WGTMAP grid that does not cover it does not abort the run, as SNANA
-    reads the DES-SN5YR low-z library (sntools_host.c:3147-3156)."""
+    reads the DES-SN5YR low-z library (sntools_host.c:3165-3174)."""
     source = Path(os.environ["JAX_TEST_FIXTURE_ROOT"]) / "hostlib" / "JAX_TEST.HOSTLIB"
     with open_text(source) as stream:
         fixture_text = stream.read()

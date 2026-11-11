@@ -1,7 +1,7 @@
 """SIMLIB_NSKIPMJD replay parity.
 
 SIMLIB_NSKIPMJD thins SIMLIB epochs by a per-TREST-bin prescale
-(``keep_SIMLIB_MJD``, snlc_sim.c:21250). It is fully deterministic given the
+(``keep_SIMLIB_MJD``, snlc_sim.c:21292). It is fully deterministic given the
 SIMLIB and the SN's PEAKMJD/zCMB, so replaying SNANA's own SNe must reproduce
 its kept-epoch set exactly rather than only statistically.
 
@@ -13,7 +13,7 @@ A single-bin form such as ``2`` would not be -- with no TRESTMIN, TREST is never
 consulted at all.
 
 jax computes TREST heliocentrically, like every other Trest in both codes; SNANA
-uses zCMB here alone (snlc_sim.c:21259), a deliberate divergence. This fixture
+uses zCMB here alone (snlc_sim.c:21299), a deliberate divergence. This fixture
 cannot see the difference: max|zCMB - zHELIO| = 0.0013 moves TREST by ~0.01 d
 and no epoch lies within 0.5 d of a bin edge, so
 the parity result below holds under either frame.

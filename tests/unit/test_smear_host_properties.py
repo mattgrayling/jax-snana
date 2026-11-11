@@ -80,7 +80,7 @@ def test_smear_keeps_obs_when_already_present():
 def test_smear_synthesises_obs_from_true_plus_err():
     """LOGMASS + LOGMASS_ERR but no _OBS → _OBS = LOGMASS + G*ERR with G a
     truncated normal on [-3, 3] (getRan_GaussClip rejection-samples,
-    sntools.c:7870-7878)."""
+    sntools.c:7565-7573)."""
     cfg = SimulationConfig()
     cfg.run.random_seed = 42
     n_sne = 50
@@ -110,7 +110,7 @@ def test_smear_obs_falls_back_to_true_when_no_err():
 def test_smear_does_not_derive_logssfr():
     """SNANA never derives LOGsSFR from LOGSFR - LOGMASS; each property
     comes from its own HOSTLIB columns (GEN_SNHOST_PROPERTY,
-    sntools_host.c:7495-7542)."""
+    sntools_host.c:7933-7980)."""
     cfg = SimulationConfig()
     host = {
         "LOGSFR": jnp.array([0.0, 0.5]),
@@ -158,7 +158,7 @@ def test_smear_applies_per_property_err_scale():
 
 def test_smear_truncated_normal_has_no_atoms_at_bounds():
     """getRan_GaussClip redraws until the value lies inside [-3, 3]
-    (sntools.c:7870-7878): a truncated normal, not a clipped one, so no
+    (sntools.c:7565-7573): a truncated normal, not a clipped one, so no
     draw lands exactly on the +-3 sigma boundary."""
     cfg = SimulationConfig()
     cfg.run.random_seed = 7

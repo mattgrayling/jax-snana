@@ -1,9 +1,9 @@
 """Parity vs SALT2mu.exe for sigint_fix (per-IDSAMPLE fixed intrinsic scatter).
 
 sigint_fix pins sigma_int and stops the sigint iteration (STOP_COVFIX,
-SALT2mu.c:4742). The two halves are gated differently: the iteration always stops,
+SALT2mu.c:4745). The two halves are gated differently: the iteration always stops,
 but the scatter only reaches the covariance when a biasCor supplied IDSAMPLEs *and*
-the iteration would have run -- parse_sigint_fix (:10151) fires after the initial
+the iteration would have run -- parse_sigint_fix (:10161) fires after the initial
 covariance is built, so only the iteration's rebuild picks the values up.
 
 References are SALT2mu.exe on the 5D biasCor config; see the fixture README.
@@ -60,7 +60,7 @@ def test_secant_iterates_like_salt2mu():
 
     Stops on STOP_TOL at alpha0=0.14121, beta0=2.97758, sigint=0.0941 in 4 iterations.
     The default sigint_step1=0.01 resolves the slope too coarsely and oscillates back
-    to the floor, ending on STOP_COV0 (SALT2mu.c:4739), so the reference uses 0.05.
+    to the floor, ending on STOP_COV0 (SALT2mu.c:4742), so the reference uses 0.05.
     """
     out = _run(_CELL + ["fitflag_sigmb=1", "sigint_step1=0.05"])
     r = read_fitres(f"{_DIR}/SALT2mu_secant.M0DIF")
@@ -125,7 +125,7 @@ def test_sigint_fix_inert_without_iteration():
 def test_sigint_fix_with_mucovadd():
     """Under muCOVADD (opt_biascor bit 4096) the global scatter is the
     per-cell additive one and stays zero (makeMap_sigmu_biasCor,
-    SALT2mu.c:13101), so sigint_fix only stops the iteration and its value
+    SALT2mu.c:13111), so sigint_fix only stops the iteration and its value
     never enters the covariance: SNANA's fit is the same at 0.11 and 0.30
     (alpha0=0.1450 either way, against 0.1380 for 0.11 without the bit).
     Until v12_02d the value did reach the covariance, through the
@@ -219,7 +219,7 @@ def test_single_value_expands_across_idsamples(bbc_biascor_variants):
 
 
 def test_write_csv_binned_hubble_diagram(tmp_path):
-    """write_csv emits the binned HD for CosmoMC (write_M0_csv, SALT2mu.c:23962):
+    """write_csv emits the binned HD for CosmoMC (write_M0_csv, SALT2mu.c:23976):
     MU is the reference distance at the reported z plus M0DIF, not the weighted MUREF
     column of the M0DIF file."""
     cfg = parse_bbc_input(None, overrides=_BASE + _CELL + ["fitflag_sigmb=0"])
@@ -250,7 +250,7 @@ def test_sigma_cell_biascor():
 
 def test_write_chi2grid(tmp_path):
     """write_chi2grid scans alpha over [0.10,0.20] and beta over [2.0,4.0], each row
-    varying one with the other at its fitted value (SALT2mu.c:24094)."""
+    varying one with the other at its fitted value (SALT2mu.c:24108)."""
     cfg = parse_bbc_input(None, overrides=_BASE + _CELL + [
         "write_chi2grid=5", f"prefix={tmp_path}/grid"])
     run_bbc_fit(cfg)
@@ -267,7 +267,7 @@ def test_write_chi2grid(tmp_path):
 
 def test_the_secant_reports_the_sigint_it_last_fitted():
     """prepNextFit evaluates the stop conditions and returns before
-    next_covFitPar (SALT2mu.c:4738), so the reported sigma_int is always the
+    next_covFitPar (SALT2mu.c:4741), so the reported sigma_int is always the
     one the last inner fit ran with. With a tolerance nothing can meet, this
     sample's scatter is driven to zero (STOP_COV0) before MAXFITITER, and zero
     is reported."""

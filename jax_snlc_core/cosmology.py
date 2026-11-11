@@ -357,7 +357,7 @@ def distance_modulus(redshift: float, zhel: float, omega_m: float,
     ``redshift`` is the CMB-frame redshift the comoving integral runs over and
     ``zhel`` the heliocentric redshift of the ``(1 + z)`` prefactor; a caller
     with no heliocentric redshift passes the CMB one, as SNANA does where it
-    has none (snana.F90:19391). ``hubble_distance`` is c/H0 in Mpc, ``vpec``
+    has none (snana.F90:19483). ``hubble_distance`` is c/H0 in Mpc, ``vpec``
     the peculiar velocity in km/s of the relativistic beaming term, and the
     curvature is 1 - omega_m - omega_l, treated as flat within 1e-5 as
     Hzinv_integral does (sntools_cosmology.c:383-390). With ``anisotropy``
@@ -428,13 +428,13 @@ def distance_modulus_to_redshift(mu, omega_m, omega_l, hubble_distance,
     return z.reshape(jnp.shape(mu))
 
 
-# CMB apex in galactic coordinates (SNANA sntools.h:92-94)
+# CMB apex in galactic coordinates (SNANA sntools.h:93-95)
 _CMBapex_l = 264.031    # deg
 _CMBapex_b = 48.253     # deg
 _CMBapex_v = 369.82     # km/s
 
 
-# slaEqgal's rotation from J2000 equatorial to galactic (sntools.c:4464-4472)
+# slaEqgal's rotation from J2000 equatorial to galactic (sntools.c:4461-4469)
 _EQ_TO_GAL_MATRIX = np.array([
     [-0.054875539726, -0.873437108010, -0.483834985808],
     [ 0.494109453312, -0.444829589425,  0.746982251810],

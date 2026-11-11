@@ -112,7 +112,9 @@ CCPRIOR_COLUMNS = ("CID IDSURVEY FIELD zHD zHDERR HOST_LOGMASS SNRMAX1 "
 
 
 def read_rows(path: Path):
-    varnames, rows = None, []
+    """The parent FITRES's rows, each a {column: token} dict, and its
+    VERSION_PHOTOMETRY."""
+    varnames, rows, version = None, [], None
     if not path.is_file():
         path = path.with_name(path.name + ".gz")
     if not path.is_file():
@@ -125,15 +127,19 @@ def read_rows(path: Path):
         tok = line.split()
         if not tok:
             continue
-        if tok[0] == "VARNAMES:":
+        if tok[:2] == ["#", "VERSION_PHOTOMETRY:"]:
+            version = tok[2]
+        elif tok[0] == "VARNAMES:":
             varnames = tok[1:]
         elif tok[0] == "SN:" and varnames is not None:
             rows.append(dict(zip(varnames, tok[1:])))
-    return rows
+    return rows, version
 
 
-def table(columns, rows, header):
-    lines = [f"# {h}" for h in header] + ["#", "VARNAMES: " + " ".join(columns)]
+def table(columns, rows, version, header):
+    """A FITRES of ``rows`` headed, as a fit's is, by the data version."""
+    lines = ([f"# VERSION_PHOTOMETRY: {version}"] + [f"# {h}" for h in header]
+             + ["#", "VARNAMES: " + " ".join(columns)])
     lines += ["SN: " + " ".join(r[c] for c in columns) for r in rows]
     return "\n".join(lines) + "\n"
 
@@ -143,9 +149,9 @@ def in_box(row) -> bool:
 
 
 def build():
-    data = read_rows(SNANA / "bbc_des_data" / "FITRES.TEXT")
-    biascor = read_rows(SNANA / "bbc_des_biascor" / "FITRES.TEXT.gz")
-    cc = read_rows(SNANA / "bbc_ccprior_sim" / "FITRES.TEXT.gz")
+    data, data_version = read_rows(SNANA / "bbc_des_data" / "FITRES.TEXT")
+    biascor, biascor_version = read_rows(SNANA / "bbc_des_biascor" / "FITRES.TEXT.gz")
+    cc, cc_version = read_rows(SNANA / "bbc_ccprior_sim" / "FITRES.TEXT.gz")
 
     pool = [r for r in cc if in_box(r)]
     if len(pool) < N_CONTAM:
@@ -181,7 +187,7 @@ def build():
     cids = [r["CID"] for r in data]
 
     # OPT_PHOTOZ is written by no SNANA program; SALT2mu reads it as an optional
-    # column defaulting to 0 (SALT2mu.c:8538), so a survey supplies it externally.
+    # column defaulting to 0 (SALT2mu.c:8548), so a survey supplies it externally.
     # Both tables must carry it: biasCor has no zHELERR, so without zPRIOR every
     # biasCor event classifies as spec-z and the zPHOT sample empties.
     def photoz(rows):
@@ -228,96 +234,96 @@ def build():
 
     return {
         "DATA.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, data,
+            DATA_COLUMNS + SIM_COLUMNS, data, data_version,
             ["Clean Ia data sample, from ../bbc_des_data/FITRES.TEXT.",
              f"{len(data)} events, with SIM truth so SALT2mu reads it as a",
              "simulation (and so does not blind it). Built by build.py."]),
         "BIASCOR.FITRES": table(
-            BIASCOR_COLUMNS, biascor,
+            BIASCOR_COLUMNS, biascor, biascor_version,
             ["Ia biasCor sample, from ../bbc_des_biascor/FITRES.TEXT.",
              f"{len(biascor)} events at a single sim (alpha, beta) = (0.14, 3.1),",
              "so the 5D map is a 1x1 abg grid. Built by build.py."]),
         "CCPRIOR.FITRES": table(
-            CCPRIOR_COLUMNS, cc,
+            CCPRIOR_COLUMNS, cc, cc_version,
             ["CC prior for the BEAMS contamination model, from",
              f"../bbc_ccprior_sim/FITRES.TEXT. {len(cc)} events, of which",
              f"{len(pool)} fall inside BBC's |x1|<3, |c|<0.3 box.",
              "Built by build.py."]),
-        "catA.FITRES": table(cat_cols + ["PROBA", "ONLY_A"], catA,
+        "catA.FITRES": table(cat_cols + ["PROBA", "ONLY_A"], catA, data_version,
                              ["20 DES rows for the cat_only tests. Built by build.py."]),
-        "catB.FITRES": table(cat_cols + ["PROBB", "ONLY_B"], catB,
+        "catB.FITRES": table(cat_cols + ["PROBB", "ONLY_B"], catB, data_version,
                              ["15 DES rows with different columns from catA.",
                               "Built by build.py."]),
         "DATA_MASS.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, data_mass,
+            DATA_COLUMNS + SIM_COLUMNS, data_mass, data_version,
             ["DATA with a uniform HOST_LOGMASS in [8,12] (seed 4131), for the",
              "mass-step tests. Built by build.py."]),
         "BIASCOR_MASS.FITRES": table(
-            BIASCOR_COLUMNS, biascor_mass,
+            BIASCOR_COLUMNS, biascor_mass, biascor_version,
             ["BIASCOR with the same injected HOST_LOGMASS. Built by build.py."]),
         "DATA_SDSS.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, data_sdss,
+            DATA_COLUMNS + SIM_COLUMNS, data_sdss, data_version,
             ["DATA with every other row relabelled IDSURVEY=1 (SDSS), for the",
              "per-IDSAMPLE sigint_fix tests. Built by build.py."]),
         "BIASCOR_SDSS.FITRES": table(
-            BIASCOR_COLUMNS, biascor_sdss,
+            BIASCOR_COLUMNS, biascor_sdss, biascor_version,
             ["BIASCOR split the same way; both are needed or print_eventStats",
              "aborts on a data IDSAMPLE with no biasCor. Built by build.py."]),
         "DATA_FIELD.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, data_field,
+            DATA_COLUMNS + SIM_COLUMNS, data_field, data_version,
             ["DATA with FIELD cycling C3, X3, C3+X3, E2, for the field-group and",
              "exact field-list tests. Built by build.py."]),
         "BIASCOR_FIELD.FITRES": table(
-            BIASCOR_COLUMNS, biascor_field,
+            BIASCOR_COLUMNS, biascor_field, biascor_version,
             ["BIASCOR with the same FIELD cycle. Built by build.py."]),
         "DATA_PHOTOZ.FITRES": table(
             DATA_COLUMNS + SIM_COLUMNS
-            + ["zHELERR", "OPT_PHOTOZ", "zPRIOR", "zPRIORERR"], data_pz,
+            + ["zHELERR", "OPT_PHOTOZ", "zPRIOR", "zPRIORERR"], data_pz, data_version,
             ["DATA with the photo-z columns: every other event OPT_PHOTOZ=2, with",
              "zPRIORERR alternating 0.02/0.10 so zspec_errmax_idsample splits them.",
              "Built by build.py."]),
         "BIASCOR_PHOTOZ.FITRES": table(
-            BIASCOR_COLUMNS + ["OPT_PHOTOZ", "zPRIOR", "zPRIORERR"], biascor_pz,
+            BIASCOR_COLUMNS + ["OPT_PHOTOZ", "zPRIOR", "zPRIORERR"], biascor_pz, biascor_version,
             ["BIASCOR with the same photo-z columns. Doctoring only the data aborts",
              "in print_eventStats once a biasCor is used: a data IDSAMPLE with no",
              "biasCor events is fatal. Built by build.py."]),
         "DATA_REAL.FITRES": table(
-            DATA_COLUMNS, data,
+            DATA_COLUMNS, data, data_version,
             ["The clean Ia sample with no SIM_* columns, so SALT2mu reads it as real",
              "data. Same events as DATA.FITRES -- no contaminants, so the fit stays",
              "well away from the beta bound. Built by build.py."]),
         "CONTAM_MIXED.FITRES": table(
-            DATA_COLUMNS + ["PROBIA", "TYPE"], mixed,
+            DATA_COLUMNS + ["PROBIA", "TYPE"], mixed, data_version,
             [f"CONTAM_DATA with TYPE: {len(data)} Ia at 1, {N_CONTAM} contaminants",
              "alternating 101/102. Built by build.py."]),
         "CONTAM_SIMTYPE.FITRES": table(
             DATA_COLUMNS + ["SIM_TEMPLATE_INDEX", "SIM_ZCMB", "SIM_DLMAG",
                             "SIM_WGT_POP", "SIM_gammaDM", "SIM_x0",
-                            "PROBIA", "TYPE"], contam_simtype,
+                            "PROBIA", "TYPE"], contam_simtype, data_version,
             ["CONTAM_DATA with sim truth and TYPE: SIM_TEMPLATE_INDEX marks the",
              f"{N_CONTAM} true contaminants, every 4th Ia is spec-typed TYPE=1,",
              "for CONTAM_TRUE and the spec-confirmed subtraction. Only the SIM",
              "columns both parents carry (the CC sim has no SALT truth).",
              "Built by build.py."]),
         "DATA_MIXTMPL.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, mixtmpl,
+            DATA_COLUMNS + SIM_COLUMNS, mixtmpl, data_version,
             ["DATA with every other SIM_TEMPLATE_INDEX set to 101, so the CC and Ia",
              "prescales each act on half a sample of real Ia photometry.",
              "Built by build.py."]),
         "DATA_DUP.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS, data + data[:20],
+            DATA_COLUMNS + SIM_COLUMNS, data + data[:20], data_version,
             ["DATA with its first 20 rows repeated, for iflag_duplicate.",
              "Built by build.py."]),
         "DATA_SPLIT_A.FITRES": table(
-            DATA_COLUMNS + SIM_COLUMNS + ["PROB_TEST"], split_a,
+            DATA_COLUMNS + SIM_COLUMNS + ["PROB_TEST"], split_a, data_version,
             ["First half of DATA plus a PROB_TEST column, for append_varname.",
              "Built by build.py."]),
         "DATA_SPLIT_B.FITRES": table(
-            [c for c in DATA_COLUMNS + SIM_COLUMNS if c != "SNRSUM"], split_b,
+            [c for c in DATA_COLUMNS + SIM_COLUMNS if c != "SNRSUM"], split_b, data_version,
             ["Second half of DATA without SNRSUM, for append_varname.",
              "Built by build.py."]),
         "CONTAM_DATA.FITRES": table(
-            DATA_COLUMNS + ["PROBIA"], contam,
+            DATA_COLUMNS + ["PROBIA"], contam, data_version,
             ["Contaminated data for the per-event-pIa BEAMS tests.",
              f"{len(data)} Ia from ../bbc_des_data + {N_CONTAM} CC events from",
              f"../bbc_ccprior_sim (CID {CID_CONTAM_START}+), drawn from the",

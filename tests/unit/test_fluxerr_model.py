@@ -3,8 +3,8 @@
 Covers:
 - File parser on a synthetic 1-D / 2-D / ERRADD file (and the real DES file
   if present, otherwise skipped).
-- Uniform VARNAMES + uniform grid_axes validators.
-- parse_redcov_string in all its forms.
+- Uniform grid validator, and maps with their own variables and grids.
+- parse_redcov in all its forms.
 - The map interpolation in one, two and three dimensions against numpy
   and hand-computed references.
 - Edge clipping of out-of-range queries.
@@ -21,11 +21,11 @@ import numpy as np
 import pytest
 
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.noise import (ALL_GROUP, check_redcov_entries, evaluate_fluxerrmodel_data,
-                                 interpolate_fluxerr_maps, parse_redcov_string,
-                                 read_fluxerr_model_file)
+from jax_snlc_core.noise import (ALL, check_redcov_entries, evaluate_fluxerrmodel_data,
+                                 fluxerr_variables, interpolate_fluxerr_maps, parse_redcov,
+                                 read_fluxerr_model_file, stacked_fluxerr_maps)
 from jax_snlc_sim.photometry import _compile_fluxerr_model
-from jax_snlc_sim.hostlib.sersic import APERTURE_PSFSIG
+from jax_snlc_sim.hostlib.sersic import APERTURE_PSFSIG, NMAGPSF_HOSTLIB
 from jax_snlc_sim.photometry import (_build_fluxerr_query_per_obs,
                                            _draw_redcov_fudge_factored,
                                            _gather_galmag_nea_per_obs, _interp_galmag)
@@ -33,9 +33,9 @@ from jax_snlc_sim.photometry import (_build_fluxerr_query_per_obs,
 
 def _interpolate(grid, query, origins, steps):
     """One map's values at ``query``, whose last axis is the coordinates."""
-    return interpolate_fluxerr_maps(jnp.asarray(grid)[None],
-                                    jnp.zeros(query.shape[:-1], dtype=jnp.int32),
-                                    query, origins, steps)
+    maps = {'grids': jnp.asarray(grid)[None], 'origins': np.array([origins]),
+            'steps': np.array([steps]), 'sizes': np.array([np.shape(grid)])}
+    return interpolate_fluxerr_maps(maps, jnp.zeros(query.shape[:-1], dtype=jnp.int32), query)
 
 
 def _write(text):
@@ -64,16 +64,14 @@ def test_map_axis_order(tmp_path, names):
     path.write_text("MAPNAME: FLUXERR_SCALE\nBAND: g\nVARNAMES: "
                     + " ".join(names) + " ERRSCALE\n"
                     + "\n".join(rows) + "\nENDMAP:\n")
-    model = read_fluxerr_model_file(str(path)).maps[0]
+    data = read_fluxerr_model_file(str(path))
     obs = {"filter_indices": jnp.array([[0]]),
            "skysigs": jnp.array([[5.]]), "zptavgs": jnp.array([[30.]])}
     query = _build_fluxerr_query_per_obs(
-        SimpleNamespace(fluxerr_active_vars=model.varnames[:-1]),
+        SimpleNamespace(fluxerr_active_vars=fluxerr_variables(data)),
         27.5, {}, obs, None, None, None)
-    result = _interpolate(
-        model.grid_values, query,
-        origins=tuple(axis[0] for axis in model.grid_axes),
-        steps=tuple(axis[1] - axis[0] for axis in model.grid_axes))
+    result = interpolate_fluxerr_maps(stacked_fluxerr_maps(data),
+                                      jnp.zeros((1, 1), dtype=jnp.int32), query)
     np.testing.assert_allclose(result, [[8.]])
 
 
@@ -149,42 +147,92 @@ ENDMAP:
 """
     path = _write(text)
     try:
-        with pytest.raises(SNANAError, match="non-uniform grid spacing"):
+        with pytest.raises(SNANAError, match="not uniformly spaced"):
             read_fluxerr_model_file(path)
     finally:
         os.unlink(path)
 
 
+def test_reader_takes_keys_as_snana_reads_them(tmp_path):
+    """SNANA reads the file as a stream of words (INIT_FLUXERRMODEL,
+    sntools_fluxErrModels.c:130-246): several keys may share a line, a
+    comment starts at any word opening with a comment character, any key
+    with a colon spelling REDCOV or REDCOR is a REDCOV entry, words after a
+    key's values, or an unknown key, are passed over, and a map's rows end at
+    ENDMAP:, a blank line or the end of the file, passing over other lines,
+    comment lines included (read_GRIDMAP)."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text("REDCOR(DEEP): g:0.25  ! the old spelling\n"
+                    "MAPNAME: A  BAND: g  FIELD: DEEP  # one line\n"
+                    "SCALE_FLUXERR_TRUE: 1.0 for the true flux  COLOUR: blue\n"
+                    "VARNAMES: PSF,ERRSCALE\nROW: 1.0 1.5\n# a note\nROW: 2.0 2.5\nENDMAP:\n"
+                    "MAPNAME: B\nVARNAMES: PSF ERRSCALE\nROW: 1.0 2.0\nBAND: r\nROW: 2.0 3.0\n"
+                    "\nDEFINE_FIELDGROUP: DEEP X3+C3\n")
+    data = read_fluxerr_model_file(str(path))
+    assert [(e.field_group, e.bands, e.redcov) for e in data.redcov] == [("DEEP", "g", 0.25)]
+    assert data.field_groups == {"DEEP": ["X3", "C3"]}
+    m, second = data.maps
+    assert (second.name, second.band) == ("B", "ALL")
+    np.testing.assert_allclose(second.grid_values, [2.0, 3.0])
+    assert (m.name, m.band, m.field_group, m.varnames) == ("A", "g", "DEEP", ["PSF", "ERRSCALE"])
+    np.testing.assert_allclose(m.grid_values, [1.5, 2.5])
+
+
+@pytest.mark.parametrize("text, message", [
+    ("MAPNAME: A\nVARNAMES: PSF ERRSCALE\nROW: 1.0 1.5 2.0\nENDMAP:\n", "takes 2 value"),
+    ("BAND: g\n", "outside a MAPNAME"),
+    ("MAPNAME: A\nVARNAMES: PSF ERRSCALE\nROW: 1.0 1.5\nROW: 2.0 2.5\nENDMAP:\nBAND: g\n",
+     "outside a MAPNAME"),
+    ("MAPNAME: A\nVARNAMES: PSF ERRSCALE\nENDMAP:\n", "has no rows"),
+    ("MAPNAME: A\nBAND: g\nENDMAP:\n", "has no VARNAMES"),
+])
+def test_reader_refuses_what_it_cannot_read(tmp_path, text, message):
+    """A row of the wrong length, a map key after a map has ended and a map
+    without VARNAMES or rows are errors rather than misread or skipped."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text(text)
+    with pytest.raises(SNANAError, match=message):
+        read_fluxerr_model_file(str(path))
+
+
+def test_maps_with_their_own_variables_and_grids(tmp_path):
+    """Each map has its own VARNAMES, grid and ERRSCALE or ERRADD
+    (read_GRIDMAP per map, sntools_fluxErrModels.c:224-236)."""
+    path = tmp_path / "fluxerr.dat"
+    path.write_text("MAPNAME: A\nBAND: g\nVARNAMES: PSF ERRSCALE\n"
+                    "ROW: 1.0 1.0\nROW: 3.0 3.0\nENDMAP:\n"
+                    "MAPNAME: B\nBAND: r\nVARNAMES: SKYSIG PSF ERRADD\n"
+                    "ROW: 10 1 0\nROW: 10 2 4\nROW: 10 3 8\n"
+                    "ROW: 20 1 2\nROW: 20 2 6\nROW: 20 3 10\nENDMAP:\n")
+    data = read_fluxerr_model_file(str(path))
+    assert fluxerr_variables(data) == ("PSF", "SKYSIG")
+    err = np.array([3.0, 3.0])
+    out = evaluate_fluxerrmodel_data(data, ["g", "r"], ["X", "X"], err,
+                                     {"PSF": np.array([2.0, 1.5]),
+                                      "SKYSIG": np.array([0.0, 15.0])})
+    np.testing.assert_allclose(out, [3.0 * 2.0, np.hypot(3.0, 3.0)])
+
+
 # ============================================================
-# REDCOV string parsing
+# REDCOV parsing
 # ============================================================
 
 
-def test_parse_redcov_string():
-    # Form 1: REDCOV(GROUP): bands
-    e = parse_redcov_string("REDCOV(SHALLOW): g:0.6,r:0.6,i:0.6,z:0.6")
-    assert len(e) == 4
-    assert all(x.field_group == "SHALLOW" for x in e)
+def test_parse_redcov():
+    """parse_REDCOV_FLUXERRMODEL: the key names an optional field group, the
+    value lists bands:correlation."""
+    e = parse_redcov("REDCOV(SHALLOW)", "g:0.6,r:0.6,i:0.6,z:0.6")
     assert [x.bands for x in e] == ["g", "r", "i", "z"]
-    assert all(x.redcov == 0.6 for x in e)
+    assert all(x.field_group == "SHALLOW" and x.redcov == 0.6 for x in e)
 
-    # Form 2: REDCOV: bands (no group → ALL)
-    e = parse_redcov_string("REDCOV: g:0.4")
-    assert len(e) == 1 and e[0].field_group == ALL_GROUP
-    assert e[0].redcov == 0.4
-
-    # Form 3: bare bands string (no keyword)
-    e = parse_redcov_string("griz:0.5")
-    assert len(e) == 1
+    e = parse_redcov("FLUXERRMODEL_REDCOV", "griz:0.5")
+    assert len(e) == 1 and e[0].field_group == ALL
     assert e[0].bands == "griz" and e[0].redcov == 0.5
 
-    # Form 4: invalid value (>= 1.0) aborts
-    with pytest.raises(SNANAError):
-        parse_redcov_string("g:1.5")
-
-    # Form 5: missing colon
-    with pytest.raises(SNANAError):
-        parse_redcov_string("g 0.5")
+    with pytest.raises(SNANAError, match=r"\[0, 1\)"):
+        parse_redcov("REDCOV", "g:1.5")
+    with pytest.raises(SNANAError, match="bands:correlation"):
+        parse_redcov("REDCOV", "g0.5")
 
 
 # ============================================================
@@ -232,12 +280,13 @@ def test_fluxerr_map_interpolation_3d_is_trilinear():
 @pytest.mark.parametrize('dtype', [jnp.float32, jnp.float64])
 def test_fluxerr_map_selection_with_singleton_axis(dtype):
     """Each epoch uses its own map, with clipping and a constant single-knot axis."""
-    grids = jnp.array([[[1., 3., 5.]], [[101., 103., 105.]]], dtype=jnp.float32)
+    maps = {'grids': jnp.array([[[1., 3., 5.]], [[101., 103., 105.]]], dtype=jnp.float32),
+            'origins': np.array([[10., 20.]] * 2), 'steps': np.array([[1., 2.]] * 2),
+            'sizes': np.array([[1, 3]] * 2)}
     rows = jnp.array([[0, 1], [1, 0]], dtype=jnp.int32)
     query = jnp.array([[[9., 19.], [10., 21.]],
                        [[10., 24.], [11., 25.]]], dtype=dtype)
-    actual = jax.jit(lambda g, r, q: interpolate_fluxerr_maps(
-        g, r, q, (10., 20.), (1., 2.)))(grids, rows, query)
+    actual = jax.jit(interpolate_fluxerr_maps)(maps, rows, query)
     np.testing.assert_allclose(actual, [[1., 102.], [105., 5.]])
     assert actual.dtype == dtype
 
@@ -345,10 +394,10 @@ def test_redcov_factor_below_snr_iid_fallback():
 
 def test_interp_galmag_nonuniform_grid_matches_numpy():
     """_interp_galmag interpolates on the true non-uniform APERTURE_PSFSIG
-    grid (interp_GALMAG_HOSTLIB, sntools_host.c:4922-4962); a uniform-spacing
+    grid (interp_GALMAG_HOSTLIB, sntools_host.c:5207-5259); a uniform-spacing
     assumption fails on this grid."""
     rng = np.random.default_rng(7)
-    table = rng.uniform(18.0, 26.0, size=(3, 4, 10))
+    table = rng.uniform(18.0, 26.0, size=(3, 4, NMAGPSF_HOSTLIB + 1))
     grid = np.asarray(APERTURE_PSFSIG[1:], dtype=float)
     psf = rng.uniform(grid[0], grid[-1], size=(3, 4))
     got = np.asarray(_interp_galmag(jnp.asarray(table), jnp.asarray(psf)))
@@ -361,7 +410,7 @@ def test_interp_galmag_nonuniform_grid_matches_numpy():
 
 def test_gather_galmag_nea_uses_pixsize():
     """The GALMAG query PSF is pixsize * sqrt(NEA/(4π))
-    (gen_fluxNoise_calc, snlc_sim.c:27794), so a different pixel scale must
+    (gen_fluxNoise_calc, snlc_sim.c:27852), so a different pixel scale must
     move the interpolated GALMAG."""
     rng = np.random.default_rng(3)
     # strong aperture dependence so a PSF change is visible
@@ -380,7 +429,7 @@ def test_gather_galmag_nea_uses_pixsize():
 
 def test_galmag_without_a_host_is_snanas_undefined_magnitude():
     """With no host, every epoch's GALMAG is the value SNANA initialises it
-    to, MAG_UNDEFINED = 666 (sntools_host.c:6559, sntools.h:126), not the
+    to, MAG_UNDEFINED = 666 (sntools_host.c:6997, sntools.h:127), not the
     99 of zero flux."""
     obs = {'filter_indices': jnp.zeros((2, 5), dtype=jnp.int32),
            'neas': jnp.full((2, 5), 12.0)}
@@ -416,7 +465,7 @@ def test_simulation_chooses_maps_by_snana_substring_rule(tmp_path):
 def test_redcov_groups_sharing_a_field_are_recorded_not_fatal_at_setup(tmp_path):
     """Two field groups may share a SIMLIB field: SNANA loads their REDCOV
     entries, and its NMATCH>1 abort fires only for an epoch in the shared
-    field and band (snlc_sim.c:28090). Building the simulation records that
+    field and band (snlc_sim.c:28148). Building the simulation records that
     pair and aborts nothing; a pair one entry matches takes its factor."""
     path = tmp_path / "fluxerr.dat"
     path.write_text("DEFINE_FIELDGROUP: DEEP  C3+X3\nDEFINE_FIELDGROUP: WIDE  X3+S1\n"
@@ -445,7 +494,7 @@ def test_redcov_band_defined_twice_for_a_group_aborts(tmp_path, lines):
     556-566, OPT_FIELD=1): an earlier entry for ALL fields matches any group,
     and an earlier group's name matches a group name it contains, so "ALL"
     after "SHALLOW" is a repeat too. Reading the file does not check them:
-    the fit never loads REDCOV (snana.F90:18592 passes NONE)."""
+    the fit never loads REDCOV (snana.F90:18684 passes NONE)."""
     path = tmp_path / "fluxerr.dat"
     path.write_text("DEFINE_FIELDGROUP: DEEP  C3\nDEFINE_FIELDGROUP: SHALLOW  S1\n" + lines)
     data = read_fluxerr_model_file(str(path))
@@ -492,7 +541,7 @@ def test_grid_positions_are_unique_and_complete(tmp_path, duplicate):
                     'ROW: 1 0 3\nROW: 0 1 2\nROW: 0 0 1\n'
                     f'ROW: {last}\nENDMAP:\n')
     if duplicate:
-        with pytest.raises(SNANAError, match='each grid position'):
+        with pytest.raises(SNANAError, match='exactly one row'):
             read_fluxerr_model_file(str(path))
     else:
         data = read_fluxerr_model_file(str(path))

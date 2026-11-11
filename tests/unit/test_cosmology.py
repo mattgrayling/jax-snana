@@ -113,7 +113,7 @@ def test_hz_map_integral_tracks_a_structured_table():
 
 
 def test_eq_to_gal_matches_snana_slaeqgal():
-    """Galactic coordinates as SNANA's slaEqgal gives them (sntools.c:4409),
+    """Galactic coordinates as SNANA's slaEqgal gives them (sntools.c:4406),
     the rotation SNANA uses for the CMB dipole and the dust map; the
     values are slaEqgal's own output for these positions."""
     snana = np.array([(0.0, 0.0, 96.337269649876, -60.188551749437),

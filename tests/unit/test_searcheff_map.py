@@ -19,10 +19,11 @@ import pytest
 
 from jax_snlc_core.interpolation import interp_nd_regular
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_sim.detection import read_pipeline_logic
+from jax_snlc_core.snana_files import skip_docana
+from jax_snlc_sim.detection import read_pipeline_eff_file, read_pipeline_logic
 from jax_snlc_sim.simulation import Instrument
 from jax_snlc_sim.spectroscopic_efficiency import (
-    FLAG_ALL_FAIL, FLAG_ALL_PASS, FLAG_NORMAL, MXMAP_SEARCHEFF_MAP, SearchEffMap,
+    FLAG_ALL_FAIL, FLAG_ALL_PASS, FLAG_NORMAL, SearchEffMap,
     check_applymask_searcheff, eff_outside_window, evaluate_searcheff,
     prepare_searcheff, read_searcheff_maps, resolve_fieldlist_indices,
     resolve_searcheff_file)
@@ -119,7 +120,7 @@ def test_eff_roundoff_window():
 def test_eff_outside_roundoff_window_flagged_per_event(tmp_path, bad_eff,
                                                        flagged):
     """A node outside the window loads; only an event whose EFF lands
-    outside it is flagged for the abort (sntools_trigger.c:3011-3019). At
+    outside it is flagged for the abort (sntools_trigger.c:3013-3021). At
     the -0.001 edge SNANA's OR combination 1 - (1 - EFF) lands just above
     -0.001 and is rounded to 0, so that event is not flagged."""
     path = tmp_path / "SEARCHEFF_SPEC_BAD.DAT"
@@ -149,7 +150,7 @@ def test_multimap_or():
 
 def test_lone_require_map_folds_into_or():
     """A REQUIRE map folds into the OR efficiency AND gets its own draw
-    (sntools_trigger.c:2971-2978): a lone REQUIRE map with eff=b reports
+    (sntools_trigger.c:2973-2980): a lone REQUIRE map with eff=b reports
     EFF=b and passes with probability b^2."""
     m = SearchEffMap(varnames=["REDSHIFT"], grid_axes=[np.array([0.0, 1.0])],
                      grid_values=np.array([0.6, 0.6]), require=True)
@@ -171,7 +172,7 @@ def test_require_flag():
 
 def test_require_draws_shared_by_key():
     """Under REFAC_SEARCHEFF_MAP 1 a zHOST REQUIRE map reads the SPECID
-    random of the same map index (snlc_sim.c:24771, sntools_trigger.c:2976),
+    random of the same map index (snlc_sim.c:24823, sntools_trigger.c:2978),
     so the two map sets pass the same events where their efficiencies agree;
     with their own randoms they do not."""
     maps = [SearchEffMap(varnames=["REDSHIFT"], grid_axes=[np.array([0.0, 1.0])],
@@ -196,7 +197,7 @@ def test_require_draws_shared_by_key():
 
 def test_field_filter():
     """FIELDLIST restricts the map to the SIMLIB fields whose names it
-    contains (MATCH_SEARCHEFF_FIELD, sntools_trigger.c:3266-3306)."""
+    contains (MATCH_SEARCHEFF_FIELD, sntools_trigger.c:3268-3308)."""
     m = SearchEffMap(varnames=["REDSHIFT"], grid_axes=[np.array([0.0, 1.0])],
                      grid_values=np.array([1.0, 1.0]), fieldlist="C1+C2")
     eff, _ = _eval_maps(
@@ -225,7 +226,7 @@ def test_dtseason_peak_eval(searcheff_data_dir):
 
 
 def test_compute_dtseason_peak():
-    """DTSEASON_PEAK follows SNANA's convention (snlc_sim.c:21542-21559):
+    """DTSEASON_PEAK follows SNANA's convention (snlc_sim.c:21582-21599):
     per season the candidates are PEAKMJD - MJD_MIN and MJD_MAX - PEAKMJD,
     the smallest |DT| wins, so DT is positive in season and negative out.
     """
@@ -287,8 +288,8 @@ def test_spec_scale(searcheff_data_dir):
 def test_detect_map_field_matching_and_overlap_fatal():
     """FIELD-dependent detection maps match on FIELDLIST like SNANA's
     MATCH_SEARCHEFF_FIELD (substring, 'ALL' matches everything;
-    sntools_trigger.c:3266-3307); more than one map matching an
-    observation aborts (GETEFF_PIPELINE_DETECT, :2449-2456)."""
+    sntools_trigger.c:3268-3309); more than one map matching an
+    observation aborts (GETEFF_PIPELINE_DETECT, :2451-2458)."""
     from jax_snlc_sim.detection import build_searcheff_config
     from jax_snlc_sim.detection import DetectionCurve
 
@@ -359,11 +360,10 @@ def _map_file(tmp_path, body, name="SEARCHEFF_zHOST_TEST.DAT"):
 
 
 def test_rows_without_varnames_are_not_a_map(tmp_path):
-    """Only a VARNAMES line opens a map; keyed rows with none above them
-    are passed over, so the file holds no map (read_searcheff_map,
-    sntools_trigger.c:1370-1417) and gives every event EFF=1
-    (gen_searcheff_map, :2898-2908). A FIELD key before them restricts
-    nothing."""
+    """Only a VARNAMES line opens a map; keyed rows with none above them,
+    as in SNANA's own SEARCHEFF_zHOST_SDSS.DAT, are not read, so the file
+    holds no map (read_searcheff_map, sntools_trigger.c:1370-1417) and
+    gives every event EFF=1 (gen_searcheff_map, :2900-2910)."""
     path = _map_file(tmp_path, "FIELD: C3\n"
                                "HOSTEFF: 0.05 0.90\n"
                                "HOSTEFF: 0.50 0.40\n")
@@ -372,15 +372,18 @@ def test_rows_without_varnames_are_not_a_map(tmp_path):
     assert flag == FLAG_NORMAL
 
 
-def test_rows_of_the_other_map_type_are_not_read(tmp_path):
-    """A SPEC map reads SPECEFF rows only (read_searcheff_map,
-    sntools_trigger.c:1269-1276): HOSTEFF rows under its VARNAMES line are
-    lines without its row key, and ten of those in a row abort
-    (read_GRIDMAP, sntools_gridmap.c:193-203)."""
-    rows = "".join(f"HOSTEFF: {0.1 * i:.1f} 1.0\n" for i in range(12))
-    path = _map_file(tmp_path, "VARNAMES: REDSHIFT SPECEFF\n" + rows)
-    with pytest.raises(SNANAError, match="10 lines in a row that are not 'SPECEFF:'"):
-        read_searcheff_maps(path, "SPEC", "")
+@pytest.mark.parametrize("body, maptype, message", [
+    ("VARNAMES: REDSHIFT SPECEFF\nHOSTEFF: 0.0 1.0\n", "SPEC", "no rows"),
+    ("VARNAMES: REDSHIFT HOSTEFF\nHOSTEFF: 0.0 1.0  # fine\nHOSTEFF: 1.0 1.0 0.5\n",
+     "zHOST", "takes 2 value"),
+])
+def test_rows_belong_to_a_map_of_their_type(tmp_path, body, maptype, message):
+    """A map's rows follow its VARNAMES, are keyed SPECEFF: or HOSTEFF: by
+    map type (read_searcheff_map, sntools_trigger.c:1269-1276), and hold
+    one value per column, then nothing or a comment; anything else is an
+    error rather than passed over."""
+    with pytest.raises(SNANAError, match=message):
+        read_searcheff_maps(_map_file(tmp_path, body), maptype, "")
 
 
 def test_efficiency_column_is_found_by_name(tmp_path):
@@ -400,14 +403,14 @@ def test_efficiency_column_is_found_by_name(tmp_path):
 
 @pytest.mark.parametrize("varnames, match", [
     ("ZTRUE EFF", "no efficiency column"),
-    ("HOSTEFF ZTRUE", "efficiency column HOSTEFF must be the last"),
+    ("HOSTEFF ZTRUE", "efficiency column must be the last"),
 ])
 def test_efficiency_column_missing_or_not_last_aborts(tmp_path, varnames,
                                                       match):
     """A map with no SPECEFF/HOSTEFF column, or with it before a map
     variable, aborts: SNANA cannot evaluate a column that is neither
     (assign_MAP_VARNAME, sntools_trigger.c:1600-1604; LOAD_SEARCHEFF_VAR,
-    :3125-3128)."""
+    :3127-3130)."""
     path = _map_file(tmp_path, f"VARNAMES: {varnames}\n"
                                "HOSTEFF: 0.0 1.0\n"
                                "HOSTEFF: 2.0 1.0\n")
@@ -434,54 +437,45 @@ def test_non_uniform_1d_map_aborts(tmp_path):
                                "HOSTEFF: 0.0 1.0\n"
                                "HOSTEFF: 0.1 0.8\n"
                                "HOSTEFF: 0.3 0.2\n")
-    with pytest.raises(SNANAError, match="non-uniform"):
+    with pytest.raises(SNANAError, match="not uniformly spaced"):
         read_searcheff_maps(path, "zHOST", "")
 
 
-def test_repeated_knot_keeps_the_later_row(tmp_path):
-    """A row repeating a knot passes the uniform-step check, and the later
-    row replaces the earlier one (init_interp_GRIDMAP INVMAP,
-    sntools_gridmap.c:477)."""
+def test_repeated_knot_aborts(tmp_path):
+    """Every grid point takes exactly one row, so a repeated knot is an
+    error rather than one row silently replacing another."""
     path = _map_file(tmp_path, "VARNAMES: REDSHIFT HOSTEFF\n"
                                "HOSTEFF: 0.0 1.0\n"
                                "HOSTEFF: 0.5 0.9\n"
                                "HOSTEFF: 0.5 0.4\n"
                                "HOSTEFF: 1.0 0.2\n")
-    maps, _ = read_searcheff_maps(path, "zHOST", "")
-    np.testing.assert_allclose(maps[0].grid_axes[0], [0.0, 0.5, 1.0])
-    np.testing.assert_allclose(maps[0].grid_values, [1.0, 0.4, 0.2])
+    with pytest.raises(SNANAError, match="exactly one row"):
+        read_searcheff_maps(path, "zHOST", "")
 
 
 def test_map_attributes_reset_after_each_map(tmp_path):
     """FIELD, PEAKMJD_RANGE and REQUIRE apply to the next map only, which
     then falls back to all fields and 10000 < PEAKMJD < 90000; OPT_EXTRAP
     applies to the maps after it; OPT_FIELDMATCH_REQUIRE holds for the whole
-    file (read_searcheff_map, sntools_trigger.c:1341-1415, :2864). A blank
-    line ends a map."""
+    file (read_searcheff_map, sntools_trigger.c:1341-1415, :2866). A blank
+    line ends a map, and a row after it is not read; a key among a map's
+    rows is passed over (read_GRIDMAP, sntools_gridmap.c:191-200)."""
     path = _map_file(tmp_path,
                      "FIELD: C3+X3\nPEAKMJD_RANGE: 60000 61000\nREQUIRE: 1\n"
                      "VARNAMES: REDSHIFT HOSTEFF\n"
-                     "HOSTEFF: 0.0 1.0\nHOSTEFF: 1.0 1.0\n\n"
+                     "HOSTEFF: 0.0 1.0\nHOSTEFF: 1.0 1.0\n\nHOSTEFF: 2.0 1.0\n"
                      "OPT_EXTRAP: 1\n"
                      "VARNAMES: REDSHIFT HOSTEFF\n"
-                     "HOSTEFF: 0.0 0.5\nHOSTEFF: 1.0 0.5\n\n"
+                     "HOSTEFF: 0.0 0.5\nFIELD: D1\nHOSTEFF: 1.0 0.5\nHOSTEFF: 2.0 0.5\n\n"
                      "OPT_FIELDMATCH_REQUIRE: 0\n")
     first, second = read_searcheff_maps(path, "zHOST", "")[0]
     assert (first.fieldlist, first.peakmjd_range, first.require,
             first.opt_extrap) == ("C3+X3", (60000.0, 61000.0), True, 0)
+    np.testing.assert_array_equal(first.grid_axes[0], [0.0, 1.0])
+    np.testing.assert_array_equal(second.grid_axes[0], [0.0, 1.0, 2.0])
     assert (second.fieldlist, second.peakmjd_range, second.require,
             second.opt_extrap) == ("ALL", (10000.0, 90000.0), False, 1)
     assert first.opt_fieldmatch_require == second.opt_fieldmatch_require == 0
-
-
-def test_row_with_an_extra_word_that_is_not_a_comment_aborts(tmp_path):
-    """A row holds exactly one value per column, then nothing or a '#'
-    comment (read_GRIDMAP, sntools_gridmap.c:139-156)."""
-    path = _map_file(tmp_path, "VARNAMES: REDSHIFT HOSTEFF\n"
-                               "HOSTEFF: 0.0 1.0  # fine\n"
-                               "HOSTEFF: 1.0 1.0 0.5\n")
-    with pytest.raises(SNANAError, match="expected 2 values"):
-        read_searcheff_maps(path, "zHOST", "")
 
 
 @pytest.mark.parametrize("apply_opt, spec, zhost, ok", [
@@ -516,8 +510,6 @@ def test_pipeline_eff_file_honours_the_input_files_photflag_bits(
         searcheff_data_dir):
     """A PHOTFLAG the input file already set wins; the file fills in only the
     one still at zero (sntools_trigger.c:321-325)."""
-    from jax_snlc_sim.detection import read_pipeline_eff_file
-
     path = str(searcheff_data_dir / "SEARCHEFF_PIPELINE_LSST.DAT")
     both_from_file = read_pipeline_eff_file(path, 0, 0)
     assert (both_from_file.photflag_detect,
@@ -529,8 +521,6 @@ def test_pipeline_eff_file_honours_the_input_files_photflag_bits(
 def test_pipeline_eff_file_reads_a_gzipped_file(tmp_path, searcheff_data_dir):
     """The detection curves come through the shared io helpers, so a gzipped
     pipeline file reads like a plain one."""
-    from jax_snlc_sim.detection import read_pipeline_eff_file
-
     src = searcheff_data_dir / "SEARCHEFF_PIPELINE_LSST.DAT"
     gz = tmp_path / "SEARCHEFF_PIPELINE_LSST.DAT.gz"
     with open(src, 'rb') as fin, gzip.open(gz, 'wb') as fout:
@@ -547,9 +537,7 @@ def test_pipeline_eff_file_reads_a_gzipped_file(tmp_path, searcheff_data_dir):
 
 def test_pipeline_eff_file_requires_documentation(tmp_path):
     """SEARCHEFF maps are DOCANA-required whatever REQUIRE_DOCANA says
-    (INPUTS_SEARCHEFF.OPTMASK_OPENFILE, snlc_sim.c:1297)."""
-    from jax_snlc_sim.detection import read_pipeline_eff_file
-
+    (INPUTS_SEARCHEFF.OPTMASK_OPENFILE, snlc_sim.c:1300)."""
     f = tmp_path / "SEARCHEFF_PIPELINE_NODOC.DAT"
     f.write_text("FILTER: g\nSNR: 0.0 0.0\nSNR: 5.0 1.0\n")
     with pytest.raises(SNANAError):
@@ -559,9 +547,7 @@ def test_pipeline_eff_file_requires_documentation(tmp_path):
 def test_skip_docana_drops_the_block_and_only_the_block():
     """The one rule every SNANA reader uses: a line whose first token is
     exactly DOCUMENTATION: opens the block, DOCUMENTATION_END: closes it, and
-    both keys go with the body (rd2columnFile, sntools.c:7297-7303)."""
-    from jax_snlc_core.snana_files import skip_docana
-
+    both keys go with the body (rd2columnFile, sntools.c:6992-6998)."""
     lines = ["DOCUMENTATION:\n", "  PURPOSE: SNR: 5.0 1.0\n",
              "DOCUMENTATION_END:\n", "FILTER: g\n",
              "# DOCUMENTATION of the map\n", "SNR: 5.0 1.0\n"]
@@ -573,8 +559,6 @@ def test_skip_docana_drops_the_block_and_only_the_block():
 
 def test_pipeline_eff_file_ignores_data_keys_inside_the_docana_block(tmp_path):
     """A DOCANA body may quote the keys it documents; they are not data."""
-    from jax_snlc_sim.detection import read_pipeline_eff_file
-
     f = tmp_path / "SEARCHEFF_PIPELINE_DOC.DAT"
     f.write_text("DOCUMENTATION:\n"
                  "  PURPOSE: detection efficiency\n"
@@ -588,6 +572,23 @@ def test_pipeline_eff_file_ignores_data_keys_inside_the_docana_block(tmp_path):
     assert [c.filterlist for c in eff.curves] == ["g"]
     np.testing.assert_array_equal(eff.curves[0].vals, [0.0, 5.0])
     np.testing.assert_array_equal(eff.curves[0].effs, [0.0, 1.0])
+
+
+def test_named_detection_maps_need_no_endmap(tmp_path):
+    """A detection map stores its rows as it reads them, so the last one may
+    end with the file, and a PHOTPROB map may follow a named one
+    (readMap_SEARCHEFF_DETECT, sntools_trigger.c:354-425, :488-493)."""
+    f = tmp_path / "SEARCHEFF_PIPELINE_NAMED.DAT"
+    f.write_text("DOCUMENTATION:\n  PURPOSE: test\nDOCUMENTATION_END:\n"
+                 "MAPNAME_DETECT: A\nBAND: g\nSNR: 1.0 0.1\nSNR: 5.0 1.0\n"
+                 "MAPNAME_PHOTPROB: P\nNVAR: 2\nVARNAMES: SNR PHOTPROB_WGTLIST\n"
+                 "ROW: 1.0 1.0\nROW: 2.0 1.0\nENDMAP:\n"
+                 "MAPNAME_DETECT: B\nBAND: r\nSNR: 1.0 0.2\nSNR: 5.0 1.0\n")
+
+    eff = read_pipeline_eff_file(str(f), 0, 0)
+
+    assert [c.filterlist for c in eff.curves] == ["g", "r"]
+    assert [m.name for m in eff.photprob_maps] == ["P"]
 
 
 def test_searcheff_file_found_under_path_user_input(tmp_path,
@@ -621,13 +622,18 @@ def test_searcheff_file_found_under_path_user_input(tmp_path,
 
 def test_pipeline_logic_default_unset_and_docana(tmp_path):
     """DEFAULT names SEARCHEFF_PIPELINE_LOGIC.DAT, found through the search
-    path; an unset logic key is SNANA's NONE and aborts once the pipeline
-    file holds curves; the file needs a DOCUMENTATION block
-    (init_SEARCHEFF_LOGIC)."""
+    path, words after an entry are passed over and the last of a survey's
+    entries wins; an entry needing no detections, an unset logic key
+    (SNANA's NONE, once the pipeline file holds curves) and a file without a
+    DOCUMENTATION block abort (init_SEARCHEFF_LOGIC, sntools_trigger.c:877-950)."""
     logic = tmp_path / "SEARCHEFF_PIPELINE_LOGIC.DAT"
-    logic.write_text(_DOCANA + "LSST:  2  ugrizY\n")
+    logic.write_text(_DOCANA + "LSST:  1  gr\nLSST:  2  ugrizY   two nights\n")
     assert read_pipeline_logic(
         'DEFAULT', 'LSST', str(tmp_path)) == (2, 'ugrizY')
+    logic.write_text(_DOCANA + "LSST:  0  ugrizY\n")
+    with pytest.raises(SNANAError, match="NMJD of at least 1"):
+        read_pipeline_logic('DEFAULT', 'LSST', str(tmp_path))
+    logic.write_text(_DOCANA + "LSST:  2  ugrizY\n")
     for unset in (None, 'NONE'):
         with pytest.raises(SNANAError,
                            match="need a SEARCHEFF_PIPELINE_LOGIC_FILE"):
@@ -638,13 +644,3 @@ def test_pipeline_logic_default_unset_and_docana(tmp_path):
         read_pipeline_logic('DEFAULT', 'LSST', str(tmp_path))
 
 
-def test_maps_past_the_limit_are_passed_over(tmp_path):
-    """A file with more maps than MXMAP_SEARCHEFF_MAP keeps the first ones
-    and passes over the rest (read_searcheff_map, sntools_trigger.c:1373)."""
-    one = ("VARNAMES: REDSHIFT HOSTEFF\n"
-           "HOSTEFF: 0.0 1.0\n"
-           "HOSTEFF: 1.0 1.0\n\n")
-    path = _map_file(tmp_path, one * (MXMAP_SEARCHEFF_MAP + 2))
-    maps, flag = read_searcheff_maps(path, "zHOST", "")
-    assert len(maps) == MXMAP_SEARCHEFF_MAP
-    assert flag == FLAG_NORMAL

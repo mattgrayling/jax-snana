@@ -1,12 +1,12 @@
 """APPLY_CUTWIN_OPT=3 replay parity.
 
 SNANA adds the CUTWIN-rejected events to the SIMGEN_DUMP alongside the accepted
-ones (doReject_SIMGEN_DUMP, snlc_sim.c:16927), so a user tuning cuts can see the
+ones (doReject_SIMGEN_DUMP, snlc_sim.c:16945), so a user tuning cuts can see the
 population being discarded. Events rejected at any other stage stay out, and the
-header keeps its accepted-set label despite the extra rows (:14897).
+header keeps its accepted-set label despite the extra rows (:14915).
 
 Scope is the dump alone: the flag is consumed at one place, wr_SIMGEN_DUMP
-(:13564), and the caller rejects the event regardless — so HEAD/PHOT are
+(:13582), and the caller rejects the event regardless — so HEAD/PHOT are
 untouched.
 
 The fixture uses epoch-coverage cuts, deterministic given the schedule, and an

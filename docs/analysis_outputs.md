@@ -518,8 +518,8 @@ The total covariance is `diag(diag) + U @ U.T`.
 - The directory they were read from, the `SUBMIT.INFO` that labelled them and
   the scale file.
 - One line per covopt, giving its label and the files containing its
-  systematic and inverted total matrices, followed by an optional fourth field
-  naming the factorized file. Unwritten files are `None`. The factorized-file field may be omitted.
+  systematic, inverted total and factorized matrices. Unwritten files are
+  `None`.
 - `COSPAR_BIASCOR`, the cosmology the bias-correction simulation was generated
   with. When that's unknown it's written as an empty block.
 
@@ -612,4 +612,5 @@ Optional outputs are selected with:
 - `--output-samples`: the posterior draws as a NumPy archive. Sampler only.
 - `--output-covariance` and `-outfile_mucovtot_inv`: the total distance
   covariance the fit used, and its inverse. Each is written as the dimension on
-  the first line, then the flattened matrix, one value per line.
+  the first line, then the flattened matrix, one value per line. The inverse
+  is written only for a dense (`covtot_inv`) covariance, not a factorized one.

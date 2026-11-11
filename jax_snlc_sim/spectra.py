@@ -40,6 +40,7 @@ from jax_snlc_sim.photometry import grey_offsets
 from jax_snlc_core.random import event_keys, stream_key
 from jax_snlc_sim.scatter import scatter_factors
 from jax_snlc_sim.observations import row_slice
+from jax_snlc_sim.simlib import FIELD_NONAME
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,11 @@ logger = logging.getLogger(__name__)
 SED_PHASE_EDGE_EPS = 0.01  # genmag_SALT2.c:3564-3565
 
 TOL_CONVERGE = 0.03   # 3% convergence
-NLAMSIGMA = 3.0       # kernel half-width in resolution sigmas (snlc_sim.c:1481)
+NLAMSIGMA = 3.0       # kernel half-width in resolution sigmas (snlc_sim.c:1484)
 GENRANGE_TOBS_PAD = 0.1  # Tobs padding for the TAKE_SPECTRUM Trest gate (snlc_sim.h:73)
 
 
-# Sentinels for an unrequested SNR computation (snlc_sim.c:11043).
+# Sentinels for an unrequested SNR computation (snlc_sim.c:11061).
 SNR_COMPUTE_NULL = -99.0
 OVERLAP_MIN_SYNFILT = 0.99     # sntools_spectrograph.c:1240
 LAMOBS_SNR_NULL = -9.0
@@ -83,7 +84,7 @@ def parse_take_spectrum_entry(key_part: str, value_part: str,
     """Read one TAKE_SPECTRUM line without expanding its observation schedule.
 
     Shared by the input-file parser and the SIMLIB header reader: SNANA runs
-    both through parse_input_TAKE_SPECTRUM (snlc_sim.c:22269), so the format
+    both through parse_input_TAKE_SPECTRUM (snlc_sim.c:22314), so the format
     is identical.
 
     Format:
@@ -122,7 +123,7 @@ def parse_take_spectrum_entry(key_part: str, value_part: str,
             if tok_upper == 'HOST':
                 entry['epoch_frame'] = 'HOST'
 
-        # bare SNR( is an alias for SNR_ZPOLY( (snlc_sim.c:5831)
+        # bare SNR( is an alias for SNR_ZPOLY( (snlc_sim.c:5843)
         if tok_upper.startswith('SNR_ZPOLY(') or tok_upper.startswith('SNR('):
             entry['opt_texpose'] = 2
             if inner:
@@ -146,7 +147,7 @@ def parse_take_spectrum_entry(key_part: str, value_part: str,
                 entry['snr_lamrange'] = [float(parts[0]), float(parts[1])]
 
     # SNANA accepts only TREST/TOBS/HOST for a spectrum epoch; an MJD() range in
-    # the SIMLIB header aborts (snlc_sim.c:5807-5812)
+    # the SIMLIB header aborts (snlc_sim.c:5819-5824)
     if entry['epoch_frame'] == 'MJD' and from_simlib:
         raise SNANAError(
             f"TAKE_SPECTRUM: MJD() epoch frame is not valid in a SIMLIB header; "
@@ -199,7 +200,7 @@ def simlib_take_spectrum_entries(fields):
     """Parse each LIBID's TAKE_SPECTRUM header lines, with the aborts.
 
     SNANA runs these through the very same parse_input_TAKE_SPECTRUM as the
-    input-file key (snlc_sim.c:22269), so the grammar is shared.
+    input-file key (snlc_sim.c:22314), so the grammar is shared.
     """
     out = []
     for f in fields:
@@ -246,7 +247,7 @@ class SpectrumResult:
     is_host: bool = False                      # host spectrum, written at MJD=-9
     scale_host_contam: float = 0.0             # host flux scale added to a SN spectrum
     warp: Optional[np.ndarray] = None          # (n_lam,) WARP_SPECTRUM factor per bin
-    # true FLAM on every observed bin, for SIM_SYNMAG (snlc_sim.c:11281)
+    # true FLAM on every observed bin, for SIM_SYNMAG (snlc_sim.c:11299)
     sim_flam_full: Optional[np.ndarray] = None
 
 
@@ -254,11 +255,11 @@ def keep_spectrum(field, field_require, wgt, prescale_dict, r_key, r_field,
                   is_host=False):
     """Whether a TAKE_SPECTRUM entry survives the field/prescale gates.
 
-    Mirrors DO_GENSPEC (snlc_sim.c:10644) for the single-field case jax models:
+    Mirrors DO_GENSPEC (snlc_sim.c:10664) for the single-field case jax models:
 
-    - no field at all -> every gate is bypassed (SNANA's NFIELD_OVP==0, :10690)
-    - per-key prescale: reject when r_key > wgt (:10698)
-    - FIELD_REQUIRE: exact match required when set (:10725)
+    - no field at all -> every gate is bypassed (SNANA's NFIELD_OVP==0, :10708)
+    - per-key prescale: reject when r_key > wgt (:10716)
+    - FIELD_REQUIRE: exact match required when set (:10745)
     - dict prescale: accept when r_field < 1/preScale, absent field -> 1.0.
       Host spectra are exempt (:10731).
 
@@ -275,7 +276,7 @@ def keep_spectrum(field, field_require, wgt, prescale_dict, r_key, r_field,
     r_key = np.atleast_1d(np.asarray(r_key, dtype=np.float64))
     r_field = np.atleast_1d(np.asarray(r_field, dtype=np.float64))
 
-    bypass = np.array([(not f) or f == 'FIELD_NONAME' for f in field_arr])
+    bypass = np.array([(not f) or f == FIELD_NONAME for f in field_arr])
     keep = np.ones(len(field_arr), dtype=bool)
     if wgt < 1.0:
         keep &= r_key <= wgt
@@ -315,7 +316,7 @@ def build_smearing_matrix(
     Precompute the (n_lam, n_lam) Gaussian smearing matrix.
 
     Element [i, j] = fraction of flux from source bin j landing in target bin i,
-    following GENSPEC_LAMSMEAR (snlc_sim.c:12240). The columns are deliberately
+    following GENSPEC_LAMSMEAR (snlc_sim.c:12258). The columns are deliberately
     not normalised: SNANA keeps the raw Gaussian integral, so flux beyond the
     +/-NBIN2 kernel, or past either end of the grid, is lost. Extended edge bins
     donate flux but never receive it, so their rows are empty.
@@ -356,7 +357,7 @@ def _add_spectrum_noise(smeared_sf, flamerr, ef_t, rangauss_t, is_nearpeak, key,
                         only_tnoise=False, no_tnoise=False):
     """Search + template noise on a smeared spectrum (optmask bit 32/16 = only/no template).
 
-    Mirrors GENSPEC_OBSFLUX_RANSMEAR (snlc_sim.c:12342): the correlated
+    Mirrors GENSPEC_OBSFLUX_RANSMEAR (snlc_sim.c:12362): the correlated
     template realisation is drawn at the near-peak epoch and reused elsewhere.
     """
     # flamerr is F_lambda (~1e-19); its square underflows float32, so the
@@ -437,7 +438,7 @@ def _sed_to_bin_flux(
 
 
 # SNANA iterates the TEXPOSE solve at most MAXITER=40 times and aborts on
-# non-convergence (GENSPEC_TEXPOSE_TAKE_SPECTRUM, snlc_sim.c:11989-12001).
+# non-convergence (GENSPEC_TEXPOSE_TAKE_SPECTRUM, snlc_sim.c:12007-12019).
 _SCAN_NITER = 40
 
 
@@ -457,9 +458,9 @@ def solve_texpose_batch(
     """Solve TEXPOSE for all SNe simultaneously using jax.lax.scan + vmap.
 
     Replicates the iteration of GENSPEC_TEXPOSE_TAKE_SPECTRUM
-    (snlc_sim.c:11767-12001) fully vectorised: no Python loops over SNe or
+    (snlc_sim.c:11785-12019) fully vectorised: no Python loops over SNe or
     iterations. The solve runs under SNANA's noNOISE flag, which zeroes
-    LAMSIGMA (snlc_sim.c:11835, 12277), so the aggregate-SNR weights are the
+    LAMSIGMA (snlc_sim.c:11853, 12295), so the aggregate-SNR weights are the
     UNSMEARED per-bin fluxes the caller passes in `sim_flam_all`.
 
     ``genmag_all``/``sim_flam_all`` are (N, n_lam), the per-SN genmag arrays
@@ -469,17 +470,17 @@ def solve_texpose_batch(
     base template exposure time used for the initial guess; ``is_nearpeak``
     selects a near-peak spectrum config. ``scale_snr_lam`` is (n_lam,), the
     SPECTROGRAPH_SCALE_SNR / OPTMASK-bit-8 SNR scale: SNANA applies this
-    inside GENSPEC_SMEAR (snlc_sim.c:12184), which is what its own solver
+    inside GENSPEC_SMEAR (snlc_sim.c:12202), which is what its own solver
     calls, so the search must see the same scaled SNR the spectrum will
     report.
 
     Returns ``(texpose, snr_compute)``: (N,) solved TEXPOSE values and the
     aggregate SNR SNANA stores as SNR_COMPUTE for each solve
-    (snlc_sim.c:11870-11969).
+    (snlc_sim.c:11888-11987).
 
     Raises `SNANAError` when a SN that needs the iterative solve has not
     converged after 40 iterations, matching SNANA's abort
-    (snlc_sim.c:11989-12001).
+    (snlc_sim.c:12007-12019).
     """
     use_simflam = sim_flam_all is not None
     sim_flam_arg = sim_flam_all if use_simflam else jnp.zeros_like(genmag_all)
@@ -494,7 +495,7 @@ def solve_texpose_batch(
         jnp.ones_like(calib.lam_avg) if scale_snr_lam is None
         else jnp.asarray(scale_snr_lam),
     )
-    # unconverged at a table bound: SNANA's goto branch; inside the table: abort (snlc_sim.c:11989)
+    # unconverged at a table bound: SNANA's goto branch; inside the table: abort (snlc_sim.c:12007)
     t_min = float(np.asarray(calib.texpose_list)[0])
     t_max = float(np.asarray(calib.texpose_list)[-1])
     texpose_np = np.asarray(texpose)
@@ -543,7 +544,7 @@ def _solve_texpose_batch(
               snr_at_min_val, snr_at_max_val, template0):
         texpose, snr, flag, sgn, template, converged = state
 
-        # initial guess, the whole near-peak guess doubled (snlc_sim.c:11925-11938)
+        # initial guess, the whole near-peak guess doubled (snlc_sim.c:11943-11956)
         arg = (snr_request - snr_at_min_val) / jnp.maximum(snr_at_max_val - snr_at_min_val, 1e-30)
         non_nearpeak_guess = jnp.where(
             template0 > 0,
@@ -556,7 +557,7 @@ def _solve_texpose_batch(
             non_nearpeak_guess
         )
 
-        # scale by the SNR ratio (snlc_sim.c:11944)
+        # scale by the SNR ratio (snlc_sim.c:11962)
         texpose_p1 = texpose * (snr_request / snr)
 
         # 2% steps, sign frozen at the first flip (snlc_sim.c:11949, 11980-11985)
@@ -566,7 +567,7 @@ def _solve_texpose_batch(
                                 jnp.where(flag == 1, texpose_p1, texpose_p2))
         new_texpose = jnp.clip(new_texpose, t_min, t_max)
 
-        # near-peak template exposure follows, clipped (snlc_sim.c:11954-11961)
+        # near-peak template exposure follows, clipped (snlc_sim.c:11974-11981)
         new_template = jnp.where(is_nearpeak & (template_scale > 0.0),
                                  jnp.clip(new_texpose * template_scale, t_min, t_max),
                                  template)
@@ -606,10 +607,10 @@ def _solve_texpose_batch(
     )
 
     # Only lanes strictly between the bound SNRs enter SNANA's loop
-    # (snlc_sim.c:11867-11895); the rest take the goto branches below.
+    # (snlc_sim.c:11887-11915); the rest take the goto branches below.
     iterated = (snr_requests > snr_at_min) & (snr_requests < snr_at_max)
 
-    # bounds in reverse priority (later wins); TEXTRAP extrapolates (snlc_sim.c:11862-11890)
+    # bounds in reverse priority (later wins); TEXTRAP extrapolates (snlc_sim.c:11882-11910)
     if textrap:
         at_max = t_max * (snr_requests / jnp.maximum(snr_at_max, 1e-30)) ** 2
         at_min = t_min * (snr_requests / jnp.maximum(snr_at_min, 1e-30)) ** 2
@@ -637,9 +638,9 @@ def snrsum_rest_v_sq(gen_flam, flamerr, z1_cmb, calib):
     spectra. Accumulate across spectra, then take the square root.
 
     SNANA computes this from the TRUE noise-free GENFLAM over the reported
-    FLAMERR (GENSPEC_FLAM, snlc_sim.c:12537-12558), keeping bins whose CENTRE
+    FLAMERR (GENSPEC_FLAM, snlc_sim.c:12555-12576), keeping bins whose CENTRE
     lies in [5000, 6000]*(1+z_cmb) with FLAMERR > 0 (GENSPEC_SNR,
-    snlc_sim.c:11453-11496).
+    snlc_sim.c:11471-11514).
     """
     lam_avg = jnp.asarray(calib.lam_avg)[None, :]
     window = ((lam_avg >= 5000.0 * z1_cmb[:, None])
@@ -728,7 +729,7 @@ def _smear_simflam(sim_flam, calib, smearing_matrix):
 def nearpeak_mask(sn_index, trest, is_host):
     """Mark each SN's near-peak epoch among a flat list of (SN, epoch) rows.
 
-    Mirrors GENSPEC_MJD_ORDER (snlc_sim.c:10921-10932): SNANA scans the event's
+    Mirrors GENSPEC_MJD_ORDER (snlc_sim.c:10939-10950): SNANA scans the event's
     own TREST_LIST for the smallest ``|TREST|``, so the choice is per event and uses
     where the epoch actually landed, not the config's nominal epoch centre,
     which would also compare OBS-frame values against REST-frame ones. HOST
@@ -817,7 +818,7 @@ def _host_bins_to_smeared(host_spec, gal_indices, redshifts, mwebv, z1,
     return sim_flam, genmag, smeared
 
 
-# unset below this (snlc_sim.c:11669)
+# unset below this (snlc_sim.c:11687)
 HOST_CONTAM_MIN = 1.0e-8
 
 
@@ -842,7 +843,7 @@ def host_contam_scale(hostfrac, hostsnfrac, host_sim_flam, peak_sim_flam, calib)
 
 
 def add_host_contamination(sim_flam, genmag, host_sim_flam, scale, calib):
-    """Add `scale` x the host spectrum to each SN spectrum (snlc_sim.c:11748).
+    """Add `scale` x the host spectrum to each SN spectrum (snlc_sim.c:11766).
 
     SNANA works in per-bin flux and floors the SN at 1e-30 so the magnitude
     shift stays finite in empty bins, keeping the floored value in the sum.
@@ -859,7 +860,7 @@ def _snr_and_noise(calib, opt, smeared, genmag, texposes, texpose_template_arr,
 
     `window` (bool, same shape as `smeared`) restricts the noised bins to
     those whose centre lies inside the per-spectrum SNR window: GENSPEC_SMEAR
-    skips out-of-window source bins entirely (snlc_sim.c:12113-12117), so they
+    skips out-of-window source bins entirely (snlc_sim.c:12131-12135), so they
     keep FLAMERR = 0 and are never written.
     """
     t_min, t_max = float(calib.texpose_list[0]), float(calib.texpose_list[-1])
@@ -886,7 +887,7 @@ def _snr_and_noise(calib, opt, smeared, genmag, texposes, texpose_template_arr,
 
 
 def _parse_spectro_options(spectro_options, calib):
-    """Decode shared SPECTROGRAPH_OPTMASK/SCALE keys (init_genSpec, snlc_sim.c:10246)."""
+    """Decode shared SPECTROGRAPH_OPTMASK/SCALE keys (init_genSpec, snlc_sim.c:10266)."""
     opt = spectro_options
     optmask = opt.get('optmask', 0)
     lam_sigma = calib.lam_sigma * 0.0 if (optmask & 1) else calib.lam_sigma
@@ -898,7 +899,7 @@ def _parse_spectro_options(spectro_options, calib):
         coefs = [float(c) for c in scale_snr_text.split(',')]
         scale_snr_lam = jnp.asarray(
             eval_genpoly(coefs, np.asarray(calib.lam_avg)))
-    # WARP_SPECTRUM scales the measured FLAM only (GENSPEC_FLAM, snlc_sim.c:12503)
+    # WARP_SPECTRUM scales the measured FLAM only (GENSPEC_FLAM, snlc_sim.c:12521)
     warp_coeffs = opt.get('warp_lampoly') or []
     flam_warp = None
     if warp_coeffs:
@@ -1042,7 +1043,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
 
     Rows marked `skip` still take part in the near-peak scan (SNANA's
     GENSPEC_MJD_ORDER reads TREST_LIST without checking SKIP,
-    snlc_sim.c:10921-10932) but are never solved, noised or written.
+    snlc_sim.c:10939-10950) but are never solved, noised or written.
 
     Returns (spectra_by_snid, snrsum_rest_v) with snrsum over the passing
     subset (length ctx['n_pass']).
@@ -1059,7 +1060,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
     is_host = rows['is_host']
     active = ~rows['skip']
 
-    # skipped rows still join the near-peak scan (snlc_sim.c:10921-10932)
+    # skipped rows still join the near-peak scan (snlc_sim.c:10939-10950)
     is_np_row = nearpeak_mask(loc, phase, is_host)
 
     row_keys = _epoch_row_keys(rng_key, schedule_source,
@@ -1082,7 +1083,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
         sim_flam_rows = sim_flam_rows.at[idx_host].set(h_flam)
         genmag_rows = genmag_rows.at[idx_host].set(h_genmag)
         smeared_rows = smeared_rows.at[idx_host].set(h_smeared)
-        # host first, one per event, for contamination (snlc_sim.c:10931)
+        # host first, one per event, for contamination (snlc_sim.c:10949)
         host_flam_evt = jnp.zeros((n_pass, n_lam)).at[jnp.asarray(hloc)].set(h_flam)
 
     idx_sn = np.where(active & ~is_host)[0]
@@ -1098,7 +1099,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
         if host_flam_evt is not None and max(hostfrac, hostsnfrac) > HOST_CONTAM_MIN:
             peak_sim_flam = None
             if hostsnfrac > HOST_CONTAM_MIN:
-                # GENSPEC_TRUE(ISPEC_PEAK), snlc_sim.c:11123: the SN at TOBS=0.
+                # GENSPEC_TRUE(ISPEC_PEAK), snlc_sim.c:11141: the SN at TOBS=0.
                 peak_sim_flam = _seds_to_smeared(
                     ctx['model_params'],
                     ctx['av'], ctx['rv'], ctx['mwebv'], jnp.zeros(n_pass),
@@ -1106,7 +1107,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
                     ctx['static_data'], ctx['sed_factor'])[0]
             contam_scale = host_contam_scale(hostfrac, hostsnfrac,
                                              host_flam_evt, peak_sim_flam, calib)
-            # contaminated before the smear (GENSPEC_DRIVER, snlc_sim.c:10614)
+            # contaminated before the smear (GENSPEC_DRIVER, snlc_sim.c:10632)
             sf, gm = add_host_contamination(
                 sf, gm, host_flam_evt[sloc], contam_scale[jnp.asarray(sloc)], calib)
             sm = _smear_simflam(sf, calib, opt['smearing_matrix'])
@@ -1115,7 +1116,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
         genmag_rows = genmag_rows.at[idx_sn].set(gm)
         smeared_rows = smeared_rows.at[idx_sn].set(sm)
 
-    # SNR-window clip: only in-window flux is smeared (snlc_sim.c:10600-10606)
+    # SNR-window clip: only in-window flux is smeared (snlc_sim.c:10618-10624)
     lam_avg_np = np.asarray(calib.lam_avg)
     win_np = np.ones((n_row, n_lam), dtype=bool)
     idx_clip = np.where(active & rows['clip'])[0]
@@ -1149,13 +1150,13 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
 
     if opt['sed_true']:
         # noise off: GENSPEC_OBSFLUX_RANSMEAR returns 0 under SEDMODEL
-        # (snlc_sim.c:12377); FLAMERR stays 0 in the reduced SPEC format.
+        # (snlc_sim.c:12395); FLAMERR stays 0 in the reduced SPEC format.
         texpose_row[active] = rows['texpose_fixed'][active]
         flam_out[active] = np.asarray(smeared_rows)[active]
     else:
         rangauss = jnp.zeros((n_pass, n_lam))
         texpose_template_arr = jnp.full(n_pass, float(template_texpose))
-        # near-peak first: it fixes the template exposure (snlc_sim.c:11954-11958)
+        # near-peak first: it fixes the template exposure (snlc_sim.c:11972-11976)
         for want_np in (True, False):
             for mode in (2, 1, 0):
                 sel = active & (is_np_row == want_np) & (modes == mode)
@@ -1177,7 +1178,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
                                       rows['snr_hi'][idx] * z1c,
                                       rows['snr_hi'][idx])
                     snr_req = jnp.asarray(eval_genpoly_rows(rows['zpoly_snr'][idx], z))
-                    # unsmeared windowed flux: noNOISE zeroes LAMSIGMA (snlc_sim.c:11835, :12113)
+                    # unsmeared windowed flux: noNOISE zeroes LAMSIGMA (snlc_sim.c:11853, :12113)
                     solve_win = ((lam_avg_np[None, :] >= lam_lo[:, None])
                                  & (lam_avg_np[None, :] <= lam_hi[:, None]))
                     solve_flam = sim_flam_rows[idx] * jnp.asarray(solve_win)
@@ -1222,7 +1223,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
                 flam_out[idx] = np.asarray(flam)
                 flamerr_out[idx] = np.asarray(flamerr)
 
-                # SNRSUM_REST_V from the true GENFLAM (snlc_sim.c:12537-12558)
+                # SNRSUM_REST_V from the true GENFLAM (snlc_sim.c:12555-12576)
                 contrib = np.asarray(snrsum_rest_v_sq(
                     sim_flam_rows[idx], flamerr,
                     jnp.asarray(1.0 + ctx['z_cmb'][gloc]), calib))
@@ -1244,7 +1245,7 @@ def _generate_spectra_batch(calib, opt, ctx, rows, rng_key, schedule_source,
         if opt['sed_true']:
             valid = obs
         else:
-            # bins with FLAMERR > 0; none skips the spectrum (snlc_sim.c:10633)
+            # bins with FLAMERR > 0; none skips the spectrum (snlc_sim.c:10653)
             valid = (flamerr_out[i] > 0) & obs
             if not valid.any():
                 continue
@@ -1320,9 +1321,9 @@ def compute_sed_true_synmags(spectra_by_snid, photometry_resources, calib) -> No
     """Attach per-band synthetic mags (SIM_SYNMAG) to each spectrum.
 
     Integrates the observer-frame TRUE FLAM through each band and applies the
-    same broadband ZP as SIM_MAGOBS (GENSPEC_SYNMAG, snlc_sim.c:11364); bands
+    same broadband ZP as SIM_MAGOBS (GENSPEC_SYNMAG, snlc_sim.c:11384); bands
     the spectrograph does not cover get MAG_ZEROFLUX=99. SNANA integrates the
-    full-grid GENFLAM_LIST (snlc_sim.c:11281), not just the written bins, so
+    full-grid GENFLAM_LIST (snlc_sim.c:11299), not just the written bins, so
     the grid comes from the calibration rather than the ragged spectra.
     """
     if not spectra_by_snid:
@@ -1375,7 +1376,7 @@ def generate_all_spectra(
     Epochs are drawn from each config's range with per-(event, config) keys.
     An entry whose centre-of-range epoch falls outside the event's
     GENRANGE_TREST window, padded by GENRANGE_TOBS_PAD/(1+z), is skipped for
-    that event (SIMLIB_addCadence_TAKE_SPECTRUM, snlc_sim.c:20374-20419); such
+    that event (SIMLIB_addCadence_TAKE_SPECTRUM, snlc_sim.c:20416-20461); such
     entries still take part in the near-peak scan, as in SNANA.
 
     Returns ``(spectra_by_snid, snrsum_rest_v)``: a dict mapping SNID to a
@@ -1475,10 +1476,10 @@ def generate_simlib_take_spectrum(
 
     Same semantics as the input-file TAKE_SPECTRUM path, but each SN carries
     its own schedule. SNANA cuts entries at parse time on the range's LOWER
-    edge against GENRANGE_TREST (snlc_sim.c:5794-5815), so gated entries never
+    edge against GENRANGE_TREST (snlc_sim.c:5806-5827), so gated entries never
     reach the GENSPEC lists and take no part in the near-peak scan. An entry
     with SNR_LAMMIN > 0.1 clips the smeared/noised/written wavelength range to
-    the RAW SNR window (GENSPEC_DRIVER, snlc_sim.c:10600-10606).
+    the RAW SNR window (GENSPEC_DRIVER, snlc_sim.c:10620-10626).
     """
     opt = _parse_spectro_options(spectro_options, calib)
     ctx = _event_context(sn_parameters, passing_mask, static_data)
@@ -1493,10 +1494,11 @@ def generate_simlib_take_spectrum(
     rows = _empty_rows()
     erange = []
     for local, gi in enumerate(ctx['pass_idx']):
-        z1c = 1.0 + ctx['z_cmb'][local]   # parse gate z is z_cmb (snlc_sim.c:5800)
+        # heliocentric, where SNANA uses zCMB (snlc_sim.c:5812)
+        z1 = 1.0 + ctx['z'][local]
         for k, entry in enumerate(entries_per_sn[gi]):
             lo, hi = entry['epoch_range']
-            trest_lo = lo if entry['epoch_frame'] == 'REST' else lo / z1c
+            trest_lo = lo if entry['epoch_frame'] == 'REST' else lo / z1
             if not (trest_range[0] <= trest_lo <= trest_range[1]):
                 continue
             # phase and mjd are filled by the batched draw below
@@ -1567,7 +1569,7 @@ def load_spectrograph(config, kcor):
     else the spectrograph supplied by KCOR_FILE. None without either,
     and under SEDMODEL mode (bit 128), whose ideal spectrograph is
     fabricated from the model's range once the model is built, whatever the
-    kcor holds (init_genSpec, snlc_sim.c:10264)."""
+    kcor holds (init_genSpec, snlc_sim.c:10284)."""
     if config.effective_spectrograph_optmask & 128:
         return None
     calibration = None

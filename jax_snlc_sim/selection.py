@@ -63,7 +63,7 @@ def _build_epoch_mask(cuts, valid_mask, n_obs_per_sn,
                       phases, snrs, rest_wavelengths, include_snr_filter=True):
     """Per-obs epoch mask: SNANA's gen_cutwin epoch filter (validity, the
     Trest pre-window, EPCUTWIN_LAMREST and (optionally) EPCUTWIN_SNRMIN
-    (snlc_sim.c:24203-24235).
+    (snlc_sim.c:24255-24287).
     """
     max_obs = valid_mask.shape[1]
     obs_presence = jnp.arange(max_obs)[None, :] < n_obs_per_sn[:, None]
@@ -79,7 +79,7 @@ def _build_epoch_mask(cuts, valid_mask, n_obs_per_sn,
             & (phases <= cuts.trestmax_range[1]))
 
     if include_snr_filter:
-        # SNANA never reads the upper bound (snlc_sim.c:24234)
+        # SNANA never reads the upper bound (snlc_sim.c:24286)
         snr_limits = epcut.epcutwin_snrmin
         snr_mask = jnp.isfinite(snrs)
         if np.isfinite(snr_limits[0]):
@@ -137,7 +137,7 @@ def _build_searcheff_vars(resources, catalogue, season_boundaries, params,
     `_resolve_variable`.
     """
     z_helio = params['sim_redshift_helio']
-    # the generated peak, not the estimate (LOAD_SEARCHEFF_DATA, snlc_sim.c:24667)
+    # the generated peak, not the estimate (LOAD_SEARCHEFF_DATA, snlc_sim.c:24719)
     peak_mjd = params['peakmjd_true']
     n_sne = peak_mjd.shape[0]
     sn_vars = {
@@ -198,7 +198,7 @@ def _build_searcheff_vars(resources, catalogue, season_boundaries, params,
             filt_char = filter_band(filt)
             sn_vars[f'host_SB_FLUXCAL_{filt_char}'] = sb_jax[:, i]
 
-    # zero unless spectra came before the search (snlc_sim.c:9753)
+    # zero unless spectra came before the search (snlc_sim.c:9767)
     sn_vars['SNRSUM_REST_V'] = (
         jnp.asarray(params['snrsum_rest_v'], dtype=jnp.float32)
         if 'snrsum_rest_v' in params else jnp.zeros(n_sne, dtype=jnp.float32))
@@ -238,7 +238,7 @@ def load_searcheff(config, simlib, filter_name_to_index, spec_zhost) -> dict:
 def prepare_search_efficiency(simulator):
     """Prepare numerical detection and trigger tables from the loaded maps,
     or None when there are none: SNANA then treats the search as 100%
-    efficient (sntools_trigger.c:2041) and proceeds to SPECID/zHOST."""
+    efficient (sntools_trigger.c:2043) and proceeds to SPECID/zHOST."""
     se = simulator
     if not se.searcheff_curves:
         return None
@@ -284,17 +284,17 @@ def _nepoch_cadence_pass(cuts, fi, n_obs_per_sn, prefilter_pass):
 def _saturation_masks(simulator, zp_fluxcal, results, params,
                       valid_mask, fi, snrs, fluxcals_true_all, nexposes_all):
     """Saturation: per-obs peak-pixel photoelectron count vs.
-    NPE_PIXEL_SATURATE (snlc_sim.c:25091-25159). Always computed
+    NPE_PIXEL_SATURATE (snlc_sim.c:25149-25217). Always computed
     (matching SNANA's unconditional npe_above_saturation call);
     with the default 1e9 threshold no obs ever saturates.
     Computed BEFORE the CUTWIN stage so saturated obs can be
     masked out of the observed-flux arrays (matching SNANA's
-    fluxObs=0, fluxcalerr=1e8 sentinels at snlc_sim.c:28544-28548).
+    fluxObs=0, fluxcalerr=1e8 sentinels at snlc_sim.c:28608-28612).
 
     Returns ``(saturated_obs, fluxcals_noisy_sat, fluxcalerrs_sat, snrs_sat)``.
     """
     n_sne = fi.shape[0]
-    npe_sat_threshold = simulator.npe_pixel_saturate
+    npe_sat_threshold = simulator.instrument.npe_pixel_saturate
     zpts_arr = jnp.asarray(results['observation_schedule']['zptavgs'],
                            dtype=jnp.float32)
     gains_arr = jnp.asarray(results['observation_schedule']['gains'],
@@ -308,9 +308,9 @@ def _saturation_masks(simulator, zp_fluxcal, results, params,
     pixsize_per_sn = pixsizes_table[jnp.asarray(
         params['field_idx'], dtype=jnp.int32)]
     pixsize_2d = pixsize_per_sn[:, None] * jnp.ones_like(psf1_arr)
-    # npe_above_saturation (snlc_sim.c:25140-25164)
+    # npe_above_saturation (snlc_sim.c:25192-25216)
     npe_over_fluxcal = jnp.power(10.0, 0.4 * (zpts_arr - zp_fluxcal)) * gains_arr
-    # SNANA passes fluxTrue+fluxgal into the areaFrac product (snlc_sim.c:28548)
+    # SNANA passes fluxTrue+fluxgal into the areaFrac product (snlc_sim.c:28606)
     fluxgal_pe = jnp.asarray(results['fluxgal_pe'], dtype=jnp.float32)
     flux_pe_all = fluxcals_true_all * npe_over_fluxcal + fluxgal_pe
     skysig_pe = skysigs_arr * gains_arr
@@ -322,7 +322,7 @@ def _saturation_masks(simulator, zp_fluxcal, results, params,
     area_frac = (area_pix / (2.0 * jnp.pi * sq_psfsig_safe)) * (1.0 - area_cor)
     nexposes_f = jnp.maximum(nexposes_all.astype(jnp.float32), 1.0)
     fluxtot_pe = flux_pe_all * area_frac + sky_pe
-    # host surface-brightness term (snlc_sim.c:25156-25161)
+    # host surface-brightness term (snlc_sim.c:25208-25213)
     sb_fluxcal_for_sat = results.get('host_sb_fluxcal_stacked')
     if sb_fluxcal_for_sat is not None and simulator.hostlib is not None:
         sb_2d = jnp.asarray(sb_fluxcal_for_sat, dtype=jnp.float32)
@@ -333,12 +333,12 @@ def _saturation_masks(simulator, zp_fluxcal, results, params,
             area_pix / (jnp.pi * sbr * sbr)) * sb_per_obs * gains_arr
     npe_above_sat = fluxtot_pe / nexposes_f - npe_sat_threshold
     saturated_obs = (npe_above_sat >= 1.0) & valid_mask
-    # the bare EXPOSURE_TIME, not the per-band one (snlc_sim.c:25137)
+    # the bare EXPOSURE_TIME, not the per-band one (snlc_sim.c:25189)
     if simulator.survey.exposure_time_global > 10.0:
         saturated_obs = jnp.zeros_like(saturated_obs)
 
-    # saturated epochs are written as zero flux (snlc_sim.c:28544-28548)
-    FLUXCALERR_SATURATE = 1.0e8  # sntools.h:122
+    # saturated epochs are written as zero flux (snlc_sim.c:28608-28612)
+    FLUXCALERR_SATURATE = 1.0e8  # sntools.h:123
     fluxcals_noisy_sat = jnp.where(
         saturated_obs, 0.0, jnp.asarray(results['fluxcals_noisy']))
     fluxcalerrs_sat = jnp.where(
@@ -367,23 +367,23 @@ def _evaluate_search_efficiency(simulator, zp_fluxcal,
     apply_pipeline = searcheff_cfg._searcheff_apply_pipeline or searcheff_cfg._searcheff_apply
     photprob_2d = None
 
-    # detect, then PHOTPROB, then trigger (sntools_trigger.c:2232-2252)
+    # detect, then PHOTPROB, then trigger (sntools_trigger.c:2234-2254)
     if search_efficiency is not None:
         base_key = stream_key(key, 'SEARCHEFF_PIPELINE')
         rng_keys = jax.vmap(
             lambda i: jax.random.fold_in(base_key, i))(sn_idx)
-        # saturated epochs have EFF 0 (sntools_trigger.c:2496)
+        # saturated epochs have EFF 0 (sntools_trigger.c:2498)
         searcheff_valid = valid_mask & ~saturated_obs
         detection_mask = detect_all(
             search_efficiency, snrs_searcheff, fluxcals_true_all, nexposes_all, fi,
             searcheff_valid, field_idx_arr, rng_keys)
     else:
-        # no maps: no epoch detected, the SN found (sntools_trigger.c:2041)
+        # no maps: no epoch detected, the SN found (sntools_trigger.c:2043)
         detection_mask = jnp.zeros_like(valid_mask, dtype=bool)
 
     detection_for_trigger = detection_mask
     # PHOTPROB is drawn only inside the detection pass, so with no curves
-    # every PHOTPROB stays -9 (sntools_trigger.c:2041, :2211)
+    # every PHOTPROB stays -9 (sntools_trigger.c:2043, :2213)
     if search_efficiency is not None and photprob_prepared:
         n_filters = len(simulator.photometry.transmissions)
         sb_fluxcal_stacked = results.get('host_sb_fluxcal_stacked')
@@ -418,7 +418,7 @@ def _evaluate_search_efficiency(simulator, zp_fluxcal,
             field_match_per_map, photprob_key, sn_idx=sn_idx)
         detection_for_trigger = detection_mask & photprob_pass
 
-    # the written detection flag stays the raw one (snlc_sim.c:25624-25626)
+    # the written detection flag stays the raw one (snlc_sim.c:25677-25679)
     if search_efficiency is not None:
         (triggered, _, mjd_detect_first, mjd_detect_last, mjd_trigger,
          trigger_mask) = trigger_all(
@@ -454,7 +454,7 @@ def _evaluate_search_efficiency(simulator, zp_fluxcal,
         if simulator.searcheff_specid_flag == FLAG_ALL_FAIL:
             specid_pass = jnp.zeros(n_sne, dtype=bool)
             specid_eff = jnp.zeros(n_sne, dtype=jnp.float32)
-        # NONE, ONE, or a file with no map: EFF=1 (gen_searcheff_map, sntools_trigger.c:2898-2908)
+        # NONE, ONE, or a file with no map: EFF=1 (gen_searcheff_map, sntools_trigger.c:2900-2910)
         elif not simulator.searcheff_specid_maps:
             specid_pass = jnp.ones(n_sne, dtype=bool)
         else:
@@ -480,21 +480,21 @@ def _evaluate_search_efficiency(simulator, zp_fluxcal,
                 magshift=searcheff_cfg.searcheff_zhost_magshift,
                 zp_fluxcal=zp_fluxcal)
             zhost_key = stream_key(key, 'SEARCHEFF_ZHOST')
-            # REFAC_SEARCHEFF_MAP 1: REQUIRE maps read the SPECID randoms (sntools_trigger.c:2886-2891)
+            # REFAC_SEARCHEFF_MAP 1: REQUIRE maps read the SPECID randoms (sntools_trigger.c:2888-2893)
             shared = (jax.random.split(spec_key)[1]
                       if searcheff_cfg.searcheff_map_refac == 1 else None)
             _, zhost_pass_raw, zhost_eff = evaluate_searcheff(
                 prepared_zhost, simulator.searcheff_zhost_flag, n_sne,
                 zhost_key, sn_idx=sn_idx, require_key=shared)
 
-        # no host candidate, no host redshift, whatever the maps (sntools_trigger.c:3253)
+        # no host candidate, no host redshift, whatever the maps (sntools_trigger.c:3255)
         if 'host_NMATCH' in params and simulator.hostlib is not None:
             has_neighbor = jnp.asarray(params['host_NMATCH']) > 0
             zhost_pass_raw = zhost_pass_raw & has_neighbor
 
         zhost_pass = zhost_pass_raw & ~specid_pass
 
-    # GENLC.NEPOCH counts the peak and template epochs too (snlc_sim.c:12979-12989)
+    # GENLC.NEPOCH counts the peak and template epochs too (snlc_sim.c:12997-13007)
     sched = results['observation_schedule']
     band_mask = _simlib_band_mask(simulator, simulator.cuts, sched)
     nepoch = jnp.asarray(sched['n_obs_per_sn']) + band_mask.sum(axis=1)
@@ -502,19 +502,19 @@ def _evaluate_search_efficiency(simulator, zp_fluxcal,
     if tmpl is not None:
         nepoch = nepoch + (band_mask & (tmpl > 1.0)[None, :]).sum(axis=1)
 
-    # too few epochs fails every stage (sntools_trigger.c:2033)
+    # too few epochs fails every stage (sntools_trigger.c:2035)
     if searcheff_cfg.searcheff_minobs > 1:
         enough_epochs = nepoch >= searcheff_cfg.searcheff_minobs
         triggered = triggered & enough_epochs
         specid_pass = specid_pass & enough_epochs
         zhost_pass = zhost_pass & enough_epochs
 
-    # SPECID and zHOST need the pipeline trigger (sntools_trigger.c:2050-2061)
+    # SPECID and zHOST need the pipeline trigger (sntools_trigger.c:2052-2063)
     specid_pass = specid_pass & triggered
     zhost_pass = zhost_pass & triggered
     specid_eff = jnp.where(triggered, specid_eff, 0.0)
 
-    # SIM_SEARCHEFF_MASK bits (sntools_trigger.c:2064-2076)
+    # SIM_SEARCHEFF_MASK bits (sntools_trigger.c:2066-2078)
     pipeline_passed = triggered
     searcheff_mask = jnp.zeros(n_sne, dtype=jnp.int32)
     searcheff_mask = jnp.where(pipeline_passed, searcheff_mask | 1, searcheff_mask)
@@ -574,13 +574,13 @@ def _observed_redshift(simulation, params, redshifts_helio,
             zsmear = zsmear + jnp.asarray(params['_zsmear_normal']) * gensigma_z
         redshift_helio_observed = redshift_helio_observed + zsmear
     redshift_flag = jnp.ones(n_sne, dtype=jnp.int32)
-    # SNANA reports GENSIGMA_REDSHIFT as the smear error (snlc_sim.c:17409)
+    # SNANA reports GENSIGMA_REDSHIFT as the smear error (snlc_sim.c:17427)
     redshift_err = jnp.full(n_sne, gensigma_z, dtype=jnp.float32)
     phot_only = ~specid_pass
     use_photoz = jnp.zeros(n_sne, dtype=bool)
     wrong_zhost = jnp.zeros(n_sne, dtype=bool)
     if force_host_photoz or eval_spec:
-        # SNHOSTGAL.ZPHOT, not the reported DDLR-sorted one (snlc_sim.c:24922)
+        # SNHOSTGAL.ZPHOT, not the reported DDLR-sorted one (snlc_sim.c:24974)
         host_photoz = jnp.asarray(
             params.get('host_ZPHOT_EVENT', jnp.full(n_sne, SNANA_NULLFLOAT)),
             dtype=jnp.float32)
@@ -615,7 +615,7 @@ def _observed_redshift(simulation, params, redshifts_helio,
         redshift_err = jnp.where(use_photoz, host_photoz_err, redshift_err)
         redshift_err = jnp.where(use_no_z, SNANA_NULLFLOAT, redshift_err)
 
-    # snlc_sim.c:24948, :24986
+    # snlc_sim.c:25006, :25044
     ras_obs = jnp.asarray(params['ra'], dtype=jnp.float32)
     decs_obs = jnp.asarray(params['dec'], dtype=jnp.float32)
     # a host photo-z is converted even with the dipole off
@@ -643,7 +643,7 @@ def _evaluate_cuts(simulator, cutwin, params,
                    redshifts_helio, redshift_cmb_observed):
     """CUTWIN: per-observation cuts on ALL valid obs (not just detected)
     plus the per-SN range cuts. The kernel counts over `epoch_base_mask`,
-    SNANA's filtered epoch set (snlc_sim.c:24203-24235).
+    SNANA's filtered epoch set (snlc_sim.c:24255-24287).
 
     Returns ``(pass_cutwin_all, pass_range, cutwin_fail_masks, params_for_range,
     epoch_stats)``.
@@ -656,7 +656,7 @@ def _evaluate_cuts(simulator, cutwin, params,
 
     peakmags_cut = peakmags_masked
     if simulator.mw_dust.applyflag_mwebv:
-        # SNANA cuts on the MW-corrected mag (snlc_sim.c:24575, :13727)
+        # SNANA cuts on the MW-corrected mag (snlc_sim.c:24627, :13747)
         rv = simulator.mw_dust.rv
         mwebv_true = jnp.asarray(params['sim_mwebv'], dtype=jnp.float32)
         axav = jnp.asarray(simulator.mw_law_at_mean.extinction_curve(
@@ -667,7 +667,7 @@ def _evaluate_cuts(simulator, cutwin, params,
         snrs_sat, phases, fi, valid_mask, mjds, epoch_base_mask,
         peakmags_cut, field_idx_arr, saturated_obs)
 
-    # ZTRUE, ZFINAL, ZPHOT and the generated MWEBV (snlc_sim.c:24164-24176, :24454)
+    # ZTRUE, ZFINAL, ZPHOT and the generated MWEBV (snlc_sim.c:24222-24234, :24506)
     params_for_range = range_cut_quantities(
         {k: jnp.asarray(v, dtype=jnp.float32) for k, v in params.items()
          if hasattr(v, 'shape') and v.ndim == 1 and v.shape[0] == n_sne},
@@ -696,7 +696,7 @@ def _assemble_pass_and_reasons(cuts, nepoch_pass, triggered, searcheff_pass,
     Returns ``(passing, rejection_codes, cutmask_arr)``.
     """
     n_sne = triggered.shape[0]
-    # APPLY_CUTWIN_OPT=0 records CUTWIN in CUTMASK only (snlc_sim.c:24542)
+    # APPLY_CUTWIN_OPT=0 records CUTWIN in CUTMASK only (snlc_sim.c:24594)
     if cuts.apply_cutwin_opt == 0:
         cutwin_gate = jnp.ones(n_sne, dtype=bool)
     else:
@@ -710,7 +710,7 @@ def _assemble_pass_and_reasons(cuts, nepoch_pass, triggered, searcheff_pass,
     if apply_pipeline:
         rejection_codes = jnp.where(~triggered, 3, rejection_codes)
     rejection_codes = jnp.where(~nepoch_pass, 2, rejection_codes)
-    # empty LIBID is NEPOCH (snlc_sim.c:296), no host is GENRANGE (:23858)
+    # empty LIBID is NEPOCH (snlc_sim.c:296), no host is GENRANGE (:23911)
     rejected_before = ~prefilter_pass
     rejection_codes = jnp.where(
         rejected_before & (prefilter_reason == PREFILTER_REASON_CODES['NEPOCH']),
@@ -773,7 +773,7 @@ def evaluate_selection(simulator, zp_fluxcal, search_efficiency, cutwin,
     peakmags_masked = _apply_dofilt_peakmag_mask(
         simulator, params, results['peakmags'], results['observation_schedule'])
 
-    # Per-obs validity, SNANA's OBSFLAG_GEN (snlc_sim.c:24204)
+    # Per-obs validity, SNANA's OBSFLAG_GEN (snlc_sim.c:24256)
     valid_mask = _build_validity_mask(results)
 
     snrs_model = jnp.array(results['snrs_model'], dtype=jnp.float32)
@@ -802,7 +802,7 @@ def evaluate_selection(simulator, zp_fluxcal, search_efficiency, cutwin,
                           valid_mask, fi, snrs, fluxcals_true_all,
                           nexposes_all)
 
-    # SNR_CALC is the measured SNR under SURVEY: SDSS (snlc_sim.c:24713-24716)
+    # SNR_CALC is the measured SNR under SURVEY: SDSS (snlc_sim.c:24765-24768)
     snrs_searcheff = (snrs if simulator.survey_name.upper() == 'SDSS'
                       else snrs_model)
     search = _evaluate_search_efficiency(
@@ -830,7 +830,7 @@ def evaluate_selection(simulator, zp_fluxcal, search_efficiency, cutwin,
         search['searcheff_pass'], search['apply_pipeline'], pass_cutwin_all,
         cutwin_fail_masks, params_for_range, prefilter_pass, prefilter_reason)
 
-    # an event that never reaches gen_cutwin keeps the initial gap and SNR (snlc_sim.c:9561-9563, :9655)
+    # an event that never reaches gen_cutwin keeps the initial gap and SNR (snlc_sim.c:9572-9574, :9666)
     reached = passing | (rejection_codes == 5)
     epoch_stats = {
         'trestmin': jnp.where(
@@ -873,7 +873,7 @@ def evaluate_selection(simulator, zp_fluxcal, search_efficiency, cutwin,
         'sim_searcheff_mask': search['sim_searcheff_mask'],
         'sim_searcheff_spec': search['sim_searcheff_spec'],
         'mwxt_mag': mwxt_mag_per_band(simulator, simulator, params),
-        # what HOSTGAL_MAG_<band> is dimmed by (sntools_host.c:9287)
+        # what HOSTGAL_MAG_<band> is dimmed by (sntools_host.c:9684)
         'host_mwxt_mag': host_mwxt_mag_per_band(simulator, params),
         'simlib_band_mask': search['simlib_band_mask'],
         'specid_pass': search['specid_pass'],
@@ -976,7 +976,7 @@ def _check_unmatched_searcheff_fields(label, maps, no_match, generated,
     """An evaluated SN whose field and peak MJD match no map of this type
     aborts, unless the map file set OPT_FIELDMATCH_REQUIRE: 0, in which case
     it keeps EFF=0 with one warning per uncovered field (gen_searcheff_map,
-    sntools_trigger.c:2983-2991)."""
+    sntools_trigger.c:2985-2993)."""
     if not maps or not no_match.any():
         return
     field_of = np.array([f.field_name for f in resources.fields])
@@ -995,7 +995,7 @@ def _check_unmatched_searcheff_fields(label, maps, no_match, generated,
 
 
 def _check_searcheff_eff_window(label, eff, generated, resources):
-    """An evaluated SN whose combined EFF is outside the round-off window aborts (gen_searcheff_map, sntools_trigger.c:3011-3019)."""
+    """An evaluated SN whose combined EFF is outside the round-off window aborts (gen_searcheff_map, sntools_trigger.c:3013-3021)."""
     outside = np.asarray(eff_outside_window(eff))
     if not outside.any():
         return
@@ -1011,7 +1011,7 @@ def _simlib_band_mask(resources, cuts, obs_schedule):
     """Filters present in each SN's SIMLIB entry (SIMLIB_USEFILT_ENTRY).
 
     SNANA inserts the artificial PEAKMJD epoch only for these filters
-    (snlc_sim.c:12971), so SIM_PEAKMAG stays at its sentinel for the rest.
+    (snlc_sim.c:12989), so SIM_PEAKMAG stays at its sentinel for the rest.
     The skip applies only when CUTWIN_NEPOCH is in force.
     """
     n_bands = len(resources.filter_names)
@@ -1028,7 +1028,7 @@ def _simlib_band_mask(resources, cuts, obs_schedule):
 def kept_mask(simulation, selection):
     """The events of a batch an output reads after it: the passing ones,
     and under APPLY_CUTWIN_OPT=3 the CUTWIN-rejected ones the DUMP lists
-    beside them (doReject_SIMGEN_DUMP, snlc_sim.c:16927)."""
+    beside them (doReject_SIMGEN_DUMP, snlc_sim.c:16945)."""
     passing = np.asarray(selection['passing_mask'])
     if simulation.cuts.apply_cutwin_opt == 3:
         return passing | (np.asarray(selection['rejection_codes']) == 5)
@@ -1040,11 +1040,11 @@ def generated_record(results, selection):
     packed to the kept ones: what the summaries and the NGEN_LC stopping
     rule count, a few bytes per event."""
     params = results['parameters']
-    # which events each map type is evaluated for (sntools_trigger.c:2052)
+    # which events each map type is evaluated for (sntools_trigger.c:2054)
     specid_evaluated = np.asarray(selection['triggered'], dtype=bool)
     zhost_evaluated = specid_evaluated & ~np.asarray(selection['specid_pass'],
                                                      dtype=bool)
-    # a hostless event never reaches the zHOST maps (sntools_trigger.c:3253)
+    # a hostless event never reaches the zHOST maps (sntools_trigger.c:3255)
     if 'host_NMATCH' in params:
         zhost_evaluated &= np.asarray(params['host_NMATCH']) > 0
     record = {

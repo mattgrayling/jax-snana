@@ -194,7 +194,7 @@ The following helpers support tabulated spectra:
   names the parameters the grid spans and lists one SED file per line with
   that SED's parameter values. This is the SIMSED grid format.
 - Each SED file has three columns: phase in days, wavelength in Angstroms
-  and flux density. {py:func}`read_sed_file <jax_snlc_core.models.sed_model.read_sed_file>`
+  and flux density. {py:func}`read_sed_file <jax_snlc_core.snana_files.read_sed_file>`
   reads one, and
   {py:func}`read_sed_binary <jax_snlc_core.models.simsed.read_sed_binary>`
   reads the whole set at once from SNANA's `SED.BINARY` cache.

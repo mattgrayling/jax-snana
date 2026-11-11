@@ -122,7 +122,7 @@ def compute_wgtsum(table, wgtmap_data) -> WgtSumData:
 
     galaxy_properties = jnp.stack(
         [table.columns[var] for var in galaxy_varnames], axis=-1)
-    # galaxy dims only; SN dims are checked per event (sntools_host.c:1655-1660, :4330-4352)
+    # galaxy dims only; SN dims are checked per event (sntools_host.c:1666-1671, :4417-4439)
     galaxy_ranges = np.asarray(wgtmap_data.ranges)[galaxy_idx]
     galaxy_properties = _apply_magobs_zeroflux(
         galaxy_properties, galaxy_varnames, galaxy_ranges)
@@ -170,7 +170,7 @@ def _apply_magobs_zeroflux(
 
     A galaxy mag of 99 means zero flux; SNANA replaces it with the WGTMAP
     dimension's maximum minus 0.001 before interpolation so these galaxies
-    do not trip the bounds abort (sntools_host.c:4266-4275, 4316-4322).
+    do not trip the bounds abort (sntools_host.c:4344-4352, 4404-4410).
     Applies to every WGTMAP dimension whose name contains '_obs'
     (HOSTLIB_SUFFIX_MAGOBS, matched with strstr).
     """
@@ -192,7 +192,7 @@ def _check_bounds(
     """Check if galaxies are within WGTMAP bounds.
 
     Implements SNANA's OPT_EXTRAP behaviour (interp_GRIDMAP failure is fatal
-    in the wgtsum loop, sntools_host.c:4330-4352): ``opt_extrap = 0``
+    in the wgtsum loop, sntools_host.c:4417-4439): ``opt_extrap = 0``
     (default) aborts if any galaxy is out of bounds; ``opt_extrap > 0``
     allows extrapolation (clamp to edge) and warns if out of bounds.
 
@@ -251,7 +251,7 @@ def _check_bounds(
 
 def wgtmap_snvar_names(spellings):
     """The WGTMAP dimensions that are per-SN quantities rather than catalogue
-    columns (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2868-2922), as each
+    columns (checkSNvar_HOSTLIB_WGTMAP, sntools_host.c:2886-2940), as each
     lower-cased spelling mapped to its name: the model's population
     parameters, and the host dust that lands in a parameter of its own."""
     return {**spellings, **{p.key.lower(): p.key for p in HOST_DUST_PARAMETERS

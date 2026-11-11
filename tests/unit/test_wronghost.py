@@ -74,8 +74,9 @@ def test_reads_snana_native_commented_poly_key(tmp_path):
     read_WRONGHOST (sntools_wronghost.c:85-90) scans whitespace-separated
     tokens with fscanf and has no comment syntax, so '#' is just an ignored
     token and the key is still found. Every WRONGHOST_RANDOM.DAT shipped in
-    $SNDATA_ROOT/sample_input_files is written that way; a line-based parser
-    that drops '#' lines first cannot read any of them.
+    $SNDATA_ROOT/sample_input_files is written that way. The key may also
+    stand outside a comment, its value a comma-separated list, and words
+    after its value are passed over (sntools_wronghost.c:87-101).
     """
     from jax_snlc_sim.hostlib.wronghost import read_wronghost_file
 
@@ -84,7 +85,7 @@ def test_reads_snana_native_commented_poly_key(tmp_path):
     commented = tmp_path / "commented.dat"
     commented.write_text(f"# PROB_WRONGHOST_POLY: 0.026 0 0 0\n# ZTRUE ZMATCH\n{body}\n")
     plain = tmp_path / "plain.dat"
-    plain.write_text(f"PROB_WRONGHOST_POLY: 0.026 0 0 0\nZTRUE ZMATCH\n{body}\n")
+    plain.write_text(f"PROB_WRONGHOST_POLY: 0.026,0,0,0  # cubic\n! ZTRUE ZMATCH\n{body}\n")
 
     a = read_wronghost_file(str(commented), 0.02, 0.60)
     b = read_wronghost_file(str(plain), 0.02, 0.60)
@@ -94,6 +95,13 @@ def test_reads_snana_native_commented_poly_key(tmp_path):
     np.testing.assert_allclose(a.ztrue, b.ztrue)
     np.testing.assert_allclose(a.zmatch, b.zmatch)
     assert len(a.ztrue) == 5
+
+    for line in ("# PROB_WRONGHOST_POLY: 0.026,0.1  from DES",
+                 "# PROB_WRONGHOST_POLY: 0.026 0.1 0 0 cubic"):
+        trailing = tmp_path / "trailing.dat"
+        trailing.write_text(f"{line}\n{body}\n")
+        coeffs = read_wronghost_file(str(trailing), 0.02, 0.60).poly_coeffs
+        np.testing.assert_allclose(coeffs[:2], [0.026, 0.1])
 
 
 def test_gen_zhost_flags_a_wrong_host_with_no_entry_nearby():

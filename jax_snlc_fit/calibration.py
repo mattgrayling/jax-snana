@@ -40,32 +40,37 @@ from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import metadata_files
 from jax_snlc_core.noise import (apply_fluxcal_fudges, evaluate_fluxerrmodel_data,
                                  noise_equivalent_aperture)
-from jax_snlc_core.snana_files import open_text
+from jax_snlc_core.snana_files import (header_words, key_runs, leading_values, read_fitres,
+                                       text_lines, word_runs)
 from jax_snlc_core.utils import LIGHT_A
 
 logger = logging.getLogger(__name__)
 
 
 def read_hostnoise_file(path):
-    """Parse a FUDGE_HOSTNOISE_FILE (INIT_NOISEMODEL_HOST_LEGACY) into per-LIBID
-    maps: {band, field, HOSTMAG grid, ERRSCALE grid}."""
-    maps, cur = [], None
-    with open_text(os.path.expandvars(path)) as fh:
-        for line in fh:
-            toks = line.split('#')[0].split()
-            if not toks:
-                continue
-            key = toks[0].rstrip(':')
-            if key == 'LIBID':
-                cur = {'band': '', 'field': 'ALL', 'mag': [], 'noise': []}
-                maps.append(cur)
-            elif key == 'BAND':
-                cur['band'] = toks[1]
-            elif key == 'FIELD':
-                cur['field'] = toks[1]
-            elif key == 'HOSTNOISE':
-                cur['mag'].append(float(toks[1]))
-                cur['noise'].append(float(toks[2]))
+    """Parse a FUDGE_HOSTNOISE_FILE into per-LIBID maps: {band, field, HOSTMAG
+    grid, ERRSCALE grid}. SNANA reads it as a stream of words, each key
+    taking the words it needs (INIT_NOISEMODEL_HOST_LEGACY,
+    sntools_fluxErrModels_legacy.c)."""
+    path = os.path.expandvars(path)
+    maps = []
+    for key, values in key_runs(path):
+        if key in ('BAND', 'FIELD', 'HOSTNOISE') and not maps:
+            raise SNANAError(f"{path}: {key}: comes before any LIBID:",
+                             function_name="read_hostnoise_file")
+        if key == 'LIBID':
+            leading_values(path, key, values, 1)
+            maps.append({'band': '', 'field': 'ALL', 'mag': [], 'noise': []})
+        elif key == 'BAND':
+            maps[-1]['band'] = leading_values(path, key, values, 1)[0]
+        elif key == 'FIELD':
+            maps[-1]['field'] = leading_values(path, key, values, 1)[0]
+        elif key == 'HOSTNOISE':
+            mag, noise = leading_values(path, key, values, 2)
+            maps[-1]['mag'].append(float(mag))
+            maps[-1]['noise'].append(float(noise))
+        elif key != 'NOISEMODEL_NAME':
+            log.warn(logger, "HOSTNOISE", f"{path}: {key}: is not read")
     for m in maps:
         m['mag'], m['noise'] = np.array(m['mag']), np.array(m['noise'])
     return maps
@@ -155,7 +160,9 @@ def read_nonlinearity_file(path):
     """Parse a NONLINEARITY_FILE into a NonlinModel (one map per FILTERS
     block), with SNANA's validation (sntools_nonlinearity.c:95-99,
     :178-215): MODELNAME is required, and exactly one bit of each of the
-    COUNT and PER pairs must be set."""
+    COUNT and PER pairs must be set. SNANA reads MODELNAME and
+    OPTMASK_NONLIN from the stream of words and each FILTERS: and NONLIN:
+    line on its own (:79-160); every key is read from the stream here."""
     optmask, maps, modelname = 0, {}, None
     bands, pairs = None, []
 
@@ -166,21 +173,19 @@ def read_nonlinearity_file(path):
             for b in bands:
                 maps[b] = grid
 
-    with open_text(os.path.expandvars(path)) as fh:
-        for line in fh:
-            toks = line.split('#')[0].split()
-            if not toks:
-                continue
-            key = toks[0].rstrip(':')
-            if key == 'OPTMASK_NONLIN':
-                optmask = int(toks[1])
-            elif key == 'MODELNAME':
-                modelname = toks[1]
-            elif key == 'FILTERS':
-                flush()
-                bands, pairs = toks[1], []
-            elif key == 'NONLIN':
-                pairs.append((float(toks[1]), float(toks[2])))
+    path = os.path.expandvars(path)
+    for key, values in key_runs(path):
+        if key == 'OPTMASK_NONLIN':
+            optmask = int(leading_values(path, key, values, 1)[0])
+        elif key == 'MODELNAME':
+            modelname = leading_values(path, key, values, 1)[0]
+        elif key == 'FILTERS':
+            flush()
+            bands, pairs = leading_values(path, key, values, 1)[0], []
+        elif key == 'NONLIN':
+            pairs.append(tuple(float(v) for v in leading_values(path, key, values, 2)))
+        else:
+            log.warn(logger, "NONLINEARITY", f"{path}: {key}: is not read")
     flush()
 
     if modelname is None:
@@ -298,29 +303,26 @@ def read_magcor_file(path, version):
     on the path subtracts MAGCOR instead of adding it. VERSION_ADD
     rows name the data versions already carrying the correction: adding to
     one of them, or subtracting from any other, is refused (ISTAT_MAGCOR_ADD,
-    snana.F90:16750-16760). Returns {(cid, round(mjd, 3), band): signed_magcor}."""
+    snana.F90:16739-16751). Returns {(cid, round(mjd, 3), band): signed_magcor}."""
     sign = 1.0
     if path.startswith('-'):
         sign, path = -1.0, path[1:]
-    varnames, out, added = None, {}, set()
-    with open(os.path.expandvars(path)) as fh:
-        for line in fh:
-            toks = line.split('#')[0].split()
-            if not toks:
-                continue
-            if toks[0] == 'VARNAMES:':
-                varnames = toks[1:]
-                if 'WAVECOR' in varnames:
-                    raise SNANAError(
-                        f"MAGCOR_FILE {path} carries a WAVECOR column, the "
-                        f"per-epoch wavelength shift, which jax does not "
-                        f"implement.", function_name='read_magcor_file')
-            elif toks[0] == 'VERSION_ADD:':
-                added.add(toks[1])
-            elif toks[0] in ('ROW:', 'SN:'):
-                cid, mjd, band = toks[1].rsplit('-', 2)
-                mag = float(toks[1 + varnames.index('MAGCOR')])
-                out[(cid, round(float(mjd), 3), band)] = sign * mag
+    path = os.path.expandvars(path)
+    # VERSION_ADD keys up to the first row, around an SNANA table's VARNAMES
+    # (INIT_MAGCOR, snana.F90:16652-16808; ISTAT_MAGCOR_ADD, :16858-16890)
+    added = {leading_values(path, key, values, 1)[0]
+             for key, values in word_runs(path, header_words(text_lines(path), 'ROW:'))
+             if key == 'VERSION_ADD'}
+    table = read_fitres(path, as_text=True)
+    if 'WAVECOR' in table.varnames:
+        raise SNANAError(
+            f"MAGCOR_FILE {path} carries a WAVECOR column, the "
+            f"per-epoch wavelength shift, which jax does not "
+            f"implement.", function_name='read_magcor_file')
+    out = {}
+    for key, mag in zip(table.df[table.varnames[0]], table.df['MAGCOR']):
+        cid, mjd, band = key.rsplit('-', 2)
+        out[(cid, round(float(mjd), 3), band)] = sign * float(mag)
     if sign > 0.0 and version in added:
         raise SNANAError(
             f"MAGCOR already in the {version} fluxes: will not add {path} twice",
@@ -408,12 +410,9 @@ def resolve_mw_colour_law(data_config, sim_mw_colour_law):
 
 
 def resolve_filtlist(filtlist_chars, kcor):
-    """Map FILTLIST_FIT single-char shorthand to full filter names using kcor header.
-
-    The kcor primary header has FILT001, FILT002, ... keys declaring full names
-    (e.g. ``FILT002 = LSST-g``).  The last char of the name gives the band
-    char. A header without NFILTERS or any of the FILTnnn cards it counts is
-    an error.
+    """Map FILTLIST_FIT single-char shorthand to the calibration's full filter
+    names, whose last character gives the band (starred wavelength-shifted
+    duplicates are selected only by full name).
 
     ``filtlist_chars`` is a string of single-char band names, e.g.
     ``"grizY"``; ``kcor`` is the loaded :class:`KcorReader`. Returns the
@@ -426,26 +425,16 @@ def resolve_filtlist(filtlist_chars, kcor):
         return list(filtlist_chars)
     if filtlist_chars in kcor.filter_names:
         return [filtlist_chars]
-    hdr = kcor.header
-    cards = ["NFILTERS"]
-    if "NFILTERS" in hdr:
-        cards += [f"FILT{i:03d}" for i in range(1, hdr["NFILTERS"] + 1)]
-    missing = [card for card in cards if card not in hdr]
-    if missing:
-        raise SNANAError(f"{kcor.kcor_file_path} has no {', '.join(missing)} header card",
-                         function_name="resolve_filtlist")
     char_to_full = {}
-    for card in cards[1:]:
-        full_name = hdr[card].strip()
-        if not full_name.startswith('*'):
-            char_to_full.setdefault(filter_band(full_name), []).append(full_name)
+    for full_name in kcor.get_filter_names():
+        char_to_full.setdefault(filter_band(full_name), []).append(full_name)
 
     result = []
     for ch in filtlist_chars:
         if ch not in char_to_full:
             available = ", ".join(f"'{k}'→{v}" for k, v in sorted(char_to_full.items()))
             raise SNANAError(
-                f"FILTLIST_FIT char '{ch}' not found in kcor header. "
+                f"FILTLIST_FIT char '{ch}' matches no calibration filter. "
                 f"Available: {available}", function_name="resolve_filtlist"
             )
         candidates = char_to_full[ch]
@@ -614,7 +603,7 @@ def mw_attenuation(config, photometry, mwebvs, mwebv_errs, sim_mw_colour_law=Non
     ``config`` is the data version's: its OPT_MWCOLORLAW, RV_MWCOLORLAW and
     PARLIST_MWCOLORLAW, the simulation's own law where it sets none. The
     error is the extinction at E(B-V) plus its error less that at E(B-V)
-    (snana.F90:15624-15629). A batch with neither carries ones and zero
+    (snana.F90:15713-15718). A batch with neither carries ones and zero
     errors, and the law is not evaluated, as GALextinct returns at A_V = 0
     (MWgaldust.c:474).
     """

@@ -1,4 +1,4 @@
-"""The BBC distance-fit likelihood (SNANA MNCHI2FUN, SALT2mu.c:5105).
+"""The BBC distance-fit likelihood (SNANA MNCHI2FUN, SALT2mu.c:5108).
 
 A single ``-2 ln L`` shared by the SNANA-secant and joint-sigma_int modes. The
 model-specific physics (Tripp coefficients, mass step) lives entirely in the
@@ -20,7 +20,7 @@ from .binning import coeff_weights
 from .distances import bias_coef, mu_lcpar_coef, mu_variance_scaled
 from .ccprior import beams_dPdmu_CC, beams_probs
 
-MUERR_FITWGT0 = 8888.8   # MUERR of a chi2max(FITWGT0) deweighted event (SALT2mu.c:498)
+MUERR_FITWGT0 = 8888.8   # MUERR of a chi2max(FITWGT0) deweighted event (SALT2mu.c:500)
 
 
 class LikelihoodInputs(NamedTuple):
@@ -39,10 +39,10 @@ class LikelihoodInputs(NamedTuple):
     m0_zfrac: Optional[jnp.ndarray] = None
     idsample: Optional[jnp.ndarray] = None   # int, per event (output column only)
     sqsigint: Optional[jnp.ndarray] = None   # [n] per-event sigma_int^2 (sigint_fix)
-    # INFO_DATA.muerrsq_last (SALT2mu.c:9471, :5661)
+    # INFO_DATA.muerrsq_last (SALT2mu.c:9481, :5671)
     muerrsq_last: Optional[jnp.ndarray] = None
     lensing_zpar: float = 0.0
-    # chi2max(FITWGT0): per-event deweight flag (SALT2mu.c:3491)
+    # chi2max(FITWGT0): per-event deweight flag (SALT2mu.c:3494)
     fitwgt0: Optional[jnp.ndarray] = None
     # biasCor (None -> no correction): per-event bias / muCOVscale at each coefficient
     # node, plus the per-axis grid used for the interpolation weights.
@@ -76,7 +76,7 @@ def nuisance_at(flat, floated_nuis, fixed_nuis) -> Dict[str, float]:
 
 def m0_for(inputs, m0):
     """Each event's M0: its bin's value, or the uM0=2 interpolation between the
-    two nearest knots (fcn_M0, SALT2mu.c:5821)."""
+    two nearest knots (fcn_M0, SALT2mu.c:5831)."""
     m0_bin = m0[inputs.izbin]
     if inputs.m0_zfrac is None:
         return m0_bin
@@ -90,7 +90,7 @@ def mu_and_parts(spec, inputs: LikelihoodInputs, nuis: Dict[str, float],
     Returns a dictionary where ``mures`` is the distance residual,
     ``uncorrected_variance`` is the LC-fit+intrinsic+lensing variance
     before muCOVscale, ``fit_sq`` the same without the intrinsic scatter (the
-    MUERR_RAW column, SALT2mu.c:5642), ``mucovscale`` the node-blended scale (1 if no
+    MUERR_RAW column, SALT2mu.c:5652), ``mucovscale`` the node-blended scale (1 if no
     biasCor), ``vpec_sq`` the peculiar-velocity variance, ``parbias`` the per-LC-param
     bias ``[n, k]``, ``mubias = v.parbias`` the distance bias (both zero if no
     biasCor), ``wgt`` the ``[n, N_node]`` per-event interpolation weights
@@ -110,7 +110,7 @@ def mu_and_parts(spec, inputs: LikelihoodInputs, nuis: Dict[str, float],
     v = mu_lcpar_coef(model, names, nuis, inputs.z, inputs.logmass, u_flags)
     fit_sq = mu_variance_scaled(v, inputs.covmat_fit, inputs.z, inputs.lensing_zpar,
                                 xp=jnp)
-    # sigint_fix: per-IDSAMPLE scatter (get_COVINT_model, SALT2mu.c:23181)
+    # sigint_fix: per-IDSAMPLE scatter (get_COVINT_model, SALT2mu.c:23195)
     sq = inputs.sqsigint if inputs.sqsigint is not None else sigint * sigint
     uncorrected_variance = fit_sq + sq * v[:, 0] ** 2
     vpec = inputs.muerr_vpec_sq
@@ -139,7 +139,7 @@ def mu_and_parts(spec, inputs: LikelihoodInputs, nuis: Dict[str, float],
 
     if inputs.fitwgt0 is not None:
         # deweighted events get MUERR_FITWGT0 in place of every error piece
-        # (fcn_muerrsq, SALT2mu.c:6185; scales forced to 1, :5301)
+        # (fcn_muerrsq, SALT2mu.c:6195; scales forced to 1, :5309)
         f = inputs.fitwgt0
         uncorrected_variance = jnp.where(f, MUERR_FITWGT0 ** 2, uncorrected_variance)
         mucovscale = jnp.where(f, 1.0, mucovscale)

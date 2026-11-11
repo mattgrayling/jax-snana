@@ -75,7 +75,7 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
     serialising the same HEAD/PHOT columns the FITS path writes.
 
     ``trest_ranges`` is the per-SN (SIM_TRESTMIN, SIM_TRESTMAX) pair over the
-    EPCUTWIN-filtered epochs (gen_cutwin, snlc_sim.c:24199-24241)."""
+    EPCUTWIN-filtered epochs (gen_cutwin, snlc_sim.c:24257-24299)."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     n_sne = len(next(iter(header_cols.values())))
     cidran = parse_format_mask(config.output.format_mask)['cidran']
@@ -94,13 +94,13 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
     host_cols = sorted(c for c in hcol if c.startswith('HOSTGAL'))
     # SKY_SIG_T only when template noise is present (WRFLAG_SKYSIG_T)
     skysigt_on = 'SKY_SIG_T' in pcol and bool(np.any(pcol['SKY_SIG_T'] != 0))
-    # PHOTPROB only with PHOTPROB maps (WRFLAG_PHOTPROB, snlc_sim.c:25364)
+    # PHOTPROB only with PHOTPROB maps (WRFLAG_PHOTPROB, snlc_sim.c:25417)
     photprob_on = bool(resources.searcheff_photprob_maps)
     obs_cols = [(n, c, f) for (n, c, f) in _TEXT_OBS_COLS if c in pcol
                 and not (n.startswith('SIM_') and blindtest)
                 and not (n == 'SKY_SIG_T' and not skysigt_on)
                 and not (n == 'PHOTPROB' and not photprob_on)]
-    # last, after SIM_MAGOBS (sntools_dataformat_text.c:988-993)
+    # last, after SIM_MAGOBS (sntools_dataformat_text.c:986-991)
     if snrmon_colname and snrmon_colname in pcol and not blindtest:
         obs_cols.append(
             (snrmon_colname, snrmon_colname, '{:.1f}'))
@@ -108,6 +108,8 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
     mjd_arr = pcol['MJD']
 
     dat_names = []
+    fields = np.array([f.field_name for f in resources.fields])[
+        np.asarray(columnar_data['parameters']['field_idx'], dtype=np.int32)]
     # integer CID (SNID may carry a -SEDINDEX suffix)
     written = to_written_cid(columnar_data['parameters']['cid'])
     for i in range(n_sne):
@@ -116,8 +118,8 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
         with open(Path(output_dir) / fname, 'w') as fp:
             _write_text_header_block(columnar_data, config, resources,
                                      kcor_filter_names, zp_fluxcal, fp, hcol,
-                                     i, sim_cols, host_cols, blindtest,
-                                     trest_ranges)
+                                     i, fields[i], sim_cols, host_cols,
+                                     blindtest, trest_ranges)
             lo = int(hcol['PTROBS_MIN'][i]) - 1
             hi = int(hcol['PTROBS_MAX'][i])
             fp.write(f"\nNOBS: {hi - lo}\nNVAR: {len(obs_cols)}\n")
@@ -127,7 +129,7 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
                                and 1000.0 < float(mjd_trigger) < 0.99e6)
             for r in range(lo, hi):
                 # Marks the first epoch past the trigger, between the OBS
-                # rows rather than in the header (text.c:1145).
+                # rows rather than in the header (text.c:1143).
                 if pending_trigger and \
                         float(mjd_arr[r]) > float(mjd_trigger) + 1.0e-5:
                     fp.write("TRIGGER:  trigger logic satisfied at "
@@ -144,9 +146,10 @@ def write_text_lightcurves(columnar_data, config, resources, kcor_filter_names,
 
 
 def _write_text_header_block(columnar_data, config, resources,
-                             kcor_filter_names, zp_fluxcal, fp, hcol, i,
+                             kcor_filter_names, zp_fluxcal, fp, hcol, i, field,
                              sim_cols, host_cols, blindtest, trest_ranges):
-    """Emit the `KEY: value` header for one SN row of the HEAD table."""
+    """Emit the `KEY: value` header for one SN row of the HEAD table;
+    ``field`` is the SN's SIMLIB field name."""
     def hv(col):
         return hcol[col][i] if col in hcol else None
 
@@ -190,14 +193,15 @@ def _write_text_header_block(columnar_data, config, resources,
     survey = (f"{resources.survey_name}({sub})"
               if sub and sub != resources.survey_name else resources.survey_name)
     fp.write(f"SURVEY: {survey}\n")
-    # a string: APPEND_SNID_SEDINDEX writes "CID-INDEX" (snlc_sim.c:25393-25398)
+    # a string: APPEND_SNID_SEDINDEX writes "CID-INDEX" (snlc_sim.c:25446-25451)
     fp.write(f"SNID: {str(hv('SNID')).strip()}\n")
     fp.write(f"ZP_FLUXCAL: {zp_fluxcal:.2f}\n")
     if hv('SNTYPE') is not None:
         fp.write(f"SNTYPE: {int(hv('SNTYPE'))}\n")
     fp.write(f"RA: {float(hv('RA')):.6f}\n")
     fp.write(f"DEC: {float(hv('DEC')):.6f}\n")
-    # Atmosphere/DCR per-band averaged coords (WRFLAG_ATMOS, text.c:152)
+    fp.write(f"FIELD: {field}\n")
+    # Atmosphere/DCR per-band averaged coords (WRFLAG_ATMOS, text.c:153)
     if bands and hv(f'RA_AVG_{bands[0]}') is not None:
         filterpar('RA_AVG', 'avg per band', '{:.5f}',
                   lambda b: hv(f'RA_AVG_{b}'))
@@ -213,6 +217,7 @@ def _write_text_header_block(columnar_data, config, resources,
         filterpar('MWXT_MAG', 'MW mag-XT per band', '{:.3f}',
                   lambda b: mwxt[i][bands.index(b)])
     fp.write(f"PEAKMJD: {float(hv('PEAKMJD')):.4f}\n")
+    fp.write(f"SEASON_INDEX: {int(hv('SEASON_INDEX'))}\n")
     for key in ('MJD_TRIGGER', 'MJD_DETECT_FIRST', 'MJD_DETECT_LAST'):
         v = hv(key)
         if v is not None and 0.0 < float(v) < 1.0e6:
@@ -300,8 +305,8 @@ def _text_sim_suppressed(hv, col):
     """Whether SNANA would omit this SIM key for this SN.
 
     The host-extinction trio is gated as a group on SIM_AV
-    (sntools_dataformat_text.c:365); SIM_SUBSAMPLE_INDEX on a
-    non-negative index (:273).
+    (sntools_dataformat_text.c:369); SIM_SUBSAMPLE_INDEX on a
+    non-negative index (:277).
     """
     if col in _TEXT_SIM_FITS_ONLY:
         return True
@@ -316,7 +321,7 @@ def _text_sim_suppressed(hv, col):
 def _write_text_simpar_extras(columnar_data, config, resources, fp, hcol, i,
                               trest_ranges):
     """SIMPAR keys SNANA writes to TEXT but not to FITS, so they have no
-    header-table column to carry them (sntools_dataformat_text.c:285-446)."""
+    header-table column to carry them (sntools_dataformat_text.c:289-450)."""
     mw = mw_option_keys(config)
     fp.write(f"SIMLIB_MSKOPT: {config.survey.simlib_mskopt}\n")
     fp.write(f"SIM_MWRV: {mw['SIM_MWRV']:.3f}  # MilkyWay RV\n")
@@ -338,7 +343,7 @@ def _write_text_simpar_extras(columnar_data, config, resources, fp, hcol, i,
 
     fp.write(f"SIM_HOSTLIB_NPAR: {len(config.host.storepar)}\n")
 
-    # over the EPCUTWIN-filtered epochs (gen_cutwin, snlc_sim.c:24199-24241)
+    # over the EPCUTWIN-filtered epochs (gen_cutwin, snlc_sim.c:24257-24299)
     if trest_ranges is not None:
         fp.write(f"SIM_TRESTMIN: {float(trest_ranges[0][i]):.2f}  # days\n")
         fp.write(f"SIM_TRESTMAX: {float(trest_ranges[1][i]):.2f}  # days\n")
@@ -359,9 +364,9 @@ def _fmt_hdr_val(x):
 
 
 def _write_text_spec_block(kcor_filter_names, fp, specs, *, sim=True):
-    """Emit the SNSPEC section (wr_dataformat_text_SNSPEC, text.c:1170)."""
+    """Emit the SNSPEC section (wr_dataformat_text_SNSPEC, text.c:1168)."""
     varnames = ["LAMMIN", "LAMMAX", "FLAM", "FLAMERR"]
-    # GENSPEC.USE_WARP (sntools_dataformat_text.c:1209-1210)
+    # GENSPEC.USE_WARP (sntools_dataformat_text.c:1207-1208)
     use_warp = bool(specs) and all(s.warp is not None for s in specs)
     if sim:
         varnames += ["SIM_GENFLAM", "SIM_GENMAG"]
@@ -374,7 +379,7 @@ def _write_text_spec_block(kcor_filter_names, fp, specs, *, sim=True):
     for sid, s in enumerate(specs, start=1):
         fp.write(f"SPECTRUM_ID: {sid}\n")
         fp.write(f"SPECTRUM_MJD: {s.mjd:.3f}\n")
-        # sntools_dataformat_text.c:1238-1240
+        # sntools_dataformat_text.c:1236-1238
         if s.scale_host_contam > 0.0:
             fp.write(f"SPECTRUM_SCALE_HOST_CONTAM: {s.scale_host_contam:.3f}\n")
         fp.write(f"SPECTRUM_TEXPOSE: {s.texpose:.1f}\n")
@@ -396,7 +401,7 @@ def _write_text_spec_block(kcor_filter_names, fp, specs, *, sim=True):
                    f"{float(s.flam[k]):.3e}", f"{float(s.flamerr[k]):.3e}"]
             if sim:
                 # SNR is the true-model GENFLAM/FLAMERR, not the noisy flux
-                # ratio (sntools_dataformat_text.c:1317-1322).
+                # ratio (sntools_dataformat_text.c:1315-1320).
                 snr = float(s.sim_flam[k]) / float(s.flamerr[k]) \
                     if s.flamerr[k] > 0 else 0.0
                 row += [f"{float(s.sim_flam[k]):.3e}", f"{float(s.sim_genmag[k]):.2f}"]

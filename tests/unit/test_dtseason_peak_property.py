@@ -1,6 +1,6 @@
 """Property-based tests for ``compute_dtseason_peak``.
 
-SNANA's convention (store_SIMLIB_SEASONS, snlc_sim.c:21542-21559): for
+SNANA's convention (store_SIMLIB_SEASONS, snlc_sim.c:21582-21599): for
 each season the candidates are ``PEAKMJD - MJD_MIN`` and
 ``MJD_MAX - PEAKMJD``; the candidate with the smallest magnitude wins, so
 DTSEASON_PEAK is positive when the peak is in season and negative when it

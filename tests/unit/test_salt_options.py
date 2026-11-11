@@ -8,7 +8,7 @@ import pytest
 
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
-from jax_snlc_core.models.salt import load_salt_data
+from jax_snlc_core.models.salt import _parse_info_file, load_salt_data
 from jax_snlc_core.models.sed_model import modelflux_extrap
 from jax_snlc_fit.fitter import fit_static_data
 
@@ -68,3 +68,25 @@ def test_salt_option_validation(data_root, tmp_path, error_map):
         np.savetxt(error_file, data[keep])
     with pytest.raises(SNANAError, match='short of the SED range'):
         load_salt_data(str(path), 64)
+
+
+@pytest.mark.parametrize('version, line, coeffs', [
+    (0, '-0.336646  0.0484495  0', [-0.336646, 0.0484495]),
+    (1, '2800 7000 4 -0.504294 0.787691 -0.461715 0.0815619',
+     [-0.504294, 0.787691, -0.461715, 0.0815619]),
+    (1, '2800 7000 4 -0.504294 0.787691 -0.461715', None),
+    (0, '-0.336646  0.0484495', None),
+])
+def test_colour_law_line_follows_its_version(tmp_path, version, line, coeffs):
+    """Either law takes three numbers and then as many coefficients as the
+    third gives: LAM_MIN LAM_MAX NPAR for law 1, and COR0 COR1 in the
+    first two places for law 0 (read_SALT2_INFO_FILE,
+    genmag_SALT2.c:1253-1262; SALT2colorlaw0, :3775-3779). Too few numbers
+    are an error rather than a misread."""
+    info = tmp_path / 'SALT2.INFO'
+    info.write_text(f'COLORLAW_VERSION: {version}  # law\nCOLORCOR_PARAMS: {line}\n')
+    if coeffs is None:
+        with pytest.raises(SNANAError, match='takes'):
+            _parse_info_file(info)
+    else:
+        np.testing.assert_array_equal(_parse_info_file(info)['colorlaw_coeffs'], coeffs)

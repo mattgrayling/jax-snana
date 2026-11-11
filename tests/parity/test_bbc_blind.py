@@ -67,7 +67,7 @@ def test_blinding_is_idempotent_and_leaves_the_input_config_alone():
 
 
 def test_sim_is_unblinded_without_bit64():
-    """A sim input disables blinding outright (SALT2mu.c:8844), which also clears
+    """A sim input disables blinding outright (SALT2mu.c:8854), which also clears
     the MUz bit, not just the fixed-parameter offset."""
     cfg = BBCConfig()
     cfg.blindflag = BLINDMASK_MUz | 2
@@ -78,7 +78,7 @@ def test_sim_is_unblinded_without_bit64():
 
 def test_ccprior_reference_distance_is_unblinded():
     """The CC-prior sample's reference distance comes from COSPAR_UNBLIND while the
-    data's comes from the blinded cosmology (malloc_PROB_CCprior, SALT2mu.c:17843).
+    data's comes from the blinded cosmology (malloc_PROB_CCprior, SALT2mu.c:17857).
     Both are the same key here, so blinding the CC map too shifts every CC event's
     DMU by a constant and with it DMUAVG and the BEAMS weights.
     """
@@ -96,7 +96,7 @@ def test_ccprior_reference_distance_is_unblinded():
 
 def test_muz_blinding_leaves_an_empty_bin_at_zero():
     """M0dif_calc adds the blind offset and only then overwrites an unfloated bin
-    with 0 (SALT2mu.c:25438-25443), so an empty bin reads MUDIF=0 beside its
+    with 0 (SALT2mu.c:25472-25477), so an empty bin reads MUDIF=0 beside its
     MUDIFERR=999 rather than cos(10 z_lo)."""
     cfg = parse_bbc_input(None, overrides=[
         f"datafile={_DIR}/DATA.FITRES", "nzbin=14", "zmin=0.1", "zmax=1.4",

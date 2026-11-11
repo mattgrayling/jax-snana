@@ -8,6 +8,7 @@ import pytest
 
 from jax_pipeline import Covariance
 from jax_pipeline.pippin import _cov_extra_options
+from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import FitresTable, dense_factorized_covariance
 
 
@@ -25,11 +26,15 @@ def test_external_covariance_calibrators_and_systematic_outputs(tmp_path):
     inputs = {"distances": {"nominal": cell(frame),
                             "VPEC": cell(frame.assign(MU=frame.MU + [0.1, 0.2]))}}
     source = SimpleNamespace(name="distances", systematics=lambda: (("VPEC",), ()), grid_cells=lambda: [(0, 0), (1, 0)])
-    stage = Covariance("cov", distances=source, mode="unbinned",
-                       extra_covs=[("external", 0.5, path)], calibrators=["A"],
-                       systematic_hd=True)
     out = tmp_path / "out"
     out.mkdir()
+    # an external matrix has no factors to write under the default mask, 8
+    with pytest.raises(SNANAError, match="WRITE_MASK_COV must include 1 or 2"):
+        Covariance("cov", distances=source, mode="unbinned",
+                   extra_covs=[("external", 0.5, path)]).run(inputs, out)
+    stage = Covariance("cov", distances=source, mode="unbinned",
+                       extra_covs=[("external", 0.5, path)], calibrators=["A"],
+                       systematic_hd=True, overrides={"WRITE_MASK_COV": 2})
     actual = stage.run(inputs, out)
     external = 0.5**2 * np.array([[0.09, 0.01], [0.01, 0.04]])
     systematic = np.array([[0., 0.], [0., 0.2**2]])
@@ -67,10 +72,11 @@ def test_changing_external_matrix_reruns_covariance(tmp_path, via):
     def write(value):
         np.savez(extra, CID=np.array(["A"]), IDSURVEY=np.array([1]), MU_COV=[value])
     write(0.04)
-    keys = {"EXTRA_COVS": [f"external 1.0 {extra}"]}
+    keys = {"EXTRA_COVS": [f"external 1.0 {extra}"], "WRITE_MASK_COV": 2}
     config = tmp_path / "cov.yml"
     config.write_text(yaml.safe_dump(keys))
-    options = ({"extra_covs": [("external", 1., extra)]} if via == "argument" else
+    options = ({"extra_covs": [("external", 1., extra)],
+                "overrides": {"WRITE_MASK_COV": 2}} if via == "argument" else
                {"overrides": keys} if via == "overrides" else {"input_file": config})
     stage = Covariance("cov", distances=Distances(), mode="unbinned", **options)
     out = tmp_path / "run"
@@ -81,8 +87,8 @@ def test_changing_external_matrix_reruns_covariance(tmp_path, via):
     changed = run(stage, outdir=out)
     manifest = yaml.safe_load((out / "MANIFEST.yml").read_text())["stages"]
     assert manifest["distances"]["loaded"] and not manifest["cov"]["loaded"]
-    np.testing.assert_allclose(first["cov"]["covariances"]["ALL"]["matrix"], [[20.]])
-    np.testing.assert_allclose(changed["cov"]["covariances"]["ALL"]["matrix"], [[10.]])
+    np.testing.assert_allclose(_inverse(first["cov"]), [[20.]])
+    np.testing.assert_allclose(_inverse(changed["cov"]), [[10.]])
 
 
 @pytest.mark.parametrize("renorm,velocity,error", [
@@ -158,7 +164,7 @@ def test_pippin_covariance_writer_flags_roundtrip(tmp_path, flags):
     stage = Covariance("cov", distances=source, mode="unbinned", overrides=writer_keys,
                        label_cov_rows=label_cov_rows, mxsize_test_posdef=mxsize_test_posdef)
     result = stage.run({"distances": {"nominal": {"FITRES": table, "M0DIF": table}}}, tmp_path)
-    np.testing.assert_allclose(result["covariances"]["ALL"]["matrix"], np.diag([100., 25.]), rtol=1e-6)
+    np.testing.assert_allclose(_inverse(result), np.diag([100., 25.]), rtol=1e-6)
     assert len(list(tmp_path.glob("*.gz"))) == 3
 
 
@@ -206,14 +212,14 @@ def test_covariance_grid_options_match_file_interface(tmp_path, settings, invali
         return
     expected = create_covariance(cfg)
     actual = stage.run({'distances': tables}, out)
-    for label, entry in expected.covariances.items():
-        cov = entry["matrix"]
+    for label in expected.covariances:
         np.testing.assert_allclose(_inverse(actual, label), expected.covtot_inv(label), rtol=1e-6)
-        np.testing.assert_allclose(np.diag(cov), .04 if settings.get('nosys') else .16, atol=1e-12)
+        np.testing.assert_allclose(np.diag(expected.covsys(label)),
+                                   .04 if settings.get('nosys') else .16, atol=1e-12)
 
 
 def _inverse(held, label="ALL"):
-    entry = held["covariances"][label]
-    if entry["kind"] == "factorized":
-        return np.linalg.inv(dense_factorized_covariance(entry))
-    return entry["matrix"]
+    forms = held["covariances"][label]
+    if "factorized" in forms:
+        return np.linalg.inv(dense_factorized_covariance(forms["factorized"]))
+    return forms["total_inverse"]["matrix"]

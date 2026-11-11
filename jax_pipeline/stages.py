@@ -52,7 +52,8 @@ from jax_snlc_sim import run as sim_run
 from jax_snlc_sim.output import save_snana_outputs
 from jax_snlc_sim.inputs import parse_input as parse_sim_input
 from jax_snlc_sim.output.write import write_combined_readme
-from jax_snlc_sim.rate import season_counts
+from jax_snlc_sim.rate import resolve_counts, season_counts
+from jax_snlc_sim.simulation import FORMAT_MASK_CIDRAN
 from jax_wfit.config import (build as build_cosmology_config,
                                     read_keys as read_cosmology_keys)
 from jax_wfit.hubble import hubble_diagram_from_covariance, load_simulation_truths
@@ -186,6 +187,30 @@ class Data(Stage):
         return self.directory
 
 
+def batch_cid_offsets(counts, jobs, reset_cidoff):
+    """Each job's CIDOFF and the version's CIDRAN_MAX, as SNANA's batch
+    layer sets them (sim_prep_CIDRAN, submit_prog_sim.py:909-1011), for jobs
+    of ``counts`` planned events at ``jobs`` positions ``(job, n_jobs)`` in
+    the batch layer's order of file, then job, under RESET_CIDOFF
+    ``reset_cidoff``. A file's first job starts at the offset after every
+    job of the file before, rounded up on its first digit unless
+    RESET_CIDOFF is 2 (roundup_first_digit, submit_util.py:858); each job
+    adds its planned events, and under RESET_CIDOFF 1 or 2 a tenth more
+    plus 1013. CIDRAN_MAX is the final offset plus a tenth."""
+    offset = 0
+    cidoffs = []
+    for index, ((job, n_jobs), count) in enumerate(zip(jobs, counts)):
+        step = int(1.1 * count) + 1013 if reset_cidoff > 0 else count
+        if index == 0 or job <= jobs[index - 1][0]:
+            file_offset = offset
+            if reset_cidoff < 2 and file_offset > 0:
+                digit = 10 ** (len(str(file_offset)) - 1)
+                file_offset = (file_offset // digit + 1) * digit
+            offset = file_offset + n_jobs * step
+        cidoffs.append(file_offset + job * step)
+    return cidoffs, offset + int(0.1 * offset)
+
+
 @dataclass(eq=False)
 class Sim(Stage):
     """A simulated data version, from one input file or from several written
@@ -196,18 +221,27 @@ class Sim(Stage):
     ``{KEY: value}`` with the keys spelt as the input file spells them:
     either one mapping applied to every input, or a list of one mapping per
     input in the same order. ``batch_size`` is the number of events simulated
-    at once. The number of events and the seed are set by input-file keys,
-    unless ``ngen_unit`` is given: each input then simulates ``ngen_unit``
-    times its expected events per season, each rate's count rounded first,
-    as SNANA's batch layer counts them (submit_prog_sim.py:638-641, 1661;
-    snlc_sim.c:8888-8890). NGEN_SCALE still applies, and an ``NGENTOT_LC``
-    override is refused.
+    at once. The seed is set by input-file keys. Each input is run as SNANA's
+    batch layer runs a job, with ``NGEN_LC`` 0, so an input that gives
+    neither NGENTOT_LC nor NGEN_SEASON is refused (submit_prog_sim.py:1661;
+    snlc_sim.c:143). With ``ngen_unit`` the count is instead ``ngen_unit``
+    times the input's expected events per season, each rate's count rounded
+    first (submit_prog_sim.py:638-641; snlc_sim.c:8888-8890). NGEN_SCALE still
+    applies, and an ``NGENTOT_LC`` override is refused with ``ngen_unit``.
     Returns the directory.
 
     Several inputs make one version: one ``<name>.LIST`` naming each part's
-    ``<name>_<stem>_HEAD.FITS.gz``. Each input's ``CIDOFF`` is ``CIDRAN_MIN``
-    plus the number of events generated before it, keeping sequential CIDs
-    distinct unless CIDOFF is overridden.
+    ``<name>_<stem>_HEAD.FITS.gz``. ``jobs`` gives each input's split job
+    and its file's number of split jobs, ``(job, n_jobs)``, in the batch
+    layer's order of file, then job; by default each input is a file run as
+    one job. ``reset_cidoff`` is the batch layer's RESET_CIDOFF, which random
+    CIDs raise from 0 to 1 (submit_prog_sim.py:972-973). Each job takes the
+    CIDOFF :func:`batch_cid_offsets` gives for the events it generates, and
+    under RESET_CIDOFF 1 or 2 CIDRAN_MIN 0 and its CIDRAN_MAX; SNANA counts
+    only NGENTOT_LC, without NGEN_SCALE, so a job it runs with more events
+    can run out of CIDs. An override of CIDOFF, CIDRAN_MIN or
+    CIDRAN_MAX wins, as a GENOPT key follows the batch layer's on the
+    command line (:1665-1701).
     With random CIDs (``FORMAT_MASK`` bit 16), inputs sharing a seed take
     disjoint slices of one CID list and the offset changes their other random
     numbers too, as in SNANA; inputs with different seeds draw separate lists,
@@ -219,6 +253,8 @@ class Sim(Stage):
     overrides: Any = field(default_factory=dict)
     batch_size: int | None = None
     ngen_unit: float | None = None
+    jobs: Any = None
+    reset_cidoff: int = 0
 
     def __post_init__(self):
         one = isinstance(self.input_files, (str, os.PathLike))
@@ -250,25 +286,47 @@ class Sim(Stage):
         parent = str(Path(outdir).parent)
         stems = [f.stem for f in self.input_files]
         combined = len(self.input_files) > 1
-        generated = 0
-        parts = []
-        for index, (path, user) in enumerate(zip(self.input_files, self.overrides)):
-            # seconds per phase, for the OUTPUT_SUMMARY, as snlc_sim.py
-            # reports them: init is everything before the first event
-            timings = {}
+        simulations, read_seconds = [], []
+        for index in range(len(self.input_files)):
             start = time.perf_counter()
-            simulation = self.configuration(index)
-            if combined and not ({"GENPREFIX", "genprefix"} & user.keys()):
-                stem = path.stem if stems.count(path.stem) == 1 else f"{path.stem}_{index}"
-                simulation.output.genprefix = f"{self.name}_{stem}"
-            if combined and not ({"CIDOFF", "cidoff"} & user.keys()):
-                # the batch layer starts CIDOFF at CIDRAN_MIN (submit_prog_sim.py:980)
-                simulation.output.cidoff = simulation.output.cidran_min + generated
+            simulations.append(self.configuration(index))
+            read_seconds.append(time.perf_counter() - start)
+        for path, simulation in zip(self.input_files, simulations):
             if self.ngen_unit is not None:
                 normal, peculiar = season_counts(simulation, simulation.hz_map())
                 season_total = int(normal + 0.5) + int(peculiar + 0.5)
                 simulation.run.ngentot_lc = int(self.ngen_unit * season_total + 0.5)
-                simulation.run.ngen_lc = 0
+            run_counts = simulation.run
+            if run_counts.ngen_lc > 0 and run_counts.ngentot_lc <= 0 and run_counts.ngen_season <= 0:
+                raise SNANAError(f"stage '{self.name}': {path} sets only NGEN_LC, which SNANA's "
+                                 f"batch layer sets to 0; set NGENTOT_LC or NGEN_SEASON",
+                                 function_name=self.name)
+            simulation.run.ngen_lc = 0
+
+        reset_cidoff = self.reset_cidoff
+        if reset_cidoff == 0 and any(s.output.format_mask & FORMAT_MASK_CIDRAN
+                                     for s in simulations):
+            reset_cidoff = 1
+        cidoffs, cidran_max = batch_cid_offsets(
+            [resolve_counts(s, s.hz_map())[0] for s in simulations],
+            self.jobs or [(0, 1)] * len(simulations), reset_cidoff)
+
+        parts = []
+        for index, (path, user, simulation) in enumerate(
+                zip(self.input_files, self.overrides, simulations)):
+            # seconds per phase, for the OUTPUT_SUMMARY, as snlc_sim.py
+            # reports them: init is everything before the first event
+            timings = {}
+            start = time.perf_counter()
+            if combined and not ({"GENPREFIX", "genprefix"} & user.keys()):
+                stem = path.stem if stems.count(path.stem) == 1 else f"{path.stem}_{index}"
+                simulation.output.genprefix = f"{self.name}_{stem}"
+            if not ({"CIDOFF", "cidoff"} & user.keys()):
+                simulation.output.cidoff = cidoffs[index]
+            if reset_cidoff > 0 and not ({"CIDRAN_MIN", "cidran_min"} & user.keys()):
+                simulation.output.cidran_min = 0
+            if reset_cidoff > 0 and not ({"CIDRAN_MAX", "cidran_max"} & user.keys()):
+                simulation.output.cidran_max = cidran_max
             if self.batch_size is not None:
                 simulation.numerical = dataclasses.replace(
                     simulation.numerical, batch_size=self.batch_size)
@@ -276,15 +334,14 @@ class Sim(Stage):
             if sim is None:
                 # a set-up-and-stop mode (SIMLIB_DUMP, INIT_ONLY, ...)
                 continue
-            timings['init'] = time.perf_counter() - start
+            timings['init'] = read_seconds[index] + time.perf_counter() - start
             start = time.perf_counter()
             results, selection, spectra = sim_run.run_simulation(sim)
             timings['generate'] = time.perf_counter() - start
-            written = save_snana_outputs(
+            save_snana_outputs(
                 sim, results, self.name,
                 selection, spectra_by_sn=spectra, output_dir=parent,
                 combined=combined, timings=timings)
-            generated += written["n_passed"] + written["n_failed"]
             if combined:
                 parts.append((path, simulation.output.genprefix))
         if parts:
@@ -950,8 +1007,9 @@ class Covariance(Stage):
     applied over ``input_file``.
 
     Returns ``hubble_diagram``, ``covariances`` keyed by label, and
-    ``isdata_real``, read from what it wrote. Each covariance entry carries
-    its ``kind`` and either factor arrays or a dense inverse ``matrix``.
+    ``isdata_real``, read from what it wrote. Each label holds the forms
+    written, keyed by their ``kind``: ``factorized`` factor arrays, a dense
+    ``total_inverse`` or a dense ``systematics`` ``matrix``.
     Compact output (mask 8) is the default; explicit settings take precedence.
     """
 
@@ -1026,9 +1084,6 @@ class Covariance(Stage):
         if self.extra_covs:
             settings['extra_covs'] = [(label, scale, str(path))
                                       for label, scale, path in self.extra_covs]
-        # Use compact covariance throughout new pipelines unless explicitly
-        # configured otherwise. Standalone create_cov retains its legacy default.
-        keys = merge_settings({"WRITE_MASK_COV": 8}, keys)
         config = build_covariance_config(keys, settings)
         unusable = [name for name, value in (("sys_scale_file", config.sys_scale_file),
                                             ("sys_scales", config.sys_scales)) if value]
@@ -1041,8 +1096,11 @@ class Covariance(Stage):
         extra_covs = [(label, scale, str(path)) for label, scale, path in config.extra_covs]
         select_covariance_grid({fitopt_muopt_name(cell): None for cell in self.distances.grid_cells()},
                                config.muopt)
-        if not config.write_mask_cov & 10:
-            raise SNANAError("WRITE_MASK_COV must include 2 or 8", function_name=self.name)
+        if not config.write_mask_cov & 11:
+            raise SNANAError("WRITE_MASK_COV must include 1, 2 or 8", function_name=self.name)
+        if extra_covs and not config.write_mask_cov & 3:
+            raise SNANAError("an EXTRA_COVS matrix has no compact factors, so "
+                             "WRITE_MASK_COV must include 1 or 2", function_name=self.name)
         return config, calibrators, extra_covs
 
     def run(self, inputs: Mapping[str, Any], outdir: Path) -> Mapping[str, Any]:
@@ -1080,20 +1138,24 @@ class Covariance(Stage):
         diagram = read_fitres(str(Path(outdir) / info["HD"])).df
         for entry in info["COVOPTS"].values():
             fields = entry.split()
-            if len(fields) not in (3, 4):
+            if len(fields) != 4:
                 raise SNANAError(f"invalid COVOPTS entry: {entry!r}", function_name=self.name)
-            label, _, inverse_name = fields[:3]
-            factor_name = fields[3] if len(fields) == 4 else "None"
+            label, covsys_name, inverse_name, factor_name = fields
+            forms = {}
             if factor_name != "None":
-                covariances[label] = {"kind": "factorized", **read_factorized_covariance(
+                forms["factorized"] = {"kind": "factorized", **read_factorized_covariance(
                     Path(outdir) / factor_name, size=len(diagram))}
-            elif inverse_name != "None":
-                covariances[label] = {"kind": "total_inverse",
+            if inverse_name != "None":
+                forms["total_inverse"] = {"kind": "total_inverse",
                     "matrix": read_covariance(Path(outdir) / inverse_name)}
-            else:
+            if covsys_name != "None":
+                forms["systematics"] = {"kind": "systematics",
+                    "matrix": read_covariance(Path(outdir) / covsys_name)}
+            if not forms:
                 raise SNANAError(
-                    f"stage '{self.name}' wrote neither factors nor inverse for {label}; "
-                    "WRITE_MASK_COV must include 2 or 8", function_name=self.name)
+                    f"stage '{self.name}' wrote no covariance for {label}; "
+                    "WRITE_MASK_COV must include 1, 2 or 8", function_name=self.name)
+            covariances[label] = forms
         return {"hubble_diagram": diagram, "covariances": covariances,
                 "isdata_real": info["ISDATA_REAL"]}
 
@@ -1106,6 +1168,11 @@ class Cosmology(Stage):
     its YAML, so a blinded fit loads back exactly as it ran. Simulation truth
     uses wfit's ``om_sim``/``w0_sim``/``wa_sim`` or ``truth_info`` settings;
     a list of truth files follows ``covopts`` order.
+
+    Each covopt is fitted with the covariance factors, if written and
+    ``use_covtot_factorized``, else its total inverse, if written and
+    ``use_covsys_inv``, else its systematic covariance
+    (submit_prog_cosmofit.py:586-605, :931-936).
     """
 
     name: str
@@ -1113,6 +1180,8 @@ class Cosmology(Stage):
     input_file: Path | None = None
     overrides: Mapping[str, Any] = field(default_factory=dict)
     covopts: Sequence[str] = ("ALL",)
+    use_covtot_factorized: bool = True
+    use_covsys_inv: bool = True
 
     def __post_init__(self):
         self.input_file = None if self.input_file is None else Path(self.input_file)
@@ -1149,11 +1218,22 @@ class Cosmology(Stage):
                              f"the covariance has {sorted(covariances)}",
                              function_name=self.name)
         truths = load_simulation_truths(config, len(self.covopts))
-        diagrams = [hubble_diagram_from_covariance(
-                        held["hubble_diagram"], covariances[covopt],
-                        held["isdata_real"], source=f"{self.covariance.name}:{covopt}",
-                        truth=truth)
-                    for covopt, truth in zip(self.covopts, truths)]
+        diagrams = []
+        for covopt, truth in zip(self.covopts, truths):
+            forms = covariances[covopt]
+            if self.use_covtot_factorized and "factorized" in forms:
+                covariance = forms["factorized"]
+            elif self.use_covsys_inv and "total_inverse" in forms:
+                covariance = forms["total_inverse"]
+            elif "systematics" in forms:
+                covariance = forms["systematics"]
+            else:
+                raise SNANAError(f"stage '{self.name}': covopt {covopt} has only "
+                                 f"{sorted(forms)}, which its settings exclude",
+                                 function_name=self.name)
+            diagrams.append(hubble_diagram_from_covariance(
+                held["hubble_diagram"], covariance, held["isdata_real"],
+                source=f"{self.covariance.name}:{covopt}", truth=truth))
         run_wfit(config, diagrams=diagrams)
         return self.load(inputs, outdir)
 

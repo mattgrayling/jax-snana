@@ -162,7 +162,7 @@ def _stack_catalogue_columns(table, names):
 
 def _apply_abmag(stacked_columns, varnames, offset, force):
     """HOSTLIB_ABMAG_FORCE (replace) then HOSTLIB_ABMAG_OFFSET (add) on the
-    X_obs galaxy-magnitude columns (sntools_host.c:3531)."""
+    X_obs galaxy-magnitude columns (sntools_host.c:3566)."""
     if force <= -8.0 and offset == 0.0:
         return stacked_columns
     for i, name in enumerate(varnames):
@@ -199,7 +199,7 @@ def _pack_sersic_components(table):
 
     Returns None when the HOSTLIB declares no profile; positions then take
     sentinel values (GEN_SNHOST_POS bails at NPROF=0,
-    sntools_host.c:7621-7635).
+    sntools_host.c:8059-8073).
     """
     if table.sersic_profiles is None:
         return None
@@ -428,7 +428,7 @@ def build_host_selection(table, stacked, extra, wgtsum, weights, snmagshift,
     ``{set_index: (n_bins, n_galaxies) cumsum}`` of GROUPID-filtered
     weights and ``field_groupid_set`` each SIMLIB entry's set index (-1
     for none); an event draws from its entry's set (SNANA enforces GROUPID
-    in the weight search, sntools_host.c:6379-6399).
+    in the weight search, sntools_host.c:6787-6807).
 
     Under SN2GAL_Z (HOSTLIB_MSKOPT bit 16) the marginal CDF is built from
     the dN/dz on ``dndz_z_grid`` (``dndz_density``, and
@@ -443,7 +443,7 @@ def build_host_selection(table, stacked, extra, wgtsum, weights, snmagshift,
     if smear_sersic > 0:
         log.line(logger, f"SMEAR_SERSIC = {smear_sersic:.3f} arcsec (FWHM)")
 
-    # init_SAMEHOST returns first under USEONCE (sntools_host.c:5663)
+    # init_SAMEHOST returns first under USEONCE (sntools_host.c:5960)
     uses_mindaysep = mindaysep is not None and not useonce
     mindaysep_days, peakmjd_offset = None, 0
     if uses_mindaysep:
@@ -469,7 +469,7 @@ def build_host_selection(table, stacked, extra, wgtsum, weights, snmagshift,
     if use_dlr_columns:
         log.line(logger, "Using a_DLR/b_DLR columns for DLR (overrides weighted Sersic)")
 
-    # SNANA gives all-zero DDLR without a profile (sntools_host.c:8495); jax refuses
+    # SNANA gives all-zero DDLR without a profile (sntools_host.c:8892); jax refuses
     if has_neighbours and table.sersic_profiles is None:
         raise SNANAError(
             "HOSTLIB has NBR_LIST but no Sersic profile columns; DDLR neighbour "
@@ -679,7 +679,7 @@ def prepare_host_selection(config, simlib, sed_model, table, stacked, extra,
 
     mindaysep = host.mindaysep_samegal
     if mindaysep <= MINDAYSEP_SAMEGAL_MAX:
-        # strict test, as SNANA's (sntools_host.c:5654-5663)
+        # strict test, as SNANA's (sntools_host.c:5951-5960)
         if useonce and mindaysep < MINDAYSEP_SAMEGAL_MAX:
             raise SNANAError(
                 "Cannot set both HOSTLIB_MSKOPT USEONCE (bit 32) "
@@ -691,7 +691,7 @@ def prepare_host_selection(config, simlib, sed_model, table, stacked, extra,
         mindaysep = None
 
     # GALID_PRIORITY: active for 0 < min <= max (GEN_SNHOST_GALID,
-    # sntools_host.c:6300); '0,0' is "not set"
+    # sntools_host.c:6701); '0,0' is "not set"
     galid_pri_parts = [int(x) for x in host.galid_priority.split(',')]
     galid_priority = (tuple(galid_pri_parts[:2])
                       if len(galid_pri_parts) >= 2
@@ -747,7 +747,7 @@ def prepare_host_selection(config, simlib, sed_model, table, stacked, extra,
 
 
 def _groupid_weights(config, simlib, table, base_weights):
-    """GROUPID matching (RDFLAG_GROUPID, snlc_sim.c:22115): the weight
+    """GROUPID matching (RDFLAG_GROUPID, snlc_sim.c:22154): the weight
     cumsum restricted to each unique GROUPID set the SIMLIB names, and each
     SIMLIB entry's set index (-1 for none), or ``(None, None)``."""
     if not config.survey.use_simlib_groupid:
@@ -810,7 +810,7 @@ def compute_snvar_bin_index_1d(
     Matches SNANA's bin snapping formula, ``IB1D[ivar_SN] =
     (int)(0.5+(VAL-VALMIN)/VALBIN)`` with ``VALBIN = (VALMAX - VALMIN) /
     (NBINS - 1)``. An out-of-range value is fatal in SNANA
-    (sntools_host.c:1655-1660) and the run aborts on it
+    (sntools_host.c:1666-1671) and the run aborts on it
     (:meth:`HostSelector.snvar_outside`), so no index clipping is applied
     here.
     """
@@ -1007,7 +1007,7 @@ def draw_host_indices(
     wgtsum: jnp.ndarray,
     dztol_coeffs: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Weighted host selection (GEN_SNHOST_GALID, sntools_host.c:6326):
+    """Weighted host selection (GEN_SNHOST_GALID, sntools_host.c:6727):
     each galaxy strictly inside the event's DZTOL window is drawn in
     proportion to its weight.
 
@@ -1030,8 +1030,8 @@ def draw_host_indices(
                                   before + random_uniforms * inside,
                                   side='left')
     # A window whose galaxies all have zero weight gives its first galaxy, a
-    # host the WGTMAP excludes, as SNANA does (sntools_host.c:6276-6279,
-    # :6396-6398). jax follows SNANA so that a weight map with zero cells,
+    # host the WGTMAP excludes, as SNANA does (sntools_host.c:6671-6674,
+    # :6804-6806). jax follows SNANA so that a weight map with zero cells,
     # such as DES-SN5YR's 91bg map at low redshift, still runs.
     return jnp.clip(selected, first, last).astype(jnp.int32)
 
@@ -1059,11 +1059,11 @@ def _dlr_ddlr(a_half, b_half, a_rot_deg, vec_sn_x, vec_sn_y, snsep):
     """DLR along the SN direction and DDLR = SNSEP/DLR.
 
     Single implementation of SNANA's ellipse projection (GEN_SNHOST_DDLR,
-    sntools_host.c:8581-8613), shared by the neighbour and true-host paths.
+    sntools_host.c:8978-9010), shared by the neighbour and true-host paths.
     The semi-major-axis vector and the galaxy-to-SN vector must be in the
     same frame: raw RA/DEC treated as cartesian, with no cos(DEC) factor.
-    cosTH is clamped to +-(1 - 1e-9) as in SNANA (sntools_host.c:8600-8601);
-    DDLR = 0 when DLR <= 0 (zero-size galaxy, sntools_host.c:8608-8611).
+    cosTH is clamped to +-(1 - 1e-9) as in SNANA (sntools_host.c:8997-8998);
+    DDLR = 0 when DLR <= 0 (zero-size galaxy, sntools_host.c:9005-9008).
     """
     a_rot_rad = jnp.radians(a_rot_deg)
     vec_a_x = a_half * jnp.cos(a_rot_rad)
@@ -1105,7 +1105,7 @@ def _compute_ddlr_and_sort(
     For each SN, gathers its true host's NBR_LIST, prepends the true host
     as neighbour 0, computes DDLR for each neighbour, and sorts ascending.
 
-    SNANA ordering (GEN_SNHOST_DDLR, sntools_host.c:8546-8573):
+    SNANA ordering (GEN_SNHOST_DDLR, sntools_host.c:8943-8970):
     1. Compute weighted Sersic average for a_half, b_half
     2. Override with a_DLR/b_DLR columns if present
     3. Apply SMEAR_SERSIC on top
@@ -1180,7 +1180,7 @@ def _compute_ddlr_and_sort(
     sorted_gal_idx = jnp.take_along_axis(safe_idx, sort_order, axis=1)
     sorted_valid = jnp.take_along_axis(valid_mask, sort_order, axis=1)
 
-    # uncapped, as SNANA writes NNBR_DDLRCUT (snlc_sim.c:26045-26046)
+    # uncapped, as SNANA writes NNBR_DDLRCUT (snlc_sim.c:26101-26102)
     nmatch = jnp.sum((ddlr < maxddlr) & valid_mask, axis=1)
     nmatch2 = jnp.sum((ddlr < maxddlr2) & valid_mask, axis=1)
 
@@ -1291,7 +1291,7 @@ class HostSelector:
 
         Without a Sersic profile the position quantities stay at their
         sentinels, as in SNANA (GEN_SNHOST_POS returns before drawing a
-        position when NPROF=0, sntools_host.c:7621-7635).
+        position when NPROF=0, sntools_host.c:8059-8073).
         """
         if position_uniforms is not None and catalogue.sersic is not None:
             position_properties = self._generate_sn_positions(
@@ -1335,7 +1335,7 @@ class HostSelector:
         w = catalogue.sersic['w'][:, galaxy_indices]
         a_rot = catalogue.sersic['a_rot'][galaxy_indices]
 
-        # component choice (GEN_SNHOST_POS, sntools_host.c:7662-7671)
+        # component choice (GEN_SNHOST_POS, sntools_host.c:8100-8109)
         cum_w = jnp.cumsum(w, axis=0)
         wgt_ran = position_uniforms[:, 0]
         if self.fixran_wgt >= 0.0:
@@ -1366,7 +1366,7 @@ class HostSelector:
             fixran_phi=self.fixran_phi,
         )
 
-        # GEN_SNHOST_DDLR order, as the neighbour path (sntools_host.c:8546-8573)
+        # GEN_SNHOST_DDLR order, as the neighbour path (sntools_host.c:8943-8970)
         a_dlr = jnp.sum(w * a, axis=0)
         b_dlr = jnp.sum(w * b, axis=0)
         if self.use_dlr_columns and 'a_DLR' in host_properties:
@@ -1553,7 +1553,7 @@ class HostSelector:
         including positions, the updated ``reuse``, and what the draw
         reports beside them: ``unplaced``, the events USEONCE could not
         place, on which SNANA aborts; ``rejected``, the events MINDAYSEP
-        left without a host, which SNANA rejects (sntools_host.c:6430-6468);
+        left without a host, which SNANA rejects (sntools_host.c:6859-6897);
         ``wgtmap_snvar_outside``, from :meth:`snvar_outside`;
         ``host_window_empty``, from :func:`empty_host_windows`;
         ``host_zdif``, the SN minus forced-host redshift under
@@ -1637,7 +1637,7 @@ class HostSelector:
         """Per event, which WGTMAP SN variable lies outside the map's range,
         counted from one in ``snvar_names`` order; zero where none does.
         SNANA aborts on such an event (getBin_SNVAR_HOSTLIB_WGTMAP,
-        sntools_host.c:1655-1660); the run makes that call."""
+        sntools_host.c:1666-1671); the run makes that call."""
         outside = jnp.zeros(n_sne, dtype=jnp.int32)
         for i in reversed(range(len(self.snvar_names))):
             values = sn_properties[self.snvar_names[i]]
@@ -1667,7 +1667,7 @@ class HostSelector:
         """Add the ``register`` events' galaxies and peak days
         (:meth:`peak_day`) to the MINDAYSEP history, which blocks the
         batches that follow. SNANA frees a rejected event's galaxy
-        (FREEHOST_GALID, snlc_sim.c:13512), so the caller registers passing
+        (FREEHOST_GALID, snlc_sim.c:13530), so the caller registers passing
         events only."""
         position = reuse['n'] + jnp.cumsum(register.astype(jnp.int32)) - 1
         capacity = reuse['galaxy'].shape[0]

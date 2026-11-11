@@ -3,7 +3,7 @@
 The fixture puts the r and i reference images at MJD 61000, mid-way through
 GENRANGE_PEAKMJD, so a good fraction of light curves are still bright when the
 template was taken. Difference imaging then subtracts that flux from every
-epoch in those bands (snlc_sim.c:28530).
+epoch in those bands (snlc_sim.c:28588).
 
 The subtraction is compared as the systematic offset between FLUXCAL and the
 flux SIM_MAGOBS implies: the noise realisations differ between the two codes,
@@ -124,7 +124,7 @@ def test_mjd_template_only_touches_its_own_bands(snana_fixture, tmp_path):
 
 def test_mjd_template_subtraction_reaches_saturation(snana_fixture, tmp_path):
     """Saturation is judged on the flux after the template is removed
-    (snlc_sim.c:28548 passes the subtracted fluxTrue to npe_above_saturation)."""
+    (snlc_sim.c:28606 passes the subtracted fluxTrue to npe_above_saturation)."""
     src = snana_fixture("mjd_template_replay").input_file.read_text()
     npe = "\nNPE_PIXEL_SATURATE: 100\n"
 

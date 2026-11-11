@@ -22,7 +22,12 @@ unbinned and rebin), plus SUBMIT.INFO and one SNANA reference per mode. The
 perturbed input FITRES are intermediates in a temp dir.
 
 SALT2mu.exe runs from a short temp dir: a prefix of 116+ characters overruns
-`char PREFIX[100]` (SALT2mu.c:1390).
+`char PREFIX[100]` (SALT2mu.c:1392).
+
+Needs SALT2mu.exe on $PATH, and for SNANA's create_covariance.py the Python
+packages it imports (numpy, pandas, pyyaml, psutil, scikit-learn, seaborn,
+matplotlib, astropy) with $SNANA_DIR/src on PYTHONPATH for its gensed_BYOSED
+import.
 """
 
 
@@ -34,6 +39,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from jax_snlc_core.snana_files import open_text
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
@@ -49,10 +56,6 @@ STRIDE = 6
 INPUT_DIR = HERE / "bbc"
 VERSION = "OUTPUT_BBC"
 
-# SALT2mu propagates this into its output, where create_covariance reads it
-# for INFO.YML. An empty value makes its parser raise IndexError.
-VERSION_PHOTOMETRY = "JAX_TEST_CREATE_COV"
-
 # SALT2mu keys shared by every cell -- the converged DES BEAMS configuration that
 # bbc_des_beams/refs.py uses for its own references.
 # The CC prior is what makes MUERR_RENORM and PROBCC_BEAMS exist: without it the
@@ -60,8 +63,6 @@ VERSION_PHOTOMETRY = "JAX_TEST_CREATE_COV"
 # written, so neither would be exercised. typeIa_ccprior=999 avoids the -9 trap
 # that silently sets pIa=1 for a sample with no TYPE column.
 BASE = {
-    "simfile_biascor": "BIASCOR.FITRES",
-    "simfile_ccprior": "CCPRIOR.FITRES",
     "opt_ccprior": "5",
     "varname_pIa": "PROBIA",
     "p13": "1",
@@ -150,8 +151,10 @@ def write_shifted_fitres(src: Path, dst: Path, amp: float, shape: str | None) ->
     varnames = None
     kept = 0
     seen = 0
-    out = [f"# VERSION_PHOTOMETRY: {VERSION_PHOTOMETRY}\n"]
-    for line in src.read_text().splitlines(keepends=True):
+    out = []
+    with open_text(src) as f:
+        lines = f.read().splitlines(keepends=True)
+    for line in lines:
         if line.startswith("VARNAMES:"):
             varnames = line.split()[1:]
             out.append(line.rstrip("\n") + " PROBIA\n")
@@ -202,11 +205,6 @@ def drop_izbin(text: str, izbin: int) -> str:
     return "".join(out)
 
 
-def stamp_version_photometry(src: Path, dst: Path) -> None:
-    """Copy a FITRES with a VERSION_PHOTOMETRY header line added."""
-    dst.write_text(f"# VERSION_PHOTOMETRY: {VERSION_PHOTOMETRY}\n" + src.read_text())
-
-
 def run_cell(workdir: Path, name: str, datafile: Path, extra: dict) -> dict[str, str]:
     """One SALT2mu.exe run; returns its M0DIF and FITRES with the CPU stamp dropped.
 
@@ -215,9 +213,7 @@ def run_cell(workdir: Path, name: str, datafile: Path, extra: dict) -> dict[str,
     """
     keys = {**BASE, **extra}
     lines = [f"prefix={name}", f"datafile={datafile}"]
-    for k, v in keys.items():
-        local = v.endswith(".FITRES") if isinstance(v, str) else False
-        lines.append(f"{k}={BEAMS / v if local else v}")
+    lines += [f"{k}={v}" for k, v in keys.items()]
     inp = workdir / f"{name}.inp"
     inp.write_text("\n".join(lines) + "\n")
 
@@ -248,10 +244,10 @@ def submit_info() -> str:
     return f"FITOPT_OUT_LIST:\n{fit}\n\nMUOPT_OUT_LIST:\n{mu}\n"
 
 
-# biasCor comes from a FITRES here, so VERSION_PHOTOMETRY(BIASCOR) is blank and
-# SNANA falls back to FlatLambdaCDM(H0=70, Om0=0.315) (:982). The BBC outputs
-# record no cosmology either, so the committed inputs state that one, which jax
-# requires; SNANA's own runs read none.
+# The biasCor FITRES records no simulated cosmology, so neither do the BBC
+# outputs and SNANA falls back to FlatLambdaCDM(H0=70, Om0=0.315)
+# (create_covariance.py:1017). The committed inputs state that cosmology, which
+# jax requires; SNANA's own runs read none.
 LEGACY_COSMOLOGY = {"OMEGA_MATTER": 0.315, "OMEGA_LAMBDA": 0.685,
                     "w0_LAMBDA": -1.0, "wa_LAMBDA": 0.0}
 
@@ -281,35 +277,43 @@ def sys_scale_text() -> str:
     return "".join(f"{k}: {v}\n" for k, v in sorted(SYS_SCALES.items()))
 
 
+# covtot_inv only; most references test the inverse rather than the default
+# factorised files (WRITE_MASK_COV_DEFAULT, create_covariance.py:240)
+MASK_INV = ["--write_mask_cov", "2"]
+
 # each reference directory, the create_covariance.py flags that produce it, and
 # whether its config declares EXTRA_COVS
 REF_MODES = {
-    "ref": ([], False),                                     # binned, the default
-    "ref_unbinned": (["--unbinned"], False),
-    "ref_rebin": (["--nbin_x1", "2", "--nbin_c", "2"], False),
-    # covsys text is not written by default (WRITE_MASK_COV_DEFAULT is covtot_inv
-    # only), so it needs its own run to have a reference at all
+    "ref": (MASK_INV, False),                               # binned
+    "ref_unbinned": (["--unbinned", *MASK_INV], False),
+    "ref_rebin": (["--nbin_x1", "2", "--nbin_c", "2", *MASK_INV], False),
+    # covsys text needs its own run to have a reference at all
     "ref_covsys": (["--write_mask_cov", "1", "--write_format_cov", "text"], False),
-    "ref_extracov": (["--unbinned"], True),
-    "ref_calibrators": (["--unbinned"], True),
+    "ref_extracov": (["--unbinned", *MASK_INV], True),
+    "ref_calibrators": (["--unbinned", *MASK_INV], True),
     # all three cov products at once: covsys | covtot_inv | covtot
     "ref_covtot": (["--write_mask_cov", "7"], False),
     # rebin, not unbinned: with a CC prior present unbinned overwrites MUERR
     # with MUERR_RENORM after the subtraction, so the flag has no visible
     # effect there. In rebin the subtracted MUERR survives into wgt0.
-    "ref_vpec": (["--subtract_vpec", "--nbin_x1", "2", "--nbin_c", "2"], False),
+    "ref_vpec": (["--subtract_vpec", "--nbin_x1", "2", "--nbin_c", "2", *MASK_INV], False),
     # asymmetric bin counts: at 2x2 the two factors in the bin index are
     # equal, so transposing them would go unnoticed
-    "ref_rebin31": (["--nbin_x1", "3", "--nbin_c", "1"], False),
+    "ref_rebin31": (["--nbin_x1", "3", "--nbin_c", "1", *MASK_INV], False),
     # a hole in IZBIN: the bin loop is sized by the distinct count, so the bins
     # above the hole fall outside it and their events are dropped
-    "ref_izgap": (["--nbin_x1", "2", "--nbin_c", "2"], False),
-    "ref_nosys": (["--nosys"], False),
-    "ref_syshd": (["--systematic_HD"], False),
+    "ref_izgap": (["--nbin_x1", "2", "--nbin_c", "2", *MASK_INV], False),
+    "ref_nosys": (["--nosys", *MASK_INV], False),
+    "ref_syshd": (["--systematic_HD", *MASK_INV], False),
+    # the default mask: the factorised files, and with an EXTRA_COV no
+    # matrix for the covopts it would enter
+    "ref_factorized": ([], False),
+    "ref_factorized_extracov": (["--unbinned"], True),
+    "ref_factorized_calibrators": (["--unbinned"], True),
 }
 
 # reference dirs whose config also names CALIBRATORS
-CALIBRATOR_MODES = {"ref_calibrators"}
+CALIBRATOR_MODES = {"ref_calibrators", "ref_factorized_calibrators"}
 
 # reference dirs reading the gapped grid rather than the full one
 IZGAP_MODES = {"ref_izgap"}
@@ -397,13 +401,13 @@ def build(check: bool) -> int:
     produced = {}
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
-        # both inputs need the header line: create_covariance reads wdlist[2] of
-        # every VERSION_PHOTOMETRY comment and raises IndexError on an empty value
-        biascor = workdir / "BIASCOR.FITRES"
-        stamp_version_photometry(BEAMS / "BIASCOR.FITRES", biascor)
-        ccprior = workdir / "CCPRIOR.FITRES"
-        stamp_version_photometry(BEAMS / "CCPRIOR.FITRES", ccprior)
-
+        # SALT2mu.exe's table reader takes the simulations uncompressed
+        simfiles = {}
+        for key, name in (("simfile_biascor", "BIASCOR.FITRES"),
+                          ("simfile_ccprior", "CCPRIOR.FITRES")):
+            with open_text(BEAMS / name) as f:
+                (workdir / name).write_text(f.read())
+            simfiles[key] = str(workdir / name)
         for i, (flabel, amp, shape) in enumerate(FITOPTS):
             data = workdir / f"D{i}.FITRES"
             write_shifted_fitres(BEAMS / "DATA.FITRES", data, amp, shape)
@@ -411,8 +415,7 @@ def build(check: bool) -> int:
                 name = f"FITOPT{i:03d}_MUOPT{j:03d}"
                 print(f"  {name}  [{flabel} | {mlabel}]")
                 cell = run_cell(workdir, f"f{i}m{j}", data,
-                                {**extra, "simfile_biascor": str(biascor),
-                                 "simfile_ccprior": str(ccprior)})
+                                {**extra, **simfiles})
                 for ext, text in cell.items():
                     produced[f"{name}.{ext}"] = text
 

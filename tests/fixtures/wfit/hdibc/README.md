@@ -3,7 +3,7 @@
 Two Hubble diagrams of the same ten events, each in its own directory with the
 `INFO.YML` that names the cosmology its biasCor sim was generated at. `wfit.exe`
 reads that file from the directory holding the diagram (`compute_mu_biascor`,
-`wfit.c:1642-1652`), evaluates each event's distance under both cosmologies, and
+`wfit.c:1695-1705`), evaluates each event's distance under both cosmologies, and
 interpolates between the two diagrams at the trial cosmology
 (`get_chi2_fit`, `wfit.c:2298-2299`). With `-outfile_resid` it writes the two
 bias legs and the interpolation fraction per event
@@ -16,8 +16,8 @@ chosen so the fraction lands inside the `[-0.5, 1.5]` window
 `ref_clip_lo` at -0.5). Both biasCor cosmologies are flat, so jax's transverse
 curvature correction, which `get_mu_cos` omits, plays no part.
 
-SNANA version: `v12_01d-24-g563a1bc7`, the version pinned in
-`tests/fixtures/snana_version.txt`.
+SNANA version: `v12_01d-24-g563a1bc7`. `wfit.exe` gives the same HDIBC
+output at v12_02f.
 
 Commands, run from a scratch directory holding `HD0/` and `HD1/`:
 

@@ -52,7 +52,7 @@ def offset_marginalised_chi2(
     """The chi-square with the magnitude offset marginalised, and that offset.
 
     The Goliath et al. (2001) appendix as ``get_chi2_fit`` implements it
-    (wfit.c:4386-4416): ``chi_hat - Bsum^2/Csum``, with ``Csum`` carrying the
+    (wfit.c:4666-4696): ``chi_hat - Bsum^2/Csum``, with ``Csum`` carrying the
     Gaussian H0 prior term, and ``Bsum/Csum`` the weighted mean residual the
     fit absorbs, which SNANA calls ``muresid_avg``.
     """

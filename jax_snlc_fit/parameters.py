@@ -34,10 +34,10 @@ from jax.scipy.special import log_ndtr
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models.roles import MU_REF, T0_CENTRE
 
-# DOFIT_PHOTOZ redshift, model-independent (snlc_fit.F90:2449)
+# DOFIT_PHOTOZ redshift, model-independent (snlc_fit.F90:2481)
 PHOTOZ_PARAMETER = {'zPHOT': {'error_bounds': (1.0e-4, 2.0)}}
 
-# zPHOT ERRMAX_BAD, plain and with a best-z prior (snlc_fit.F90:1125, :1128, :7128)
+# zPHOT ERRMAX_BAD, plain and with a best-z prior (snlc_fit.F90:1134, :1137, :7128)
 PHOTOZ_ERRMAX_BAD = 0.0005
 PHOTOZ_ERRMAX_BAD_BESTZ = 1.0e-8
 PHOTOZ_INISTP_DEFAULT = 0.05

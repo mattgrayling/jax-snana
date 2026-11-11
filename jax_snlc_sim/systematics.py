@@ -1,6 +1,6 @@
 """RANSYSTPAR: one random draw per job of systematic-parameter shifts.
 
-Mirrors SNANA prep_RANSYSTPAR (snlc_sim.c:8135-8349): a synced phase seeded
+Mirrors SNANA prep_RANSYSTPAR (snlc_sim.c:8150-8364): a synced phase seeded
 by RANSEED_SYST (same draws for every survey) sets MWEBV scale, MW RV,
 host-zphot bias, redshift bias and cosmology shifts; an unsynced phase
 (seed + 137*IDSURVEY) sets flux-error scales and per-filter ZP and
@@ -37,7 +37,7 @@ _WILDCARD_STREAM = {'GENMODEL_WILDCARD': 0, 'GENPDF_FILE_WILDCARD': 1}
 
 
 def pick_wildcard_file(wildcard, seed, which, jobid=0, njobtot=0):
-    """SNANA pick_RANSYSTFILE_WILDCARD (snlc_sim.c:8352): glob the pattern
+    """SNANA pick_RANSYSTFILE_WILDCARD (snlc_sim.c:8367): glob the pattern
     and pick one file, sequentially by JOBID for batch jobs (NJOBTOT>0),
     else with a flat draw."""
     files = sorted(glob.glob(os.path.expandvars(wildcard)))
@@ -57,7 +57,7 @@ def pick_wildcard_file(wildcard, seed, which, jobid=0, njobtot=0):
     return files[ifile]
 
 
-# SNANA checkval_F bounds on SIGSCALE_* (snlc_sim.c:8156)
+# SNANA checkval_F bounds on SIGSCALE_* (snlc_sim.c:8171)
 _SIGSCALE_MIN, _SIGSCALE_MAX = -1.0e-6, 0.2
 
 
@@ -81,7 +81,7 @@ def _filter_groups(rs, base, genfilters):
     SNANA reads one value per comma-separated filter group in the
     parenthesised argument, and the bare key expands to one group per
     GENFILTERS filter, taking NFILT values; a missing value is fatal
-    (parse_input_RANSYSTPAR, snlc_sim.c:4706-4738).
+    (parse_input_RANSYSTPAR, snlc_sim.c:4718-4750).
     """
     sigmas = {}
     for key, val in rs.items():
@@ -131,7 +131,7 @@ def prep_ransystpar(config) -> None:
 
     sig = get('SIGSHIFT_zPHOT_HOST')
     if sig != 0.0:
-        # SNANA assigns only HOSTLIB_GENZPHOT_BIAS[0] (snlc_sim.c:8199-8205),
+        # SNANA assigns only HOSTLIB_GENZPHOT_BIAS[0] (snlc_sim.c:8214-8220),
         # keeping any user-supplied higher-order bias coefficients.
         bias = list(config.host.genzphot_bias or [0.0])
         bias[0] = sig * _clip_normal(rng)

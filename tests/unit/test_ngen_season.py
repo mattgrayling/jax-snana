@@ -1,6 +1,6 @@
 """Build-level resolution of NGEN_SEASON / NGEN_SCALE → n_simulated.
 
-Matches SNANA's `init_DNDZ_Rate` semantics (snlc_sim.c:9201-9221):
+Matches SNANA's `init_DNDZ_Rate` semantics (snlc_sim.c:9216-9236):
 `NGENTOT_LC = (int)(NGEN_SEASON × rate × NGEN_SCALE)`.
 """
 

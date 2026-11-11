@@ -18,11 +18,12 @@ from jax_snlc_core import logging as log
 from jax_snlc_core.cosmology import cosmo_params
 from jax_snlc_core.filters import (ZEROPOINT_FLUXCAL_SNANA_ORIG, band_weights_at_z,
                                    filter_band)
+from jax_snlc_core.interpolation import linear_between, linear_bin
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.noise import (MASK_APPLY_DATA, check_redcov_entries,
                                  fluxerr_maps_serving, fluxerr_model_sqscales,
-                                 interpolate_fluxerr_maps, noise_variances,
-                                 parse_redcov_string, read_fluxerr_model_file,
+                                 fluxerr_variables, interpolate_fluxerr_maps,
+                                 noise_variances, parse_redcov, read_fluxerr_model_file,
                                  redcov_entries_serving, stacked_fluxerr_maps)
 from jax_snlc_core.peak_time import (OPTMASK_SETPKMJD_FLUXMAX, OPTMASK_SETPKMJD_FLUXMAX3,
                                      fmax_clump_peakmjd, naive_fluxmax_peakmjd)
@@ -36,11 +37,11 @@ from .observations import epoch_layout
 
 logger = logging.getLogger(__name__)
 
-# PSF sigma of the 1" aperture SIM_GALFRAC uses (snlc_sim.c:26147)
+# PSF sigma of the 1" aperture SIM_GALFRAC uses (snlc_sim.c:26203)
 GALFRAC_PSFSIG = 1.0 / 2.355
 LOG_SAFE_FLOOR = 1e-30
 
-# GEN_SNHOST_GALMAG uses R_V=3.1 and law 94 (sntools_host.c:9256, :9278).
+# GEN_SNHOST_GALMAG uses R_V=3.1 and law 94 (sntools_host.c:9653, :9675).
 HOSTGAL_MW_RV = 3.1
 
 
@@ -79,7 +80,7 @@ def host_mwxt_mag_per_band(resources, params):
     GEN_SNHOST_GALMAG hard-wires R_V = 3.1 and colour law 94 for the host
     magnitudes, whatever RV_MWCOLORLAW and OPT_MWCOLORLAW say, and adds the
     result to every DDLR-sorted host before the GALMAG gate
-    (sntools_host.c:9256, :9278, :9287).
+    (sntools_host.c:9653, :9675, :9684).
     """
     order = [resources.filter_name_to_index[n] for n in resources.filter_names]
     av_true = HOSTGAL_MW_RV * jnp.asarray(params['sim_mwebv'])
@@ -92,7 +93,7 @@ def mwxt_mag_per_band(simulation, resources, params):
     """MW extinction in mag at each output filter's mean wavelength.
 
     SNANA's GALextinct(RV, RV*MWEBV_true, LAMAVG) per band
-    (GENLC.MWXT_MAG, snlc_sim.c:13713-13724), written to the TEXT MWXT_MAG
+    (GENLC.MWXT_MAG, snlc_sim.c:13731-13742), written to the TEXT MWXT_MAG
     block. The host magnitudes use their own law; see host_mwxt_mag_per_band.
     """
     rv = simulation.mw_dust.rv
@@ -104,12 +105,12 @@ def mwxt_mag_per_band(simulation, resources, params):
 
 
 def _interp_galmag(galmag_table, psfsig):
-    """GALMAG linearly interpolated across the 9 PSF apertures at ``psfsig``
-    arcsec (interp_GALMAG_HOSTLIB, sntools_host.c:4922-4962). Out-of-range
+    """GALMAG linearly interpolated across the PSF apertures at ``psfsig``
+    arcsec (interp_GALMAG_HOSTLIB, sntools_host.c:5205-5257). Out-of-range
     PSF values are pulled just inside the grid as SNANA does.
 
-    ``galmag_table`` is (..., 10), aperture-mag table with the aperture axis
-    last: col 0 is the total mag, cols 1..9 the 9 PSF apertures. ``psfsig``
+    ``galmag_table`` is (..., NMAGPSF_HOSTLIB + 1), aperture-mag table with the aperture axis
+    last: col 0 is the total mag, the other columns the PSF apertures. ``psfsig``
     is a scalar or (...) PSF sigma in arcsec.
     """
     profiles = galmag_table[..., 1:]
@@ -130,7 +131,7 @@ def _compute_fluxgal_pe(galfrac, host_mags_total, axav_at_mean, av_mw,
                         neas, pixsize, filter_idx, zptavgs, gains):
     """JIT-compiled: GALFRAC → GALMAG → interpolate at PSF sigma → fluxgal_pe.
 
-    ``galfrac`` is (n_sne, 10), GALFRAC at 9 PSF apertures plus index 0.
+    ``galfrac`` is (n_sne, NMAGPSF_HOSTLIB + 1), GALFRAC at each PSF aperture plus index 0.
     ``host_mags_total`` is (n_sne, n_filters), the raw HOSTLIB magnitudes.
     ``axav_at_mean`` is (n_filters,) or (n_sne, n_filters), A(λ)/A(V)
     at filter mean wavelengths (per event when the law's curve reads AV).
@@ -142,7 +143,7 @@ def _compute_fluxgal_pe(galfrac, host_mags_total, axav_at_mean, av_mw,
 
     Returns ``(fluxgal_pe, galmag_all)``: ``fluxgal_pe`` is (n_sne,
     max_obs), the host galaxy photoelectrons; ``galmag_all`` is (n_sne,
-    n_filters, 10), GALMAG at all PSF apertures (for SB_FLUXCAL).
+    n_filters, NMAGPSF_HOSTLIB + 1), GALMAG at all PSF apertures (for SB_FLUXCAL).
     """
     dm = jnp.where(galfrac > 0, -2.5 * jnp.log10(jnp.maximum(galfrac, LOG_SAFE_FLOOR)), 30.0)
 
@@ -151,7 +152,7 @@ def _compute_fluxgal_pe(galfrac, host_mags_total, axav_at_mean, av_mw,
 
     galmag_all = host_mags_dimmed[:, :, None] + dm[:, None, :]
 
-    # epoch PSF sigma from NEA (gen_fluxNoise_calc, snlc_sim.c:27794)
+    # epoch PSF sigma from NEA (gen_fluxNoise_calc, snlc_sim.c:27852)
     psf_sigma_arcsec = pixsize[:, None] * jnp.sqrt(neas / (4.0 * jnp.pi))
     galmag_per_obs = jax.vmap(lambda g, idx: g[idx])(galmag_all, filter_idx)
     galmag = _interp_galmag(galmag_per_obs, psf_sigma_arcsec)
@@ -240,7 +241,7 @@ def _noise_model_single_observation(
 
     fi_safe = jnp.maximum(filter_idx, 0)
 
-    # FUDGE_MAGERR (snlc_sim.c:28005-28012): quadrature add to SQSIG_TRUE[S]
+    # FUDGE_MAGERR (snlc_sim.c:28069-28076): quadrature add to SQSIG_TRUE[S]
     # and the reported error only; the SZ draw variance is untouched.
     if fudge_magerr_per_filter is not None:
         magerr = fudge_magerr_per_filter[fi_safe]
@@ -288,7 +289,7 @@ def _noise_model_single_observation(
         sqsig_F_true = sqsig_F_true * fec_sq
         sqsig_data = sqsig_data * fec_sq
 
-    # MAGMONITOR_SNR (snlc_sim.c:27884-27888, :28186-28190)
+    # MAGMONITOR_SNR (snlc_sim.c:27942-27946, :28250-28254)
     if (magmonitor_snr > 10 if monitor_enabled is None else monitor_enabled):
         fluxmon_pe = gain * jnp.power(10.0, 0.4 * (zptavg - magmonitor_snr))
         sqsig_mon = sqsig_calc_data - flux_pe + fluxmon_pe
@@ -298,16 +299,16 @@ def _noise_model_single_observation(
     else:
         snr_mon = jnp.zeros_like(flux_pe)
 
-    # SHIFT_SZ, SHIFT_T, SHIFT_F (snlc_sim.c:28474-28482)
+    # SHIFT_SZ, SHIFT_T, SHIFT_F (snlc_sim.c:28538-28546)
     sigma_SZ_calc = _noise_sigma(sqsig_SZ_true) / npe_over_fluxcal
     sigma_T_calc = _noise_sigma(sqsig_T_true) / npe_over_fluxcal
     sigma_F_calc = _noise_sigma(sqsig_F_true) / npe_over_fluxcal
 
-    # snlc_sim.c:28464-28472
+    # snlc_sim.c:28528-28536
     if smearflag_flux <= 0:
         fluxcal_noisy = fluxcal
     elif random_template_noise:
-        # SIMLIB_MSKOPT 8: search random over the combined sigma (snlc_sim.c:28493-28500)
+        # SIMLIB_MSKOPT 8: search random over the combined sigma (snlc_sim.c:28551-28558)
         fluxcal_noisy = fluxcal + noise_value * _noise_sigma(
             sigma_SZ_calc * sigma_SZ_calc + sigma_T_calc * sigma_T_calc)
     else:
@@ -366,7 +367,7 @@ def _draw_redcov_fudge_factored(F_per_obs, w_shared, z_indep):
 
     IMPORTANT: SNR filtering (SNRMIN_REDCOV) must be handled by the CALLER
     by zeroing F_per_obs for below-SNR epochs before calling this function.
-    SNANA's rule (snlc_sim.c:28301-28306) excludes below-SNR epochs from the
+    SNANA's rule (snlc_sim.c:28365-28370) excludes below-SNR epochs from the
     Cholesky matrix, but they still get an iid fudge draw in the main noise
     step. Zeroing F_per_obs reproduces that: below-SNR epochs get
     `u_i = z_i` (uncorrelated fudge noise), matching SNANA.
@@ -411,14 +412,14 @@ def add_photometric_noise(simulator, catalogue, zp_fluxcal,
         'template_zpts': jnp.asarray(obs_schedule['template_zpts'])
     }
 
-    # FUDGE_ZPTERR replaces the SIMLIB's per-epoch ZPTERR (snlc_sim.c:20707).
+    # FUDGE_ZPTERR replaces the SIMLIB's per-epoch ZPTERR (snlc_sim.c:20747).
     fudge_zpterr = simulator.zeropoint_error_override
     if fudge_zpterr is not None:
         override = fudge_zpterr[jnp.maximum(obs_arrays['filter_indices'], 0)]
         obs_arrays['zpterrs'] = jnp.where(
             override > 1.0e-7, override, obs_arrays['zpterrs'])
 
-    # search, fudge and template streams (gen_fluxNoise_randoms, snlc_sim.c:27636-27698)
+    # search, fudge and template streams (gen_fluxNoise_randoms, snlc_sim.c:27700-27762)
     noise_shape = (n_sne, max_obs)
     key_S, key_F, key_T = jax.random.split(noise_key, 3)
 
@@ -433,7 +434,7 @@ def add_photometric_noise(simulator, catalogue, zp_fluxcal,
     if random_template_noise:
         noise_T = jnp.zeros((n_sne, max_obs), dtype=jnp.float32)
     else:
-        # one template draw per (event, field, filter) (snlc_sim.c:27683-27698)
+        # one template draw per (event, field, filter) (snlc_sim.c:27741-27756)
         n_filters = len(simulator.photometry.transmissions)
         field_idx_per_sn = jnp.asarray(
             sn_parameters['field_idx'], dtype=jnp.int32)
@@ -478,8 +479,7 @@ def add_photometric_noise(simulator, catalogue, zp_fluxcal,
 
     fluxerrmodel_enabled = bool(simulator.fluxerr_enabled)
     if fluxerrmodel_enabled:
-        (err_model_val, err_scale_true, err_scale_data,
-         err_applies_true, err_applies_data) = _evaluate_fluxerr_model(
+        rows, err_model_val = _evaluate_fluxerr_model(
             simulator, zp_fluxcal,
             sn_parameters, obs_arrays, snr_calc_szt,
             sb_fluxcal_stacked=sb_fluxcal_stacked,
@@ -487,12 +487,10 @@ def add_photometric_noise(simulator, catalogue, zp_fluxcal,
         )
 
         sqscale_true, sqscale_data = fluxerr_model_sqscales(
-            err_model_val, err_scale_true, err_scale_data,
-            err_applies_true, err_applies_data, npe_over_fluxcal,
-            sqsig_calc_data,
-            bool(simulator.fluxerr_is_errscale))
+            simulator.fluxerr_maps, rows, err_model_val, npe_over_fluxcal,
+            sqsig_calc_data)
 
-        # snlc_sim.c:28065-28079; under a trace the kernel gives NaN flux instead
+        # snlc_sim.c:28129-28138; under a trace the kernel gives NaN flux instead
         if not isinstance(sqscale_true, jax.core.Tracer):
             bad = (jnp.asarray(obs_arrays['filter_indices']) >= 0) \
                 & (sqscale_true < 1.0)
@@ -508,7 +506,7 @@ def add_photometric_noise(simulator, catalogue, zp_fluxcal,
             field_idx = jnp.asarray(sn_parameters['field_idx'], dtype=jnp.int32)
             fi_safe = jnp.maximum(obs_arrays['filter_indices'], 0)
             F_per_obs = simulator.fluxerr_redcov_factors[field_idx[:, None], fi_safe]
-            # below-SNR epochs draw iid (SNR_CALC_ST, snlc_sim.c:27894, :28307-28308)
+            # below-SNR epochs draw iid (SNR_CALC_ST, snlc_sim.c:27952, :28365-28366)
             in_redcov_group = (
                 (obs_arrays['filter_indices'] >= 0)
                 & (snr_calc_st >= snrmin)
@@ -555,7 +553,7 @@ def _compute_host_galaxy_noise(simulator, catalogue, zp_fluxcal,
     Uses position-dependent GALFRAC (fraction of galaxy flux in PSF aperture)
     computed via polar grid integration over the Sersic surface brightness profile.
 
-    Per-epoch: interpolates GALMAG across 9 PSF aperture bins at the epoch's
+    Per-epoch: interpolates GALMAG across the PSF aperture bins at the epoch's
     actual PSF sigma, then converts to photoelectrons.
     """
     filter_names = simulator.calibration_filter_names
@@ -572,15 +570,17 @@ def _compute_host_galaxy_noise(simulator, catalogue, zp_fluxcal,
     sersic_n_arr = sersic['n'][:, gal_idx].T
     sersic_w_arr = sersic['w'][:, gal_idx].T
 
-    # SNANA uses INTEG_SUM[NSERSIC_TABLE-1] for every component
+    # each component's Sersic integral at its own 1/n (get_GALFLUX_HOSTLIB)
     sersic_data = simulator.hostlib.selector.sersic_table
-    integ_sum_fixed = sersic_data.integ_total[-1]
+    i_n, frac_n = linear_bin(1.0 / sersic_n_arr, sersic_data.inv_n)
+    integ_sum = linear_between(sersic_data.integ_total[i_n],
+                               sersic_data.integ_total[i_n + 1], frac_n)
     sersic_bn_arr = compute_sersic_bn(
         sersic_n_arr, sersic_data.bn_n_lookup, sersic_data.bn_lookup)
 
     galfrac = compute_galfrac(
         a_sn, b_sn, a_half, b_half,
-        sersic_n_arr, sersic_w_arr, sersic_bn_arr, integ_sum_fixed,
+        sersic_n_arr, sersic_w_arr, sersic_bn_arr, integ_sum,
         sersic_data.gauss2d_integ
     )
 
@@ -625,7 +625,7 @@ def _get_field_pixsizes(resources, sn_parameters):
 def _compute_sb_fluxcal(host, zp_fluxcal, galmag_all):
     """Surface-brightness FLUXCAL per (sn, filter) at HOSTLIB_SBRADIUS/2.
 
-    ``galmag_all`` col 0 is the total mag; cols 1..9 are the 9 PSF apertures.
+    ``galmag_all`` col 0 is the total mag; the other columns are the PSF apertures.
     """
     psfsig = host.sbradius / 2.0
     area = 4.0 * np.pi * psfsig**2
@@ -662,14 +662,14 @@ def prepare_noise(simulator, zp_fluxcal):
         simulator.survey.simlib_mskopt & 32)
     fc_log10snr_grid = jnp.asarray(fc.log10snr) if fluxerr_cor_active else None
     fc_scale_per_filter = jnp.asarray(fc.scale) if fluxerr_cor_active else None
-    # FLUXERR_ADD is given on the original zero point (snlc_sim.c:18704-18706)
+    # FLUXERR_ADD is given on the original zero point (snlc_sim.c:18721-18723)
     fc_add_per_filter = (
         jnp.asarray(simulator.simlib_fluxerr_add)
         * 10.0 ** (0.4 * (zp_fluxcal - ZEROPOINT_FLUXCAL_SNANA_ORIG))
         if fluxerr_cor_active else None)
     if fluxerr_cor_active:
         # EXPOSURE_TIME_FILTER gates the older additive term
-        # (snlc_sim.c:28114-28116); default 1.0 for every band.
+        # (snlc_sim.c:28172-28174); default 1.0 for every band.
         xt = per_filter_array(
             simulator, simulator.survey.exposure_time, 1.0)
         n_filters = len(simulator.filter_names)
@@ -721,12 +721,12 @@ def _gather_sbmag_per_obs(sb_fluxcal_stacked, obs_arrays, zp_fluxcal):
 
 
 def _gather_galmag_nea_per_obs(galmag_aperture_table, obs_arrays, pixsize):
-    """Per-(sn, obs) GALMAG_NEA, interpolated across the 9 PSF apertures at
+    """Per-(sn, obs) GALMAG_NEA, interpolated across the PSF apertures at
     the epoch PSF sigma psfsig_arcsec = pixsize * sqrt(NEA/(4π))
-    (gen_fluxNoise_calc, snlc_sim.c:27794).
+    (gen_fluxNoise_calc, snlc_sim.c:27852).
 
-    ``galmag_aperture_table`` has shape (n_sne, n_filters, 10); col 0 is the
-    total mag, cols 1..9 the 9 per-aperture mags. ``pixsize`` is (n_sne,).
+    ``galmag_aperture_table`` has shape (n_sne, n_filters, NMAGPSF_HOSTLIB + 1);
+    col 0 is the total mag, the other columns the per-aperture mags. ``pixsize`` is (n_sne,).
     """
     if galmag_aperture_table is None:
         n_sne, max_obs = obs_arrays['filter_indices'].shape
@@ -747,12 +747,8 @@ def _gather_galmag_nea_per_obs(galmag_aperture_table, obs_arrays, pixsize):
 def _build_fluxerr_query_per_obs(resources, zp_fluxcal, sn_parameters,
                                  obs_arrays, snr_calc_szt,
                                  sb_fluxcal_stacked, galmag_aperture_table):
-    """Build the per-(sn, obs, n_dims) query tensor for the active variables.
-
-    The dim axis order matches `resources.fluxerr_active_vars`, which in turn
-    matches the file's VARNAMES (and therefore
-    `resources.fluxerr_grid_origins/steps`).
-    """
+    """Build the per-(sn, obs, n_dims) query tensor for the active variables,
+    in the order of `resources.fluxerr_active_vars` (fluxerr_variables)."""
     active = resources.fluxerr_active_vars
     n_sne, max_obs = obs_arrays['filter_indices'].shape
 
@@ -768,11 +764,11 @@ def _build_fluxerr_query_per_obs(resources, zp_fluxcal, sn_parameters,
     if 'ZP' in active:
         values['ZP'] = jnp.asarray(obs_arrays['zptavgs'], dtype=jnp.float32)
     if 'LOGSNR' in active:
-        # bounded below at -0.9 (snlc_sim.c:28037-28040)
+        # bounded below at -0.9 (snlc_sim.c:28095-28098)
         logsnr = jnp.log10(snr_calc_szt)
         values['LOGSNR'] = jnp.maximum(logsnr, -0.9)
     if 'SBMAG' in active:
-        # capped at 32 (snlc_sim.c:27998)
+        # capped at 32 (snlc_sim.c:28056)
         sbmag = _gather_sbmag_per_obs(sb_fluxcal_stacked, obs_arrays, zp_fluxcal)
         values['SBMAG'] = jnp.minimum(sbmag, 32.0)
     if 'GALMAG' in active:
@@ -790,30 +786,21 @@ def _build_fluxerr_query_per_obs(resources, zp_fluxcal, sn_parameters,
 def _evaluate_fluxerr_model(resources, zp_fluxcal, sn_parameters, obs_arrays,
                             snr_calc_szt, sb_fluxcal_stacked,
                             galmag_aperture_table):
-    """Per-(sn, obs) FLUXERRMODEL value from the map serving the event's
-    SIMLIB field and the epoch's band.
-
-    Returns ``(errModelVal, scale_true, scale_data, applies_true,
-    applies_data)``, each (n_sne, max_obs).
-    """
-    fx = resources
+    """Per-(sn, obs) FLUXERRMODEL map row, the map serving the event's SIMLIB
+    field and the epoch's band, and that map's value, each (n_sne, max_obs).
+    Padding lanes take the inert last row."""
+    maps = resources.fluxerr_maps
     field_idx = jnp.asarray(sn_parameters['field_idx'], dtype=jnp.int32)
     fi = obs_arrays['filter_indices']
-    rows = fx.fluxerr_map_index_per_field[field_idx[:, None], jnp.maximum(fi, 0)]
+    rows = jnp.where(fi >= 0,
+                     resources.fluxerr_map_index_per_field[field_idx[:, None], jnp.maximum(fi, 0)],
+                     maps['grids'].shape[0] - 1)
     query = _build_fluxerr_query_per_obs(
         resources, zp_fluxcal, sn_parameters, obs_arrays, snr_calc_szt,
         sb_fluxcal_stacked=sb_fluxcal_stacked,
         galmag_aperture_table=galmag_aperture_table,
     )
-    err_model_val = interpolate_fluxerr_maps(
-        fx.fluxerr_grids, rows, query, fx.fluxerr_grid_origins, fx.fluxerr_grid_steps)
-
-    # padding lanes get the no-op value
-    no_op = 1.0 if fx.fluxerr_is_errscale else 0.0
-    err_model_val = jnp.where(fi >= 0, err_model_val, no_op)
-
-    return (err_model_val, fx.fluxerr_scale_true[rows], fx.fluxerr_scale_data[rows],
-            fx.fluxerr_applies_true[rows], fx.fluxerr_applies_data[rows])
+    return rows, jnp.where(fi >= 0, interpolate_fluxerr_maps(maps, rows, query), 1.0)
 
 
 def precompute_restframe_filters(simulator, redshifts,
@@ -943,7 +930,7 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
         simulator, sed_params, mjds, filter_indices, mask,
         restframe_filters, smear_frac)
 
-    # the grey offset GENMAG_OFF_GLOBAL (snlc_sim.c:12941)
+    # the grey offset GENMAG_OFF_GLOBAL (snlc_sim.c:12959)
     grey, host_shift, magnitude_shift = grey_offsets(sn_parameters, simulator.model_settings)
     off_frac = jnp.power(10.0, -0.4 * grey)[:, None]
     pair_fluxcal = pair_fluxcal * off_frac
@@ -951,7 +938,7 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
     pair_magnitudes = fluxcal_to_magnitude(
         pair_fluxcal, filter_indices, static_data)
     # A null magnitude carries the flux SNANA re-derives from mag 99
-    # (genmag_SALT2.c:2267, snlc_sim.c:27781), not the model's raw value.
+    # (genmag_SALT2.c:2267, snlc_sim.c:27839), not the model's raw value.
     null_fluxcal = jnp.power(
         10.0, 0.4 * (simulator.instrument.zp_fluxcal - MAG_ZEROFLUX))
     pair_fluxcal = jnp.where(
@@ -960,7 +947,7 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
     # Keep padding finite through the offsets; outputs are masked below.
     pair_fluxcal = jnp.where(mask, pair_fluxcal, 0.0)
 
-    # the host mass step: genmag += SALT2gammaDM (snlc_sim.c:8490)
+    # the host mass step: genmag += SALT2gammaDM (snlc_sim.c:8505)
     host_shift = host_shift[:, None]
     pair_magnitudes = jnp.where(
         pair_magnitudes < 90,
@@ -974,19 +961,19 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
         pair_fluxcal
     )
 
-    # MAGOFF + MAGSMEAR + MAG_OFFSET_GENPDF (snlc_sim.c:8491)
+    # MAGOFF + MAGSMEAR + MAG_OFFSET_GENPDF (snlc_sim.c:8506)
     genmag_off_model = simulator.model_settings.genmag_off_model
     genmag_smear_filter = simulator.model_settings.genmag_smear_filter
     # WEAKLENS_DMU and MUSHIFT are terms of SNANA's MAGOFF sum, so they
-    # share its -2<mag<50 gate (snlc_sim.c:8485-8497).
+    # share its -2<mag<50 gate (snlc_sim.c:8500-8512).
     total_shift = magnitude_shift[:, None]
-    # GENMAG_OFF_MODEL: per-filter additive offset (snlc_sim.c:8486).
+    # GENMAG_OFF_MODEL: per-filter additive offset (snlc_sim.c:8501).
     if genmag_off_model:
         off_pf = jnp.array([genmag_off_model.get(filter_band(b), 0.0)
                             for b in simulator.photometry.filter_names])
         total_shift = total_shift + off_pf[filter_indices]
     # GENMAG_SMEAR_FILTER: per-filter coherent smear σ[band]·ran[SN,band]
-    # (snlc_sim.c:29904); ran drawn once per (SN,filter) in the sampler.
+    # (snlc_sim.c:29968); ran drawn once per (SN,filter) in the sampler.
     if genmag_smear_filter and '_magsmear_filter_ran' in sn_parameters:
         sig_pf = jnp.array([genmag_smear_filter.get(filter_band(b), 0.0)
                             for b in simulator.photometry.filter_names])
@@ -1053,7 +1040,7 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
         magnitudes_all, fluxcals_all, template_fluxcal_per_obs, obs_schedule, noise_key,
         sn_parameters=sn_parameters)
 
-    # template source flux subtracted after the noise draw, from the true flux too (snlc_sim.c:28530)
+    # template source flux subtracted after the noise draw, from the true flux too (snlc_sim.c:28594)
     if has_template:
         true_before = fluxcals_all
         fluxcals_all = fluxcals_all - template_fluxcal_per_obs
@@ -1088,7 +1075,7 @@ def simulate_lightcurves(simulator, catalogue, sn_parameters,
 
     elif (simulator.rates.gensigma_peakmjd > 1.0E-9
           and 'peakmjd_smear' in sn_parameters):
-        # gen_peakmjd_smear (snlc_sim.c:17120)
+        # gen_peakmjd_smear (snlc_sim.c:17140)
         sn_parameters = {**sn_parameters, 'peakmjd': (
             sn_parameters['peakmjd'] + sn_parameters['peakmjd_smear'])}
 
@@ -1149,7 +1136,7 @@ def check_finite_flux(simulator, results, obs_schedule, global_start_idx,
 
 def crazy_flux_bound(fluxcal_err, redshift, zp_fluxcal, exposure_ratio=1.0,
                      model_factor=1.0, mag_smear=0.0):
-    """SNANA's crazy-flux bound (check_crazyFlux, snlc_sim.c:28648-28689), in
+    """SNANA's crazy-flux bound (check_crazyFlux, snlc_sim.c:28712-28753), in
     FLUXCAL rather than ADU.
 
     SNANA bounds the ADU flux by `1e5 * 10^(0.4(ZPADU-31)) * xt / z^2`, plus 10
@@ -1173,7 +1160,7 @@ def crazy_flux_bound(fluxcal_err, redshift, zp_fluxcal, exposure_ratio=1.0,
 def check_crazy_flux(simulator, fluxcals, fluxcalerrs,
                      obs_schedule, sn_parameters, n_events) -> None:
     """Abort on absurd fluxes, as SNANA does (check_crazyFlux,
-    snlc_sim.c:28628), over every event, rejected ones included. Runs on
+    snlc_sim.c:28686), over every event, rejected ones included. Runs on
     the finished batch; only the first ``n_events`` events are read.
     """
     cfg = simulator.config
@@ -1226,7 +1213,7 @@ def check_crazy_flux(simulator, fluxcals, fluxcalerrs,
 def estimate_peak_mjd(rates, obs_schedule, snrs, fluxcals, mjd_span):
     """Estimate the observed peak MJD per SN for the OPT_SETPKMJD bit in
     use: 8 naive max-flux, 16 Fmax-clump, 32 clump weighted by log10(SNR)
-    (sntools.c:1614). Thin wrapper over the shared core; ``mjd_span`` is the
+    (sntools.c:1609). Thin wrapper over the shared core; ``mjd_span`` is the
     survey's static MJD extent, so the call traces cleanly."""
     cfg = rates
     if cfg.opt_setpkmjd & OPTMASK_SETPKMJD_FLUXMAX:
@@ -1242,10 +1229,8 @@ def estimate_peak_mjd(rates, obs_schedule, snrs, fluxcals, mjd_span):
 
 
 _FLUXERR_DISABLED = dict(
-    fluxerr_enabled=False, fluxerr_active_vars=(), fluxerr_is_errscale=True,
-    fluxerr_grids=None, fluxerr_grid_origins=(), fluxerr_grid_steps=(),
-    fluxerr_scale_true=None, fluxerr_scale_data=None, fluxerr_applies_true=None,
-    fluxerr_applies_data=None, fluxerr_map_index_per_field=None,
+    fluxerr_enabled=False, fluxerr_active_vars=(), fluxerr_maps=None,
+    fluxerr_map_index_per_field=None,
     fluxerr_needs_host_vars=False,
     fluxerr_has_redcov=False, fluxerr_redcov_factors=None, fluxerr_n_factors=0,
     fluxerr_map_counts=None, fluxerr_redcov_counts=None)
@@ -1258,7 +1243,7 @@ def load_fluxerr_model(config, simlib, kcor, hostlib) -> Dict[str, Any]:
     configured.
     """
     path = config.instrument.fluxerr_file
-    if not path or str(path).strip().upper() in ('NONE', 'NULL', '', 'BLANK'):
+    if is_ignorefile(path):
         return dict(_FLUXERR_DISABLED)
 
     logger.info(f"Loading FLUXERRMODEL: {path}")
@@ -1270,7 +1255,7 @@ def load_fluxerr_model(config, simlib, kcor, hostlib) -> Dict[str, Any]:
     redcov_override = config.instrument.fluxerr_redcov
     if redcov_override:
         data.redcov = ([] if is_ignorefile(str(redcov_override))
-                       else parse_redcov_string(str(redcov_override)))
+                       else parse_redcov('FLUXERRMODEL_REDCOV', str(redcov_override)))
     check_redcov_entries(data.redcov)
 
     ignore_str = config.instrument.fluxerr_ignore_dataerr
@@ -1322,17 +1307,10 @@ def _compile_fluxerr_model(data, simlib, kcor) -> Dict[str, Any]:
     """
     fx: Dict[str, Any] = {}
 
-    active_vars = tuple(data.maps[0].dim_varnames)
+    active_vars = fluxerr_variables(data)
     fx['fluxerr_active_vars'] = active_vars
-    fx['fluxerr_is_errscale'] = bool(data.maps[0].is_errscale)
-    maps = stacked_fluxerr_maps(data)
-    fx['fluxerr_grids'] = jnp.asarray(maps['grids'])
-    fx['fluxerr_grid_origins'] = maps['origins']
-    fx['fluxerr_grid_steps'] = maps['steps']
-    fx['fluxerr_scale_true'] = jnp.asarray(maps['scale_true'], dtype=jnp.float32)
-    fx['fluxerr_scale_data'] = jnp.asarray(maps['scale_data'], dtype=jnp.float32)
-    fx['fluxerr_applies_true'] = jnp.asarray(maps['applies_true'])
-    fx['fluxerr_applies_data'] = jnp.asarray(maps['applies_data'])
+    fx['fluxerr_maps'] = {name: jnp.asarray(values)
+                          for name, values in stacked_fluxerr_maps(data).items()}
 
     filter_names = kcor.get_filter_names()
     shape = (len(simlib.fields), len(filter_names))

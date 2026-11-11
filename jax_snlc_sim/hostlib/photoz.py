@@ -36,11 +36,11 @@ NRAND_ZPHOT = 3    # uniform randoms per SN: [ran_prob, u_z, flat_draw]
 
 
 # Photo-z quantile columns: ZPHOT_Q<percent> names the percentile, QZPHOT<i>
-# the index in a uniform set (PREFIX_QZPHOT, sndata.h:131; manual 5030-5047)
+# the index in a uniform set (PREFIX_QZPHOT, sndata.h:133; manual 5030-5047)
 ZPHOT_Q_PREFIX = 'ZPHOT_Q'
 QZPHOT_PREFIX = 'QZPHOT'
 # the eleven decades SNANA forces under ZPHOT_QGAUSS when the catalogue
-# declares no quantiles (sntools_host.c:4584)
+# declares no quantiles (sntools_host.c:4772)
 DECADE_QUANTILES = [(f'{ZPHOT_Q_PREFIX}{p:03d}', float(p)) for p in range(0, 101, 10)]
 
 
@@ -56,7 +56,7 @@ def zphot_quantile_columns(varnames: List[str]) -> List[Tuple[str, float]]:
     in percentile order: ZPHOT_Qnnn carries its percentile in the name,
     QZPHOTnn its index among nn+1 uniformly spaced percentiles. A file
     naming both conventions is refused, since SNANA counts both, as is one
-    naming more quantiles than the output vector holds (sndata.h:185)."""
+    naming more quantiles than SNANA reads (sndata.h:187)."""
     legacy = [v for v in varnames if v.startswith(ZPHOT_Q_PREFIX) and is_zphot_quantile(v)]
     indexed = [v for v in varnames if v.startswith(QZPHOT_PREFIX) and is_zphot_quantile(v)]
     if legacy and indexed:
@@ -67,8 +67,7 @@ def zphot_quantile_columns(varnames: List[str]) -> List[Tuple[str, float]]:
     if len(legacy + indexed) > MXBIN_HOSTGALz_QUANTILE:
         raise SNANAError(
             f"{len(legacy + indexed)} photo-z quantile columns in the HOSTLIB "
-            f"exceed MXBIN_HOSTGALz_QUANTILE = {MXBIN_HOSTGALz_QUANTILE}, the "
-            f"quantile vector's width in the output",
+            f"exceed the {MXBIN_HOSTGALz_QUANTILE} that SNANA reads",
             function_name="zphot_quantile_columns")
     if indexed:
         indexed.sort(key=lambda v: int(v[len(QZPHOT_PREFIX):]))
@@ -82,7 +81,7 @@ def zphot_columns(varname_zphot: str, varnames) -> Tuple[str, Optional[str]]:
     """The HOSTLIB columns holding ZPHOT and ZPHOT_ERR. The photo-z is the
     column HOSTLIB_VARNAME_ZPHOT names, and its error the first present of
     that name with ERR or _ERR appended, or ZPHOTERR
-    (checkAlternateVarNames_HOSTLIB, sntools_host.c:2988-2996); None where
+    (checkAlternateVarNames_HOSTLIB, sntools_host.c:3006-3014); None where
     the file carries no error column."""
     err = next((c for c in (varname_zphot + 'ERR', varname_zphot + '_ERR', 'ZPHOTERR')
                 if c in varnames), None)
@@ -92,7 +91,7 @@ def zphot_columns(varname_zphot: str, varnames) -> Tuple[str, Optional[str]]:
 @dataclass(frozen=True)
 class GenZphot:
     """The photo-z model the HOSTLIB_GENZPHOT_* keys define
-    (GEN_SNHOST_ZPHOT_from_CALC, sntools_host.c:6850-6952)."""
+    (GEN_SNHOST_ZPHOT_from_CALC, sntools_host.c:7288-7390)."""
     fudgepar: tuple                      # a0 a1 a2 prob_outlier sig_outlier
     fudgemap_z: Optional[np.ndarray]      # core width in z; replaces a0-a2
     fudgemap_rms: Optional[np.ndarray]
@@ -111,11 +110,11 @@ def build_genzphot(host, redshift_range, hostlib_z_range) -> Optional[GenZphot]:
     FUDGEPAR has a core or outlier term, FUDGEMAP is given, or BIAS has a
     non-zero coefficient. FUDGEPAR's fifth value may be FLAT(z1:z2), flat
     outliers over that range; otherwise they span ``hostlib_z_range``
-    (sntools_host.c:3257-3261). FUDGEMAP must cover ``redshift_range``.
+    (sntools_host.c:3282-3286). FUDGEMAP must cover ``redshift_range``.
     Malformed values abort. SNANA misreads them instead: a FUDGEPAR short
     of five values takes the next key as its fifth and crashes
-    (snlc_sim.c:4013-4020), and a FUDGEMAP entry without a colon takes the
-    previous entry's rms (snlc_sim.c:3377-3381)."""
+    (snlc_sim.c:4025-4032), and a FUDGEMAP entry without a colon takes the
+    previous entry's rms (snlc_sim.c:3383-3387)."""
     fudgepar, flat_range = _parse_fudgepar(host.genzphot_fudgepar)
     fudgemap = _parse_fudgemap(host.genzphot_fudgemap)
     bias = (None if host.genzphot_bias is None
@@ -183,10 +182,10 @@ class ZphotEfficiency(NamedTuple):
 
 def read_zphoteff_file(path, host_z_range) -> ZphotEfficiency:
     """The two columns ZTRUE and EFF of a HOSTLIB_ZPHOTEFF_FILE
-    (init_HOSTLIB_ZPHOTEFF, sntools_host.c:4671-4695). A missing file
+    (init_HOSTLIB_ZPHOTEFF, sntools_host.c:4843-4867). A missing file
     aborts, as rd2columnFile does; so does one without two columns, on
     which SNANA crashes. It must cover ``host_z_range``, the catalogue's
-    redshifts, as SNANA aborts on a host outside it (sntools.c:8234)."""
+    redshifts, as SNANA aborts on a host outside it (sntools.c:7929)."""
     path = Path(path)
     if not path.exists():
         raise SNANAError(f"HOSTLIB_ZPHOTEFF_FILE {path} not found",
@@ -205,7 +204,7 @@ def catalogue_zphot_shift(zgen, ztrue, hostlib_mskopt):
     """The shift a catalogue photo-z takes to the SN's redshift, ZGEN - ZTRUE
     of the drawn host, or zero under SN2GAL_Z, where the SN already sits at
     its host's redshift (GEN_SNHOST_ZPHOT_from_HOSTLIB,
-    sntools_host.c:7182-7185). One shift serves every neighbour."""
+    sntools_host.c:7620-7623). One shift serves every neighbour."""
     if hostlib_mskopt & 16:
         return jnp.zeros_like(zgen)
     return zgen - ztrue
@@ -213,7 +212,7 @@ def catalogue_zphot_shift(zgen, ztrue, hostlib_mskopt):
 
 def shifted_catalogue_zphot(zphot, zphot_err, zdif):
     """A catalogue photo-z and its error moved by ``zdif``; both -9 where
-    either is negative, a failed photo-z fit (sntools_host.c:7191-7192)."""
+    either is negative, a failed photo-z fit (sntools_host.c:7629-7630)."""
     zphot = zphot + zdif
     bad = (zphot < 0.0) | (zphot_err < 0.0)
     return (jnp.where(bad, SNANA_NULLFLOAT, zphot),
@@ -319,8 +318,8 @@ def validate_genzphot_fudgemap(
     """Fatal validation of HOSTLIB_GENZPHOT_FUDGEMAP at build time.
 
     SNANA aborts when the map's z range does not cover GENRANGE_REDSHIFT
-    (snlc_sim.c:7568-7588); an out-of-range interp_1DFUN request is also
-    fatal (sntools.c:7996-8004), so the map must be strictly ordered and
+    (snlc_sim.c:7580-7600); an out-of-range interp_1DFUN request is also
+    fatal (sntools.c:7691-7699), so the map must be strictly ordered and
     finite.
     """
     z = np.asarray(fudgemap_z, dtype=np.float64)
@@ -349,7 +348,7 @@ def generate_zphot_from_calc(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Generate synthetic photo-z values from GENZPHOT_FUDGEPAR formula.
 
-    Matches SNANA's GEN_SNHOST_ZPHOT_from_CALC (sntools_host.c:6850-6952).
+    Matches SNANA's GEN_SNHOST_ZPHOT_from_CALC (sntools_host.c:7288-7390).
     SNANA redraws the outlier classification and the value whenever
     ZPHOT < 0.001 (the PICKRAN loop), so the accepted law is a mixture whose
     component probabilities are reweighted by each component's mass above

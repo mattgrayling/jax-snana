@@ -19,7 +19,7 @@ import numpy as np
 
 from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import open_text, resolve_fits_path, skip_docana
+from jax_snlc_core.snana_files import exact_values, resolve_fits_path, text_lines
 from jax_snlc_core.random import event_keys
 
 logger = logging.getLogger(__name__)
@@ -55,19 +55,8 @@ def read_lensing_probmap(path: str, dmuscale: float,
         raise SNANAError(f"Lensing probmap file not found: {path}",
                          function_name="read_lensing_probmap")
 
-    rows = []
-    with open_text(path) as f:
-        for line in skip_docana(f):
-            stripped = line.strip()
-            if not stripped or stripped.startswith('#'):
-                continue
-            parts = stripped.split()
-            if len(parts) >= 3:
-                try:
-                    rows.append((float(parts[0]), float(parts[1]), float(parts[2])))
-                except ValueError:
-                    continue
-
+    rows = [[float(v) for v in exact_values(path, 'z deltaMU probability', words, 3)]
+            for words in text_lines(path)]
     if not rows:
         raise SNANAError(f"No data rows found in {path}")
 
@@ -89,11 +78,10 @@ def read_lensing_probmap(path: str, dmuscale: float,
         dmu_iz = dmu_iz[order]
         prob_iz = prob_iz[order]
         cdf = np.cumsum(prob_iz)
-        total = cdf[-1]
-        if total <= 0:
-            inv_cdf[iz] = 0.0
-            continue
-        cdf = cdf / total
+        if cdf[-1] <= 0:
+            raise SNANAError(f"{path}: the z = {z_unique[iz]} bin has no probability",
+                             function_name="read_lensing_probmap")
+        cdf = cdf / cdf[-1]
         inv_cdf[iz] = np.interp(q_grid, cdf, dmu_iz)
 
     log.line(logger, f"Loaded lensing probmap: {nz} z-bins "
@@ -108,7 +96,7 @@ def read_lensing_probmap(path: str, dmuscale: float,
 
 def lensing_offset(simulator, redshifts, keys, host_properties):
     """The weak-lensing mu offset (gen_distanceMag,
-    snlc_sim.c:17510-17519): WEAKLENS_DSIGMADZ wins over
+    snlc_sim.c:17528-17537): WEAKLENS_DSIGMADZ wins over
     WEAKLENS_PROBMAP_FILE, which wins over the host's HOSTLIB WEAKLENS_DMU
     column; zero with none of them. ``host_properties`` is None before the
     host is drawn."""
@@ -149,7 +137,7 @@ def apply_lensdmu_smear(simulator, params: dict[str, jnp.ndarray], *,
 
     gen_lensDMU_smear draws ``lensDMU_smear = lensDMU + |lensDMU * FRAC| * G``
     and the data file reports it with ``LENSDMU_ERR = |lensDMU * FRAC|``
-    (sntools_weaklens.c:256-276, snlc_sim.c:12938, :25422-25423). SIM_LENSDMU
+    (sntools_weaklens.c:256-276, snlc_sim.c:12956, :25475-25476). SIM_LENSDMU
     keeps the unsmeared truth. SNANA smears after the HOSTLIB WEAKLENS_DMU
     override, so this runs once host association is done, and it burns a
     random only when the fraction is set.

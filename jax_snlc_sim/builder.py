@@ -8,6 +8,7 @@ Random keys, batch counters and host reuse records belong to each run.
 import logging
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -104,8 +105,6 @@ def build_simulation(config, wavelength_grid_points: int) -> LightCurveSimulator
     hostlib = load_hostlib(config, simlib, sed_model, spec_zhost, hz_map,
                             frac_pec1a)
     validate_config_populations(config, sed_model, hostlib)
-    npe_pixel_saturate, photflag_saturate = \
-        _resolve_saturation(config.instrument, simlib)
     fluxerr = load_fluxerr_model(config, simlib, kcor, hostlib)
     lensing_path = config.lensing.probmap_file
     lensing_probmap = (
@@ -147,7 +146,7 @@ def build_simulation(config, wavelength_grid_points: int) -> LightCurveSimulator
         np.asarray(photometry.filter_mean_wavelengths))
     # The host-galaxy magnitudes dim by a law of their own: GEN_SNHOST_GALMAG
     # hard-wires RVMW = 3.1 and colour law 94 whatever OPT_MWCOLORLAW and
-    # RV_MWCOLORLAW say (sntools_host.c:9256, :9278).
+    # RV_MWCOLORLAW say (sntools_host.c:9653, :9675).
     host_mw_law_at_mean = load_dust_law('ODONNELL94')
     host_mw_law_at_mean.prepare_wavelength_grid(
         np.asarray(photometry.filter_mean_wavelengths))
@@ -158,7 +157,8 @@ def build_simulation(config, wavelength_grid_points: int) -> LightCurveSimulator
         rates=config.rates, cosmology=config.cosmology,
         model_settings=config.model, survey=config.survey,
         host_settings=config.host, mw_dust=config.mw_dust,
-        instrument=config.instrument, lensing=config.lensing, cuts=config.cuts,
+        instrument=_simlib_instrument(config.instrument, simlib),
+        lensing=config.lensing, cuts=config.cuts,
         magmonitor_snr=config.output.magmonitor_snr,
         field_data=jax.device_put(prepare_field_data(simlib, names)),
         field_start_index=simlib_job_start(config, len(simlib.fields)),
@@ -182,6 +182,7 @@ def build_simulation(config, wavelength_grid_points: int) -> LightCurveSimulator
         simlib_fluxerr_add=simlib.fluxerr_add,
         simlib_template_texpose=simlib.template_texpose_spectrograph,
         simlib_subsurvey_list=simlib.subsurvey_list,
+        simlib_genskip_peakmjd=simlib.genskip_peakmjd,
         simlib_windows=simlib_windows,
         field_mwebv=jax.device_put(field_mwebv),
         kcor=kcor, photometry=photometry, calibration=spec_calibration,
@@ -195,8 +196,6 @@ def build_simulation(config, wavelength_grid_points: int) -> LightCurveSimulator
         mw_law=dust_law, mw_law_obs=mw_law_obs, mw_law_at_mean=mw_law_at_mean,
         host_mw_law_at_mean=host_mw_law_at_mean,
         sfd_map=sfd_map, field_sfd_ebv=field_sfd_ebv,
-        npe_pixel_saturate=npe_pixel_saturate,
-        photflag_saturate=photflag_saturate,
         phasecor_cholesky_L=prepare_phase_scatter(config),
         **fluxerr,
         lensing_probmap=lensing_probmap)
@@ -250,7 +249,7 @@ def _load_simlib(config) -> SimlibData:
 def _exposure_scales(config):
     """EXPOSURE_TIME(_FILTER): per-band ZPT shift and sky/read noise scales from
     the exposure-time ratio, gated by EXPOSURE_TIME_MSKOPT bits 0/1/2
-    (get_SIMLIB_SCALES, snlc_sim.c:7190, :22636). ratio -> SHIFT_ZPT =
+    (get_SIMLIB_SCALES, snlc_sim.c:7202, :22689). ratio -> SHIFT_ZPT =
     2.5*log10(ratio), SCALE_NOISE = sqrt(ratio)."""
     mskopt = int(config.survey.exposure_time_mskopt)
     ratios = {b: float(r) for b, r in config.survey.exposure_time.items()
@@ -261,20 +260,12 @@ def _exposure_scales(config):
     return zpt, sky, read
 
 
-def _resolve_saturation(instrument, simlib) -> Tuple[int, int]:
-    """The effective saturation values after the SIMLIB global-header override.
-
-    SNANA semantics (snlc_sim.c:18479-18481): the SIMLIB header value
-    overrides the input-file value only when the latter is still the
-    default. NPE_PIXEL_SATURATE default = 1e9; PHOTFLAG_SATURATE default = 0.
-    """
-    npe, photflag = instrument.npe_pixel_saturate, instrument.photflag_saturate
-    if (npe == field_default(Instrument, 'npe_pixel_saturate')
-            and simlib.global_npe_pixel_saturate is not None):
-        npe = simlib.global_npe_pixel_saturate
-    if photflag == 0 and simlib.global_photflag_saturate is not None:
-        photflag = simlib.global_photflag_saturate
-    return npe, photflag
+def _simlib_instrument(instrument, simlib):
+    """The instrument with the SIMLIB global header's settings in place of
+    those the input leaves at their defaults (snlc_sim.c:18392-18395, :18499)."""
+    return replace(instrument, **{
+        name: value for name, value in simlib.instrument_defaults.items()
+        if getattr(instrument, name) == field_default(Instrument, name)})
 
 
 def _load_kcor(config) -> KcorReader:
@@ -310,7 +301,7 @@ def _build_filter_lookup(kcor) -> Tuple[List[str], Dict[str, int]]:
     """
     filter_names = kcor.get_filter_names()
 
-    # case kept: SNANA's alphabet holds both cases (INTFILTER, sntools.c:11191)
+    # case kept: SNANA's alphabet holds both cases (INTFILTER, sntools.c:10884)
     name_to_index: Dict[str, int] = {}
     for idx, name in enumerate(filter_names):
         name_to_index[name] = idx
@@ -564,7 +555,7 @@ def observation_window_days(simulator) -> float:
     the span follows the top of the generated redshift range. zHEL sits
     above the generated zCMB by the CMB dipole and the peculiar velocity;
     SNANA allows for both with a five-sigma margin on GENSIGMA_VPEC when it
-    sizes its own redshift grid (snlc_sim.c:26993-26998), and the same
+    sizes its own redshift grid (snlc_sim.c:27051-27056), and the same
     margin bounds the window here, and HOSTLIB USEVPEC (MSKOPT bit 512),
     which replaces the drawn velocity with the host's, contributes the
     library's largest. SN2GAL_Z rebinds the redshift to the host's, which
@@ -613,7 +604,7 @@ def population_before_host(simulator):
 
     SNANA draws the host first, except that when the HOSTLIB weight map reads
     SN variables the model's parameters must exist before the host is chosen
-    (snlc_sim.c:12889-12891, :12899-12900); host dust the map reads is drawn
+    (snlc_sim.c:12909-12911, :12919-12920); host dust the map reads is drawn
     first with them. A population that reads the host in turn, through a
     conditional GENPDF or a VARIATION on a host column, cannot then be
     drawn, so that combination aborts.
@@ -682,7 +673,7 @@ def _prepare_kernels(simulator) -> LightCurveSimulator:
                 function_name="_prepare_kernels",
             )
 
-    # only the three flux-max OPT_SETPKMJD estimators exist (snlc_sim.c:17101-17156)
+    # only the three flux-max OPT_SETPKMJD estimators exist (snlc_sim.c:17119-17174)
     opt_setpkmjd = simulation.rates.opt_setpkmjd
     if opt_setpkmjd > 0 and not opt_setpkmjd & (8 | 16 | 32):
         raise SNANAError(

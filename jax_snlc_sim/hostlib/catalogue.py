@@ -23,10 +23,12 @@ import pyarrow.parquet as pq
 from platformdirs import user_cache_dir
 
 from jax_snlc_core import logging as log, snana_files
+from jax_snlc_core.cosmology import zcmb_to_zhelio
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import (
     HOST_COORDINATE_NAMES, HOSTGAL_PROPERTY_BASENAMES, canonical_property_name,
-    open_text, resolve_fits_path)
+    header_words, leading_values, resolve_fits_path, split_names, text_lines, word_runs)
+from jax_snlc_core.utils import LIGHT_KM
 from jax_snlc_sim.hostlib.photoz import is_zphot_quantile, zphot_columns
 from jax_snlc_sim.hostlib.sersic import (
     MXSERSIC_HOSTLIB, SERSIC_COMPONENT_COLUMNS, apply_fixsersic_columns,
@@ -46,9 +48,9 @@ SIMULATION_ESSENTIAL_COLUMNS = [
     'SQRADIUS', 'ELLIPTICITY',
 ]
 
-# three log-z pointer bins of DZPTR_HOSTLIB = 0.01 (sntools_host.h:85, .c:3564)
+# three log-z pointer bins of DZPTR_HOSTLIB = 0.01 (sntools_host.h:90, .c:3564)
 DLOGZ_SAFETY = 3.0 * 0.01
-# a catalogue mag error below 0 or above 9 is read as 9 (MAGERR_UNDEFINED, sntools.h:127)
+# a catalogue mag error below 0 or above 9 is read as 9 (MAGERR_UNDEFINED, sntools.h:128)
 MAGERR_UNDEFINED = 9.0
 
 def discover_output_only_columns(varnames: List[str]) -> List[str]:
@@ -57,7 +59,7 @@ def discover_output_only_columns(varnames: List[str]) -> List[str]:
     Discovered from the actual VARNAMES rather than a fixed list: the
     photo-z quantiles (sntools_host.c:2977-2986), ZPHOT/ZPHOT_ERR and the
     P50/IQR summaries, [band]_obs / [band]_obs_err photometry for whatever
-    bands exist (HOSTLIB_SUFFIX_MAGOBS, sntools_host.c:2757-2766), and OBJID2.
+    bands exist (HOSTLIB_SUFFIX_MAGOBS, sntools_host.c:2775-2784), and OBJID2.
     """
     named = {'P50', 'IQR', 'ZPHOT', 'ZPHOT_ERR', 'OBJID2'}
     cols = []
@@ -70,32 +72,27 @@ def discover_output_only_columns(varnames: List[str]) -> List[str]:
 
 
 def _read_header_values(filepath: str, keys) -> Dict[str, float]:
-    """The values of the header keys named in ``keys`` (``'name:'``), found
-    anywhere in the header word stream as SNANA scans it
-    (parse_Sersic_n_fixed, sntools_host.c:3064-3093); the first GAL: row
-    ends the search."""
+    """The values of the header keys named in ``keys``, read from the
+    header's stream of words up to the first GAL: row as SNANA reads it
+    (read_head_HOSTLIB, sntools_host.c:2445-2536; parse_Sersic_n_fixed,
+    :3082-3111); a key given twice keeps its first value."""
     found = {}
-    with open_text(filepath) as f:
-        for line in f:
-            if line.startswith('GAL:'):
-                break
-            parts = line.split()
-            for k, part in enumerate(parts[:-1]):
-                if part in keys:
-                    found[part] = float(parts[k + 1])
+    for key, values in word_runs(filepath, header_words(text_lines(filepath), 'GAL:')):
+        if key in keys and key not in found:
+            found[key] = float(leading_values(filepath, key, values, 1)[0])
     return found
 
 
 def _read_sersic_fixed_n(filepath: str) -> Dict[int, float]:
     """Fixed Sersic indices declared as header keys 'n{j}_Sersic: <value>'."""
-    keys = {f'n{j}_Sersic:': j for j in range(MXSERSIC_HOSTLIB)}
+    keys = {f'n{j}_Sersic': j for j in range(MXSERSIC_HOSTLIB)}
     return {keys[k]: v for k, v in _read_header_values(filepath, keys).items()}
 
 
 def _read_vpec_err(filepath: str):
-    """The header's VPEC_ERR, under either spelling (sntools_host.c:2518),
+    """The header's VPEC_ERR, under either spelling (sntools_host.c:2529),
     or None."""
-    found = _read_header_values(filepath, ('VPEC_ERR:', 'VPECERR:'))
+    found = _read_header_values(filepath, ('VPEC_ERR', 'VPECERR'))
     return next(iter(found.values()), None)
 
 
@@ -153,6 +150,7 @@ class HostlibTable:
     z_max: float
     vpec_max: Optional[float]         # the largest |VPEC|
     vpec_err: Optional[float]
+    ztrue_cmb: bool                   # the file gives ZTRUE_CMB, read as heliocentric
 
     @property
     def ngal(self) -> int:
@@ -162,9 +160,9 @@ class HostlibTable:
 def essential_columns() -> List[str]:
     """The columns every simulation with a HOSTLIB reads when the file
     carries them: the essential set, every Sersic component, the a_DLR/b_DLR
-    override of the Sersic sizes (sntools_host.c:8559-8562) and every host
+    override of the Sersic sizes (sntools_host.c:8956-8959) and every host
     property under each of its spellings (GEN_SNHOST_PROPERTY,
-    sntools_host.c:2699-2721)."""
+    sntools_host.c:2717-2739)."""
     columns = [*SIMULATION_ESSENTIAL_COLUMNS, *SERSIC_COMPONENT_COLUMNS,
                'a_DLR', 'b_DLR']
     for base in HOSTGAL_PROPERTY_BASENAMES:
@@ -189,6 +187,8 @@ def read_hostlib(filepath: str,
                  snr_store=(None, ''),
                  varname_zphot: str = "ZPHOT",
                  swap_zphot: bool = False,
+                 vel_cmbapex: float = 0.0,
+                 use_vpec: bool = False,
                  use_cache: bool = True,
                  cache_dir: Optional[str] = None,
                  fixsersic=None,
@@ -198,10 +198,12 @@ def read_hostlib(filepath: str,
 
     ``columns`` are named as the simulation names them; HOSTLIB_VARNAME_ZPHOT
     says which file column is ZPHOT and its error
-    (checkAlternateVarNames_HOSTLIB, sntools_host.c:2988-2996). ``snr_store``
+    (checkAlternateVarNames_HOSTLIB, sntools_host.c:3006-3014). ``snr_store``
     is the HOSTLIB_SNR_STORE ladder (or None) with the GENFILTERS string whose
     bands it is applied over. ``swap_zphot`` is HOSTLIB_MSKOPT bit 128 (SWAPZPHOT): draw and sort
-    the catalogue on ZPHOT instead of ZTRUE. FIXSERSIC and SCALE_SERSIC_SIZE
+    the catalogue on ZPHOT instead of ZTRUE. A file giving ZTRUE_CMB has it
+    turned into the heliocentric ZTRUE with VEL_CMBAPEX and, under
+    ``use_vpec`` (HOSTLIB_MSKOPT bit 512), the VPEC column. FIXSERSIC and SCALE_SERSIC_SIZE
     are written into the Sersic columns. The file is parsed once and kept
     as a Parquet cache in ``cache_dir`` (None picks the platform location),
     unless ``use_cache`` is False.
@@ -213,11 +215,17 @@ def read_hostlib(filepath: str,
                                             use_cache, cache_dir)
     ztrue_file = column_data['ZTRUE']
     column_data = _swap_ztrue_for_zphot(column_data, swap_zphot)
+    ztrue_cmb = 'ZTRUE_CMB' in _read_varnames(filepath)
+    if ztrue_cmb:
+        column_data['ZTRUE'] = _heliocentric_ztrue(column_data, vel_cmbapex, use_vpec)
     order, sorted_columns = _sort_by_redshift(column_data)
     neighbours = _remap_nbr_array_to_sorted(neighbours, order)
     order, sorted_columns, neighbours = _apply_read_selection(
         sorted_columns, order, neighbours, ztrue_file[order], genrange_ra,
         genrange_dec, genrange_redshift, maxread, snr_store)
+    if len(order) == 0:
+        raise SNANAError(f"{filepath}: no galaxy passes the HOSTLIB cuts on redshift, RA, "
+                         f"DEC and S/N", function_name="read_hostlib")
     apply_fixsersic_columns(fixsersic, sorted_columns, scale_sersic_size)
     fixed_n = _read_sersic_fixed_n(filepath)
     # FIXSERSIC overrides fixed header indices for components without an n column.
@@ -235,6 +243,7 @@ def read_hostlib(filepath: str,
         z_max=float(np.max(kept_ztrue)),
         vpec_max=_vpec_max(sorted_columns),
         vpec_err=_read_vpec_err(filepath),
+        ztrue_cmb=ztrue_cmb,
     )
 
 
@@ -264,7 +273,10 @@ def _read_columns(filepath, columns, varname_zphot, use_cache, cache_dir):
 def _parse_hostlib(filepath):
     """Every column of the HOSTLIB text file under its property name, in
     file order, and the NBR_LIST as a padded neighbour array."""
-    frame = snana_files.read_fitres(filepath, row_keys=('GAL:',)).df
+    # FIELD and NBR_LIST are the HOSTLIB's only strings (read_galRow_HOSTLIB)
+    frame = snana_files.read_fitres(
+        filepath, row_keys=('GAL:',),
+        string_column=lambda name: name.upper() in ('FIELD', 'NBR_LIST')).df
     column_data = {name: frame[name].to_numpy() for name in frame.columns}
     ngal = len(frame)
     if 'NBR_LIST' in column_data:
@@ -279,22 +291,28 @@ def _parse_hostlib(filepath):
 def _file_columns(columns, varname_zphot, available):
     """The file column read for each requested column the file carries,
     keyed by the requested name; ZPHOT and ZPHOT_ERR follow
-    HOSTLIB_VARNAME_ZPHOT."""
+    HOSTLIB_VARNAME_ZPHOT. Names match whatever their case, except the
+    ``_obs`` magnitudes, whose case tells the bands apart; the first match
+    in file order is read (match_varname_HOSTLIB, sntools_host.c:2863)."""
     zphot, zphot_err = zphot_columns(varname_zphot, available)
     alias = {'ZPHOT': zphot, 'ZPHOT_ERR': zphot_err}
     names = {}
     for name in dict.fromkeys(canonical_property_name(c) for c in columns):
         spelt = alias.get(name) or name
-        if spelt in available:
-            names[name] = spelt
+        if '_obs' in spelt:
+            match = spelt if spelt in available else None
+        else:
+            match = next((a for a in available if a.upper() == spelt.upper()), None)
+        if match is not None:
+            names[name] = match
     return names
 
 
 def _snr_store_mask(sorted_column_data, thresholds, genfilters):
     """HOSTLIB_SNR_STORE: the i-th brightest band's signal-to-noise must
     reach the i-th threshold, over the GENFILTERS bands with both a mag and
-    an error column (snr_store_HOSTLIB, sntools_host.c:8226; the ladder test
-    is passCuts_snr_HOSTLIB, :8290)."""
+    an error column (snr_store_HOSTLIB, sntools_host.c:8623; the ladder test
+    is passCuts_snr_HOSTLIB, :8687)."""
     err_cols = [f'{band}_obs_err' for band in genfilters
                 if f'{band}_obs' in sorted_column_data
                 and f'{band}_obs_err' in sorted_column_data]
@@ -317,10 +335,10 @@ def _snr_store_mask(sorted_column_data, thresholds, genfilters):
 def _apply_read_selection(sorted_column_data, sorted_indices, nbr_array,
                           ztrue_file, genrange_ra, genrange_dec,
                           genrange_redshift, maxread, snr_store):
-    """HOSTLIB_MAXREAD (first N file rows, sntools_host.c:3176) and the cuts
-    of passCuts_HOSTLIB (sntools_host.c:3351) on the z-sorted catalogue: the
+    """HOSTLIB_MAXREAD (first N file rows, sntools_host.c:3194) and the cuts
+    of passCuts_HOSTLIB (sntools_host.c:3376) on the z-sorted catalogue: the
     GENRANGE_RA/DEC box, GENRANGE_REDSHIFT widened by 0.01 and three
-    log-z pointer bins each side (sntools_host.c:3147-3156), and the
+    log-z pointer bins each side (sntools_host.c:3165-3174), and the
     HOSTLIB_SNR_STORE ladder, so a galaxy the generation can never reach is
     neither stored nor weighted.
     ``ztrue_file`` is the file's own ZTRUE in sorted order: SNANA applies the
@@ -375,7 +393,7 @@ def _apply_read_selection(sorted_column_data, sorted_indices, nbr_array,
 
 def _canonical_properties(column_data, filepath):
     """The columns under their in-memory property names, as SNANA reads a
-    HOSTLIB (sntools_host.c:2481); a file spelling one property both ways
+    HOSTLIB (sntools_host.c:2492); a file spelling one property both ways
     is refused, as its VARNAMES would then repeat a name there."""
     renamed = {}
     spelt = {}
@@ -396,11 +414,9 @@ def _read_varnames(filepath: str) -> List[str]:
     Returns the list of column names for the HOSTLIB file at ``filepath``.
     Raises `SNANAError` if no VARNAMES line is found.
     """
-    with open_text(filepath) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith('VARNAMES:'):
-                return line.split()[1:]
+    for words in text_lines(filepath):
+        if words[0] == 'VARNAMES:':
+            return split_names(' '.join(words[1:]))
 
     raise SNANAError(f"VARNAMES line not found in {filepath}")
 
@@ -410,9 +426,9 @@ def _swap_ztrue_for_zphot(column_data: Dict[str, np.ndarray], swap: bool):
     and drawn on ZPHOT.
 
     SNANA writes ZPHOT over ZTRUE as it reads each galaxy row and sorts
-    afterwards (sntools_host.c:3228-3231, :193), so the redshift-window
+    afterwards (sntools_host.c:3247-3250, :193), so the redshift-window
     search runs on the swapped column. HOSTLIB.ZMIN/ZMAX keep the file's own
-    ZTRUE, which the read loop accumulates before the swap (:3201-3204).
+    ZTRUE, which the read loop accumulates before the swap (:3220-3223).
     """
     if not swap:
         return column_data
@@ -424,6 +440,25 @@ def _swap_ztrue_for_zphot(column_data: Dict[str, np.ndarray], swap: bool):
             f"carry; add them or drop the bit.",
             function_name="read_hostlib")
     return {**column_data, 'ZTRUE': column_data['ZPHOT']}
+
+
+def _heliocentric_ztrue(column_data, vel_cmbapex, use_vpec):
+    """The heliocentric redshift of each galaxy of a HOSTLIB giving ZTRUE_CMB,
+    through its coordinates, and with its VPEC under USEVPEC
+    (transform_ZTRUE_HOSTLIB, sntools_host.c:4091). A VEL_CMBAPEX of 0 keeps
+    the CMB-frame redshift."""
+    if 'RA_GAL' not in column_data or 'DEC_GAL' not in column_data:
+        raise SNANAError("A HOSTLIB giving ZTRUE_CMB needs the galaxy coordinates "
+                         "RA_GAL and DEC_GAL to turn it into the heliocentric "
+                         "ZTRUE.", function_name="read_hostlib")
+    ztrue = np.asarray(column_data['ZTRUE'], dtype=np.float64)
+    if vel_cmbapex != 0.0:
+        ztrue = np.asarray(zcmb_to_zhelio(ztrue, column_data['RA_GAL'],
+                                          column_data['DEC_GAL']))
+    zpec = 0.0
+    if use_vpec and 'VPEC' in column_data:
+        zpec = column_data['VPEC'] / LIGHT_KM
+    return (1.0 + ztrue) * (1.0 + zpec) - 1.0
 
 
 def _vpec_max(column_data: Dict[str, np.ndarray]):

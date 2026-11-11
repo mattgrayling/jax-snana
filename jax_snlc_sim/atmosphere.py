@@ -52,7 +52,7 @@ def read_observatory_sites(path=None) -> dict[str, SiteGeo]:
     """SURVEY.DEF sites with atmosphere parameters derived from altitude.
 
     Only surveys carrying a geo: token have a site. Temperature (C), pressure
-    and water vapour (mm Hg) follow SNANA's altitude formulas (sntools.c:3692).
+    and water vapour (mm Hg) follow SNANA's altitude formulas (sntools.c:3689).
     """
     sites = {}
     for name, (lat, lon, alt) in load_survey_geo(path).items():
@@ -342,7 +342,7 @@ def compute_atmosphere(*, mjd, filter_idx, valid_mask, ra_deg, dec_deg,
         frac_psf = np.where(psf > 0, np.abs(dcr_asec) / psf, 0.0)
     mag_shift = np.where(valid_shift, eval_genpoly(magshift_poly, frac_psf), 0.0)
 
-    # coords_to_SNDATA, snlc_sim.c:25815
+    # coords_to_SNDATA, snlc_sim.c:25869
     d_ra = UNIT_DELTA * (ra_obs - ra_avg)
     d_dec = UNIT_DELTA * (dec_obs - dec_avg)
     sim_dcr = UNIT_DELTA * dcr_deg

@@ -118,7 +118,7 @@ def test_setz_unconfirmed_photoz(specz_zero_run):
     simulation, resources, sim, _base = specz_zero_run
     results = dict(_base, parameters=dict(_base["parameters"]))
 
-    # setz_unconfirmed reads SNHOSTGAL.ZPHOT (snlc_sim.c:24922), the value
+    # setz_unconfirmed reads SNHOSTGAL.ZPHOT (snlc_sim.c:24974), the value
     # HOSTLIB_ZPHOTEFF masks, not the photo-z the data file reports.
     n_sne = len(results["parameters"]["sim_redshift_cmb"])
     true_z = np.array(results["parameters"]["sim_redshift_cmb"])
@@ -316,9 +316,9 @@ def test_speceff_map_on_salt2mb(snana_fixture, tmp_path):
 
 def test_speceff_map_missing_a_field_aborts_unless_told_not_to(snana_fixture, tmp_path):
     """A triggered event whose field matches no SPECEFF map aborts, as the
-    refactored map reader does (gen_searcheff_map, sntools_trigger.c:2985);
+    refactored map reader does (gen_searcheff_map, sntools_trigger.c:2987);
     OPT_FIELDMATCH_REQUIRE: 0 in the map file gives it EFF=0 instead
-    (:2990). The DES SIMLIB has deep and shallow fields; the map names the
+    (:2992). The DES SIMLIB has deep and shallow fields; the map names the
     deep ones only."""
     from jax_snlc_core.logging import SNANAError
 

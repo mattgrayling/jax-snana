@@ -16,7 +16,6 @@ Supports:
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import jax
@@ -25,9 +24,17 @@ import numpy as np
 
 from jax_snlc_core import logging as log
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import open_text, skip_docana
+from jax_snlc_core.snana_files import exact_values, gridmap_segments, split_names
 
 logger = logging.getLogger(__name__)
+
+# the GENGAUSS key family (sntools_genGauss_asym.c:510-606)
+GENGAUSS_KEY_STEMS = ('GENPEAK_', 'GENMEAN_', 'GENPEAKRANGE_', 'GENSIGMA_',
+                      'GENSKEW_', 'GENRANGE_', 'GENGRID_', 'GENPROB2_',
+                      'GENPEAK2_', 'GENSIGMA2_')
+
+# the whole-run keys a GENPDF_FILE may carry (sntools_genPDF.c:213-225)
+GENPDF_RUN_KEYS = ('MAG_OFFSET', 'GENMAG_SMEAR')
 
 
 @dataclass
@@ -81,72 +88,59 @@ def parse_genpdf_file(filepath: str) -> Tuple[Dict[str, dict], Dict[str, str]]:
         PDF: -0.3  9.0  0.001
         ...
 
-    A single file can contain multiple maps separated by VARNAMES lines.
+    A single file can contain multiple maps, each opened by its VARNAMES.
 
-    GENPDF files also contain embedded parameter overrides like::
+    GENPDF files may also carry GENGAUSS keys of population parameters and
+    the keys :data:`GENPDF_RUN_KEYS`, such as::
 
         GENPEAK_SALT2ALPHA: 0.115
         GENSIGMA_SALT2ALPHA: 0.003 0.003
         GENRANGE_SALT2ALPHA: 0.09 0.13
 
-    SNANA reads these to set ALPHA/BETA (and potentially other params).
+    which set the run's parameters as the sim input would. Any other key is
+    reported and left unread.
 
     Returns ``(maps, embedded_params)``: ``maps`` maps the sampled variable
     name to ``{'varnames': list, 'data': np.ndarray of shape (n_rows,
     n_cols)}``; ``embedded_params`` maps SNANA keyword to value string.
     """
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise SNANAError(f"GENPDF file not found: {filepath}",
-                         function_name="parse_genpdf_file")
-
-    _OVERRIDE_PREFIXES = (
-        'GENPEAK_', 'GENMEAN_', 'GENSIGMA_', 'GENRANGE_',
-        'GENSIGMA2_', 'GENPEAK2_', 'GENPROB2_',
-        'GENPEAKRANGE_', 'GENSKEW_', 'GENNGRID_',
-        # the whole-run keys the file may carry (sntools_genPDF.c:213-225)
-        'MAG_OFFSET:', 'GENMAG_SMEAR:',
-    )
-
-    maps = {}
+    rows = {}
+    varnames = {}
     embedded_params = {}
-    current_varnames = None
-    current_rows = []
+    sampled = None
+    n_unread = 0     # rows outside any map
+    for segment in gridmap_segments(filepath, 'PDF:'):
+        for key, values in segment:
+            if key == 'VARNAMES':
+                names = split_names(' '.join(values))
+                sampled = names[0]
+                if sampled in rows:
+                    raise SNANAError(f"{filepath} has two maps of {sampled}",
+                                     function_name="parse_genpdf_file")
+                varnames[sampled], rows[sampled] = names, []
+            elif key == 'PDF' and sampled is None:
+                n_unread += 1
+            elif key == 'PDF':
+                rows[sampled].append([float(v) for v in exact_values(
+                    filepath, key, values, len(varnames[sampled]))])
+            elif key.startswith(GENGAUSS_KEY_STEMS) or key in GENPDF_RUN_KEYS:
+                if not values:
+                    raise SNANAError(f"{filepath}: {key}: has no value",
+                                     function_name="parse_genpdf_file")
+                embedded_params[key] = ' '.join(values)
+            else:
+                log.warn(logger, "GENPDF", f"{filepath}: {key}: is not read from a GENPDF_FILE")
+        sampled = None
+    if n_unread:
+        log.warn(logger, "GENPDF", f"{filepath}: {n_unread} PDF: rows outside a map are "
+                 f"not read")
 
-    with open_text(filepath) as f:
-        for line in skip_docana(f):
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            if line.startswith('VARNAMES:'):
-                if current_varnames is not None and current_rows:
-                    _store_map(maps, current_varnames, current_rows)
-                parts = line.split(':', 1)[1].split()
-                current_varnames = parts
-                current_rows = []
-            elif line.startswith('PDF:'):
-                values = line.split(':', 1)[1].split()
-                current_rows.append([float(v) for v in values])
-            elif line.startswith(_OVERRIDE_PREFIXES):
-                key, _, val = line.partition(':')
-                if val.strip():
-                    embedded_params[key.strip()] = val.strip()
-
-    if current_varnames is not None and current_rows:
-        _store_map(maps, current_varnames, current_rows)
-
-    return maps, embedded_params
-
-
-def _store_map(maps, varnames, rows):
-    """Store a parsed GENPDF map. The sampled variable is the first one (before PROB)."""
-    data = np.array(rows)
-    sampled_var = varnames[0]
-    maps[sampled_var] = {
-        'varnames': varnames,
-        'data': data
-    }
+    for name, map_rows in rows.items():
+        if not map_rows:
+            raise SNANAError(f"{filepath}: the {name} map has no PDF rows",
+                             function_name="parse_genpdf_file")
+    return ({name: {'varnames': varnames[name], 'data': np.array(map_rows)}
+             for name, map_rows in rows.items()}, embedded_params)
 
 
 def _build_genpdf(varname, map_data, prob_expon_rewgt):

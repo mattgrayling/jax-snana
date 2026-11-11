@@ -26,7 +26,7 @@ import time
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import jax.numpy as jnp
 import numpy as np
@@ -46,18 +46,19 @@ from jax_snlc_core.noise import read_fluxerr_model_file
 from jax_snlc_core.peak_time import (OPTMASK_SETPKMJD_FLUXMAX3, OPTMASK_SETPKMJD_NOABORT,
                                      PEAKMJD_MISSING, bazin_peakmjd, fmax_clump_peakmjd,
                                      naive_fluxmax_peakmjd)
-from jax_snlc_core.snana_files import (HOSTGAL_PREFIXES, SNANA_NULLFLOAT, MXBIN_HOSTGALz,
-                                       MXBIN_HOSTGALz_QUANTILE, check_file_docana,
-                                       is_ignorefile, load_survey_fields, read_fits_table,
+from jax_snlc_core.snana_files import (HOSTGAL_NO_HOST_NULL, HOSTGAL_PREFIXES, SNANA_NULLFLOAT,
+                                       check_file_docana, header_words, hostgal_null_key,
+                                       is_ignorefile, key_runs, leading_values,
+                                       load_survey_fields, read_fitres, read_fits_table,
                                        read_simulation_cosmology, resolve_fits_path,
-                                       skip_docana, sndata_root, open_text,
-                                       HOSTGAL_NO_HOST_NULL, hostgal_null_key)
+                                       sndata_root, split_names, table_ids, text_lines,
+                                       word_runs)
 from jax_snlc_core.utils import CUTVAL_OPEN
 
 from .batch import (ERRFLAG_FIT_CUTS, ERRFLAG_FITPREP_NEPOCH, ERRFLAG_FITPREP_NOEPOCHS,
                     ERRFLAG_FITPREP_QUANTILES, ERRFLAG_NO_FIT, LightCurveBatch,
                     choose_epoch_lengths, group_by_epoch_length)
-from .calibration import (apply_flux_fudges, combined_flux_errors,
+from .calibration import (FWHM_PER_SIGMA, apply_flux_fudges, combined_flux_errors,
                           fit_photometry, flux_baselines, magcor_scales, mwebv_options,
                           nonlinearity_scales, read_hostnoise_file, read_magcor_file,
                           read_nonlinearity_file, resolve_mwebv, resolved_filters,
@@ -106,11 +107,29 @@ MJD_TRIGGER_MISSING = -99.0
 _HEAD_DEFAULTS = {
     'MWEBV': 0., 'MWEBV_ERR': 0.,
     'VPEC': 0., 'VPEC_ERR': 0., 'LENSDMU': 0., 'LENSDMU_ERR': 0.,
-    'REDSHIFT_HELIO_ERR': .001, 'REDSHIFT_FINAL_ERR': .001, 'REDSHIFT_CMB_ERR': .001,
+    'REDSHIFT_HELIO_ERR': .001, 'REDSHIFT_FINAL_ERR': .001,
     'PEAKMJD': np.nan, 'SIM_PEAKMJD': np.nan,
-    'RA': np.nan, 'DEC': np.nan, 'DECL': np.nan,
+    'RA': np.nan, 'DEC': np.nan,
     'MJD_TRIGGER': MJD_TRIGGER_MISSING,
 }
+
+# older HEAD key spellings (sntools_dataformat_fits.c:3478, :3565-3616, :3830)
+HEAD_ALIASES = {'DECL': 'DEC', 'IAUC': 'NAME_IAUC', 'REDSHIFT_CMB': 'REDSHIFT_FINAL',
+                'REDSHIFT_CMB_ERR': 'REDSHIFT_FINAL_ERR', 'SIM_TYPE_INDEX': 'SIM_GENTYPE'}
+# and those only TEXT reads (sntools_dataformat_text.c:2373-2604)
+TEXT_HEAD_ALIASES = {**HEAD_ALIASES, 'TYPE': 'SNTYPE', 'SEARCH_PEAKMJD': 'PEAKMJD'}
+
+
+def _head_null(name):
+    """The value of a numeric HEAD column an event does not set: no
+    quantiles or grid points, a host slot's no-host null, or the default
+    above."""
+    if 'NBIN_' in name:
+        return 0
+    if name.startswith('HOSTGAL'):
+        key = hostgal_null_key(re.sub(r'^HOSTGAL[2-9]', 'HOSTGAL', name))
+        return HOSTGAL_NO_HOST_NULL.get(key, SNANA_NULLFLOAT)
+    return _HEAD_DEFAULTS.get(name, SNANA_NULLFLOAT)
 
 # PKMJD carried by an event the Bazin fit could not place (snana.F90:26654)
 PKMJD_NOFIT = -1.0
@@ -185,12 +204,14 @@ def apply_redshift_shifts(shifts, redshifts, head_extras, photoz,
     return redshifts, photoz, zpdf_quantiles, zcmb
 
 
-def check_zphot_quantiles(quantiles, abort: bool) -> None:
-    """SET_SNHOST_QZPHOT (snana.F90:17734) requires the quantiles to increase,
-    skipping entries left at their null marker. Runs on every event read, so a
-    malformed host is caught whether or not the event survives the cuts."""
+def check_zphot_quantiles(quantiles, nbin, abort: bool) -> None:
+    """SET_SNHOST_QZPHOT (snana.F90:17817) requires each event's ``nbin``
+    quantiles to increase, skipping entries left at their null marker. Runs
+    on every event read, so a malformed host is caught whether or not the
+    event survives the cuts."""
     q = np.asarray(quantiles)
-    bad = ~np.all((np.diff(q, axis=1) > 0) | (q[:, 1:] <= -8.0), axis=1)
+    counted = np.arange(1, q.shape[1]) < np.asarray(nbin)[:, None]
+    bad = np.any(counted & (np.diff(q, axis=1) <= 0) & (q[:, 1:] > -8.0), axis=1)
     if not bad.any():
         return
     where = int(np.flatnonzero(bad)[0])
@@ -203,32 +224,26 @@ def check_zphot_quantiles(quantiles, abort: bool) -> None:
 
 def _head_metadata(head_data):
     """Per-SN HEAD scalars, with SNANA's column fallbacks."""
-    def get_column(table, names):
-        for name in names:
-            if name in table.colnames:
-                return np.array(table[name], dtype=np.float64)
-        return np.full(len(table), _HEAD_DEFAULTS.get(names[0], SNANA_NULLFLOAT),
+    def get_column(name):
+        if name in head_data.colnames:
+            return np.array(head_data[name], dtype=np.float64)
+        return np.full(len(head_data), _HEAD_DEFAULTS.get(name, SNANA_NULLFLOAT),
                        dtype=np.float64)
 
-    mwebvs = get_column(head_data, ['MWEBV'])
+    mwebvs = get_column('MWEBV')
     # MWEBV_ERR defaults to XTMW_FRACERR = 16% of MWEBV; the header column
     # overrides that only above 1e-12 (snana.F90:3908-3916).
-    mwebv_errs = get_column(head_data, ['MWEBV_ERR'])
-    peakmjds = get_column(head_data, ['PEAKMJD', 'SIM_PEAKMJD'])
-    # the fit uses zHELIO where defined, else zCMB (snana.F90:4256, :4292),
-    # and zCMB itself falls back to REDSHIFT_CMB where undefined (:4277)
-    zhel = get_column(head_data, ['REDSHIFT_HELIO'])
-    zcmb = get_column(head_data, ['REDSHIFT_FINAL'])
-    zcmb_err = get_column(head_data, ['REDSHIFT_FINAL_ERR'])
-    alt = zcmb < 0.0
-    zcmb = np.where(alt, get_column(head_data, ['REDSHIFT_CMB']), zcmb)
-    zcmb_err = np.where(
-        alt, get_column(head_data, ['REDSHIFT_CMB_ERR']), zcmb_err)
-    ras = get_column(head_data, ['RA'])
-    decs = get_column(head_data, ['DEC', 'DECL'])
+    mwebv_errs = get_column('MWEBV_ERR')
+    peakmjds = get_column('PEAKMJD')
+    # the fit uses zHELIO where defined, else zCMB (snana.F90:4542-4570)
+    zhel = get_column('REDSHIFT_HELIO')
+    zcmb = get_column('REDSHIFT_FINAL')
+    zcmb_err = get_column('REDSHIFT_FINAL_ERR')
+    ras = get_column('RA')
+    decs = get_column('DEC')
     # SET_ZHELIO converts zCMB back to helio (snana.F90:17687-17697)
     use_hel = zhel >= 0.0
-    # SNLC_REDSHIFT at read time (snana.F90:4496, :4533)
+    # SNLC_REDSHIFT at read time (snana.F90:4534, :4571)
     read_redshifts = np.where(use_hel, zhel, zcmb)
     # no sky position: keep zCMB
     on_sky = ~(np.isnan(ras) | np.isnan(decs))
@@ -238,7 +253,7 @@ def _head_metadata(head_data):
     return {
         'redshifts': zhel,
         'redshift_errs': np.where(
-            use_hel, get_column(head_data, ['REDSHIFT_HELIO_ERR']),
+            use_hel, get_column('REDSHIFT_HELIO_ERR'),
             zcmb_err),
         'mwebvs': mwebvs,
         'mwebv_errs': np.where(mwebv_errs >= 1.0e-12, mwebv_errs,
@@ -292,47 +307,49 @@ def _label_codes(column, rows):
 
 def _event_fields(unique_fields, field_codes, sn_idx_all, n_sne, survey):
     """Each event's FIELDLIST: the SURVEY.DEF fields present among its
-    epochs, '+'-joined in SURVEY.DEF order (snana.F90:18885)."""
+    epochs, '+'-joined in SURVEY.DEF order (snana.F90:19209). SURVEY.DEF's
+    names are upper case, so an epoch's field matches in any case."""
     present = np.zeros((n_sne, len(unique_fields)), dtype=bool)
     present[sn_idx_all, field_codes] = True
-    code = {f: c for c, f in enumerate(unique_fields)}
+    upper_fields = np.char.upper(unique_fields)
     label = np.full(n_sne, '', dtype='U1')
     for f in load_survey_fields(survey):
-        if f in code:
-            hit = present[:, code[f]]
-            sep = np.where(hit & (label != ''), '+', '')
-            label = np.char.add(np.char.add(label, sep), np.where(hit, f, ''))
+        hit = present[:, upper_fields == f].any(axis=1)
+        sep = np.where(hit & (label != ''), '+', '')
+        label = np.char.add(np.char.add(label, sep), np.where(hit, f, ''))
     return np.where(label == '', 'VOID', label)
 
 
 def _head_extras(head_data, private_varnames, event_fields, peakmjds):
     """Per-SN HEAD scalars the FITRES event columns and the SN cuts read.
 
-    ``event_fields`` stands in for a FIELD column the HEAD lacks, None
-    without a PHOT FIELD column; ``peakmjds`` is None when no header peak
-    was found."""
+    ``event_fields`` is each event's FIELDLIST from its epochs, which a HEAD
+    FIELD does not replace (snana.F90:19209), None without a PHOT FIELD
+    column; ``peakmjds`` is None when no header peak was found."""
     out = {
         col: np.array(head_data[col])
-        for col in ('SNTYPE', 'FIELD', 'NAME_TRANSIENT', 'PIXSIZE', 'SUBSURVEY',
+        for col in ('SNTYPE', 'NAME_TRANSIENT', 'NAME_IAUC', 'PIXSIZE', 'SUBSURVEY',
                     'VPEC', 'VPEC_ERR', 'LENSDMU', 'LENSDMU_ERR', 'MJD_TRIGGER',
                     'REDSHIFT_HELIO', 'REDSHIFT_HELIO_ERR',
                     # cut quantities only, not FITRES output
                     'SIM_SEARCHEFF_MASK', 'SIM_MODEL_INDEX')
         if col in head_data.colnames
     }
-    # IAUC before CODE_IVERSION 25 (sntools_dataformat_fits.c:3511)
-    for col in ('NAME_IAUC', 'IAUC'):
-        if col in head_data.colnames:
-            out['NAME_IAUC'] = np.array(head_data[col])
-            break
-    for col in private_varnames:
+    # PRIVATE(<name>) columns, those the read list names or else all
+    # (RD_PRIVATE_INIT, sntools_data.c:1282)
+    private = list(private_varnames)
+    if not private:
+        private = [col[len('PRIVATE('):-1] for col in head_data.colnames
+                   if col.startswith('PRIVATE(')]
+    for name in private:
+        col = f'PRIVATE({name})'
         if col not in head_data.colnames:
             raise SNANAError(
-                f"PRIVATE_VARNAME_READLIST names {col}, absent from the "
-                f"HEAD file", function_name="_head_extras")
+                f"PRIVATE_VARNAME_READLIST names {name}, but the HEAD file "
+                f"has no {col}", function_name="_head_extras")
         out[col] = np.array(head_data[col])
 
-    if 'FIELD' not in out and event_fields is not None:
+    if event_fields is not None:
         out['FIELD'] = event_fields
     if peakmjds is not None:
         out['PEAKMJD'] = peakmjds
@@ -395,15 +412,17 @@ def _host_photoz_columns(head_data, abort_on_badqzphot):
         redshift_source_mask = np.array(
             head_data['MASK_REDSHIFT_SOURCE'], dtype=np.int32)
 
-    # quantile vector (sntools_dataformat_fits.c:3761), else legacy Qnnn columns
+    # quantile vector (sntools_dataformat_fits.c:3778), else legacy Qnnn columns
     if 'HOSTGALz_QUANTILE_ZPHOT' in head_data.colnames:
         nbin = np.asarray(head_data['HOSTGALz_NBIN_QUANTILE_ZPHOT'], dtype=int)
         n_q = int(nbin.max()) if len(nbin) else 0
         if n_q > 0:
-            zpdf_quantiles = np.array(
-                head_data['HOSTGALz_QUANTILE_ZPHOT'], dtype=np.float64)[:, :n_q]
-            zpdf_percentiles = np.array(
-                head_data['HOSTGALz_QUANTILE_PERCENT'], dtype=np.float64)[:, :n_q]
+            # a cell past an event's own count is fill, 0 or the null marker
+            beyond = np.arange(n_q) >= nbin[:, None]
+            quantiles = np.array(head_data['HOSTGALz_QUANTILE_ZPHOT'], dtype=np.float64)
+            percentiles = np.array(head_data['HOSTGALz_QUANTILE_PERCENT'], dtype=np.float64)
+            zpdf_quantiles = np.where(beyond, SNANA_NULLFLOAT, quantiles[:, :n_q])
+            zpdf_percentiles = np.where(beyond, SNANA_NULLFLOAT, percentiles[:, :n_q])
             zpdf_nbin = nbin
     else:
         q_cols = sorted([c for c in head_data.colnames
@@ -416,7 +435,7 @@ def _host_photoz_columns(head_data, abort_on_badqzphot):
                 zpdf_quantiles.shape).copy()
             zpdf_nbin = np.full(len(zpdf_quantiles), len(q_cols))
     if zpdf_quantiles is not None:
-        check_zphot_quantiles(zpdf_quantiles, abort_on_badqzphot)
+        check_zphot_quantiles(zpdf_quantiles, zpdf_nbin, abort_on_badqzphot)
 
     return (photoz, photoz_err, zpdf_quantiles, zpdf_percentiles, zpdf_nbin,
             redshift_source_mask)
@@ -466,7 +485,7 @@ def _resolve_redshifts(head_data, redshifts, redshift_errs, ras, decs,
     (photoz, photoz_err, zpdf_quantiles, zpdf_percentiles, zpdf_nbin,
      redshift_source_mask) = _host_photoz_columns(
         head_data, abort_on_badqzphot)
-    # SET_SNHOST_QZPHOT (snana.F90:17728), SET_SNHOST_ZPHOT (:17984)
+    # SET_SNHOST_QZPHOT (snana.F90:17817), SET_SNHOST_ZPHOT (:18076)
     if use_snhost_zphot or use_snhost_qzphot:
         if use_snhost_zphot:
             if photoz is None:
@@ -529,7 +548,7 @@ def _resolve_redshifts(head_data, redshifts, redshift_errs, ras, decs,
 def _peak_view(batch, keep, sn_idx_all, mjds, fluxcals, fluxcalerrs,
                filter_indices):
     """``batch`` holding the epochs SET_PEAKMJD sees: ``keep``, every band,
-    flux and error before any fudge (snana.F90:17224, :17318)."""
+    flux and error before any fudge (snana.F90:17313, :17407)."""
     counts, rows, slots, width = _padded_slots(keep, sn_idx_all, batch.n_sne)
 
     def padded(values, dtype=np.float64):
@@ -708,122 +727,173 @@ def _apply_jobsplit(batch, jobsplit):
 
 
 def read_epoch_ignore_file(path):
-    """SNANA EPOCH_IGNORE_FILE (READ_EPIGNORE_FILE, snana.F90:12957).
+    """SNANA EPOCH_IGNORE_FILE (READ_EPIGNORE_FILE, snana.F90:12881).
 
-    ``IGNORE: <CID> <MJD> <FILTER>`` rows name single epochs to drop; a
-    ``PHOTFLAG_MSKREJ: <mask>`` row supplies a rejection mask alongside them.
-    Returns ``(ignored_epochs, photflag_mskrej_or_None)`` where the first is a
-    set of ``(cid, round(mjd, 3), band)``, the same keying MAGCOR_FILE uses.
+    ``IGNORE: <CID> <MJD> <FILTER>`` entries name single epochs to drop; a
+    ``PHOTFLAG_MSKREJ: <mask>``, or a ``PHOTFLAG_BITLIST_REJECT:`` list of
+    comma-separated bits, supplies a rejection mask alongside them, the mask
+    winning when both are given. Returns ``(ignored_epochs, mask_or_None)``
+    where the first is a set of ``(cid, round(mjd, 3), band)``, the same
+    keying MAGCOR_FILE uses. As SNANA does, each key takes the words it
+    needs and any other word, such as a note after an entry, is passed over.
     """
-    ignored, mask = set(), None
-    with open(os.path.expandvars(path)) as fh:
-        for line in fh:
-            toks = line.split('#')[0].split()
-            if not toks:
-                continue
-            if toks[0] == 'IGNORE:':
-                ignored.add((toks[1], round(float(toks[2]), 3), toks[3]))
-            elif toks[0] == 'PHOTFLAG_MSKREJ:':
-                mask = int(float(toks[1]))
+    ignored, mask, bits = set(), None, None
+    for key, values in key_runs(os.path.expandvars(path)):
+        if key == 'IGNORE':
+            cid, mjd, band = leading_values(path, key, values, 3)
+            ignored.add((cid, round(float(mjd), 3), band))
+        elif key == 'PHOTFLAG_MSKREJ':
+            mask = int(leading_values(path, key, values, 1)[0])
+        elif key == 'PHOTFLAG_BITLIST_REJECT':
+            bitlist = leading_values(path, key, values, 1)[0]
+            bits = [int(bit) for bit in split_names(bitlist)]
+        else:
+            log.warn(logger, "EPOCH_IGNORE", f"{path}: {key}: is not read")
+    if mask is None and bits is not None:
+        mask = sum(1 << bit for bit in set(bits))
     return ignored, mask
 
 
-# HEAD columns matched by the override's first VARNAMES column
-_OVERRIDE_MATCH_COL = {'CID': 'SNID', 'SNID': 'SNID',
-                       'GALID': 'HOSTGAL_OBJID',
-                       'HOSTGAL_OBJID': 'HOSTGAL_OBJID'}
+def version_epoch_ignore(config, sim_dir):
+    """The ``epoch_ignore`` and ``photflag_mskrej`` loader arguments of the
+    data version ``sim_dir``, as :func:`version_prefix` takes it (None for
+    tables supplied in memory).
+    EPOCH_IGNORE_FILE names one file for every version, or with DEFAULT each
+    version's own ``<VERSION>.IGNORE`` where it exists. The file's mask
+    applies only when the namelist sets none (snana.F90:13063-13090)."""
+    mskrej = config.selection.photflag_mskrej
+    ignore_file = config.selection.epoch_ignore_file
+    if ignore_file == 'DEFAULT':
+        ignore_file = None
+        if sim_dir is not None:
+            default = Path(resolve_fits_path(f'{version_prefix(sim_dir)}.IGNORE'))
+            ignore_file = default if default.exists() else None
+    if ignore_file is None:
+        return dict(epoch_ignore=None, photflag_mskrej=mskrej)
+    epoch_ignore, file_mask = read_epoch_ignore_file(ignore_file)
+    if not mskrej and file_mask is not None:
+        mskrej = (file_mask,)
+    return dict(epoch_ignore=epoch_ignore, photflag_mskrej=mskrej)
+
+
+# the override's first VARNAMES columns that match hosts; any other matches
+# events (RD_OVERRIDE_INIT, sntools_data.c:1431-1438)
+_OVERRIDE_HOST_KEYS = ('GALID', 'HOSTGAL_OBJID')
+# override names SNANA refuses, with the name meant (rd_override_check_mistake)
+_OVERRIDE_MISTAKES = {'HOSTGAL_ZPHOT': 'HOSTGAL_PHOTOZ', 'HOSTGAL_ZPHOTERR': 'HOSTGAL_PHOTOZ_ERR',
+                      'HOSTGAL_ZPHOT_ERR': 'HOSTGAL_PHOTOZ_ERR', 'HOSTGAL_ZSPEC': 'HOSTGAL_SPECZ',
+                      'HOSTGAL_ZSPECERR': 'HOSTGAL_SPECZ_ERR',
+                      'HOSTGAL_ZSPEC_ERR': 'HOSTGAL_SPECZ_ERR'}
 # quantile overrides: QZPHOTnn columns with implied uniform percentiles
-# (PREFIX_QZPHOT, sndata.h:131), or one row per quantile in these two columns
+# (PREFIX_QZPHOT, sndata.h:133), or one row per quantile in these two columns
 QZPHOT_OVERRIDE_PREFIX = 'QZPHOT'
 QUANTILE_ROW_COLUMNS = ('HOSTGALz_QUANTILE_ZPHOT', 'HOSTGALz_QUANTILE_PERCENT')
 # a host LOGMASS(z) grid, one row per redshift (rd_override_hostgal2z)
 LOGMASS_ROW_COLUMNS = ('HOSTGALz_LOGMASS_ZGRID', 'HOSTGALz_LOGMASS_VALGRID',
                        'HOSTGALz_LOGMASS_ERRGRID')
 OBSOLETE_QZPHOT_PREFIX = 'HOSTGAL_ZPHOT_Q'
+# each host slot's per-event vectors, redshift quantiles and LOGMASS(z)
+# grids, to the key counting their values (init_SNDATA_HOSTGALz, sntools.c:9109)
+HOSTGALZ_VECTORS = {
+    f'{prefix}z_{suffix}': f'{prefix}z_NBIN_{grid}'
+    for prefix in HOSTGAL_PREFIXES
+    for grid, suffixes in (('QUANTILE_ZPHOT', ('QUANTILE_ZPHOT', 'QUANTILE_PERCENT')),
+                           ('LOGMASS_ZGRID', ('LOGMASS_ZGRID', 'LOGMASS_VALGRID',
+                                              'LOGMASS_ERRGRID')))
+    for suffix in suffixes}
+
+
+class HeaderOverride(NamedTuple):
+    """What HEADER_OVERRIDE_FILE/DIR give: the HEAD column the files' first
+    VARNAMES column matches, each variable's value per key (a list for the
+    per-quantile and per-redshift row columns), and the variables an event
+    the files lack takes as unset rather than as read (NULL_ON_MISSING_EVENT)."""
+    match_col: str
+    values: Dict[str, Dict[str, Any]]
+    null_on_missing: frozenset = frozenset()
 
 
 def read_header_override_file(file_list=None, override_dir=None):
-    """SNANA HEADER_OVERRIDE_FILE/DIR (RD_OVERRIDE_INIT): per-CID (or per-GALID)
-    replacements for existing HEAD columns. Reads one or more SNANA text tables
-    (optional DOCANA block, then ``VARNAMES:`` + ``SN:``/``ROW:``/``GAL:``
-    rows, a key of ``*`` repeating the previous row's); the first VARNAMES
-    column is the match key (CID/SNID or GALID/HOSTGAL_OBJID), the rest are
-    override columns. Returns ``(match_col, values)`` where ``match_col`` is
-    the HEAD column to match on and ``values`` maps ``varname -> {key_str:
-    value}``, the value a list for the per-quantile row columns. All files
-    must share the match mode."""
+    """SNANA HEADER_OVERRIDE_FILE/DIR (RD_OVERRIDE_INIT,
+    sntools_data.c:1353-1578): per-event (or per-host) replacements for HEAD
+    columns, or new ones. Either key gives a comma-separated list of SNANA
+    text tables, or one directory, whose tables are those its
+    ``<dir>/<dir>.LIST`` names (get_override_file_list, :1733). A table has an optional
+    ``NULL_ON_MISSING_EVENT: 1`` before ``VARNAMES:``, then ``SN:``,
+    ``ROW:`` or ``GAL:`` rows, a key of ``*`` repeating the previous row's.
+    A first VARNAMES column GALID or HOSTGAL_OBJID matches hosts, any other
+    events; all files must match the same. Files and a directory together
+    are an error (INIT_READ_OVERRIDE, snana.F90:2843). Returns the
+    :class:`HeaderOverride`, or None without files."""
+    if file_list and override_dir:
+        raise SNANAError("Cannot specify OVERRIDE_FILE and OVERRIDE_DIR; select one or the "
+                         "other", function_name="read_header_override_file")
     paths = []
-    for entry in (file_list or []):
-        paths.extend(p for p in os.path.expandvars(entry).split(',') if p)
-    if override_dir:
-        d = Path(os.path.expandvars(override_dir))
-        paths.extend(sorted(str(p) for p in d.iterdir()))
+    for entry in file_list or ([override_dir] if override_dir else []):
+        entry = os.path.expandvars(entry)
+        if ',' not in entry and Path(entry).is_dir():
+            directory = Path(entry)
+            list_file = resolve_fits_path(directory / f"{directory.name}.LIST", required=True)
+            paths += [str(directory / name) for words in text_lines(list_file) for name in words]
+        else:
+            paths += [p for p in entry.split(',') if p]
     if not paths:
         return None
 
     match_col = None
     values = {}
+    null_on_missing = set()
     for path in paths:
-        varnames = None
-        key = None
-        with open(path) as fh:
-            for line in skip_docana(fh):
-                toks = line.split('#')[0].split()
-                if not toks:
-                    continue
-                if toks[0] == 'VARNAMES:':
-                    varnames = toks[1:]
-                    obsolete = [v for v in varnames
-                                if v.startswith(OBSOLETE_QZPHOT_PREFIX)]
-                    if obsolete:
-                        raise SNANAError(
-                            f"Found {len(obsolete)} obsolete OVERRIDE columns with "
-                            f"'{OBSOLETE_QZPHOT_PREFIX}' prefix; replace with "
-                            f"QZPHOT00 QZPHOT01 ... QZPHOT{len(obsolete) - 1:02d}",
-                            function_name="rd_override_qzphot_implicit")
-                    key_name = varnames[0].upper()
-                    if key_name not in _OVERRIDE_MATCH_COL:
-                        raise SNANAError(
-                            f"header-override match key '{varnames[0]}' must be "
-                            "CID/SNID or GALID/HOSTGAL_OBJID",
-                            function_name="read_header_override_file")
-                    this_col = _OVERRIDE_MATCH_COL[key_name]
-                    if match_col is None:
-                        match_col = this_col
-                    elif this_col != match_col:
-                        raise SNANAError(
-                            "header-override files mix CID and GALID keys; all "
-                            "must use the same match key",
-                            function_name="read_header_override_file")
-                elif toks[0] in ('ROW:', 'SN:', 'GAL:'):
-                    if toks[1] == '*' and key is None:
-                        raise SNANAError(
-                            f"the first row of {path} repeats the previous "
-                            f"key with '*', and there is none",
-                            function_name="read_header_override_file")
-                    if toks[1] != '*':
-                        key = toks[1]
-                    for j, vname in enumerate(varnames[1:], start=1):
-                        col = ('REDSHIFT_FINAL' if vname.upper() == 'REDSHIFT_CMB'
-                               else vname)
-                        raw = toks[1 + j]
-                        try:
-                            val = float(raw)
-                        except ValueError:
-                            val = raw
-                        if col in QUANTILE_ROW_COLUMNS or col in LOGMASS_ROW_COLUMNS:
-                            values.setdefault(col, {}).setdefault(key, []).append(val)
-                        else:
-                            values.setdefault(col, {})[key] = val
-    return match_col, values
+        missing_null = False
+        for key, words in word_runs(path, header_words(text_lines(path), 'VARNAMES:')):
+            if key == 'NULL_ON_MISSING_EVENT':
+                missing_null = int(leading_values(path, key, words, 1)[0]) > 0
+        # an SNANA table, read by SNTABLE_AUTOSTORE (sntools_data.c:1425)
+        table = read_fitres(path, as_text=True, row_keys=('ROW:', 'SN:', 'GAL:'))
+        varnames = table.varnames
+        obsolete = [v for v in varnames if v.startswith(OBSOLETE_QZPHOT_PREFIX)]
+        if obsolete:
+            raise SNANAError(
+                f"Found {len(obsolete)} obsolete OVERRIDE columns with "
+                f"'{OBSOLETE_QZPHOT_PREFIX}' prefix; replace with "
+                f"QZPHOT00 QZPHOT01 ... QZPHOT{len(obsolete) - 1:02d}",
+                function_name="rd_override_qzphot_implicit")
+        mistakes = [v for v in varnames if v in _OVERRIDE_MISTAKES]
+        if mistakes:
+            raise SNANAError(
+                f"{path} overrides {mistakes[0]}; the HEAD column is "
+                f"{_OVERRIDE_MISTAKES[mistakes[0]]}",
+                function_name="read_header_override_file")
+        this_col = 'HOSTGAL_OBJID' if varnames[0].upper() in _OVERRIDE_HOST_KEYS else 'SNID'
+        if match_col not in (None, this_col):
+            raise SNANAError(
+                "header-override files mix event and host keys; all "
+                "must use the same match key",
+                function_name="read_header_override_file")
+        match_col = this_col
+        columns = [HEAD_ALIASES.get(v, v) for v in varnames[1:]]
+        if missing_null:
+            null_on_missing.update(columns)
+        keys = table.df[varnames[0]]
+        for name, col in zip(varnames[1:], columns):
+            for key, raw in zip(keys, table.df[name]):
+                try:
+                    val = float(raw)
+                except ValueError:
+                    val = raw
+                if col in QUANTILE_ROW_COLUMNS or col in LOGMASS_ROW_COLUMNS:
+                    values.setdefault(col, {}).setdefault(key, []).append(val)
+                else:
+                    values.setdefault(col, {})[key] = val
+    return HeaderOverride(match_col, values, frozenset(null_on_missing))
 
 
 def _quantile_overrides(values):
     """The quantile overrides as ``{key: (z, percent)}`` arrays, and whether
     they came as QZPHOTnn columns. Those carry the quantiles as read, with
     the percentiles uniform over the count of values >= 0 and -9 after
-    (rd_override_qzphot_implicit, sntools_data.c:2288); the per-quantile rows
-    carry both lists as given (rd_override_hostgal2z, :2400)."""
+    (rd_override_qzphot_implicit, sntools_data.c:2290); the per-quantile rows
+    carry both lists as given (rd_override_hostgal2z, :2402)."""
     implicit = sorted((v for v in values
                        if v.startswith(QZPHOT_OVERRIDE_PREFIX)
                        and v[len(QZPHOT_OVERRIDE_PREFIX):].isdigit()),
@@ -844,82 +914,86 @@ def _quantile_overrides(values):
     return {}, False
 
 
+def _null_padded(per_event):
+    """One vector column from each event's own values, of any length,
+    padded with the SNANA null to the longest."""
+    column = np.full((len(per_event), max(map(len, per_event), default=0)),
+                     SNANA_NULLFLOAT)
+    for row, values in zip(column, per_event):
+        row[:len(values)] = values
+    return column
+
+
+def _stored_vectors(head_data, nbin, names):
+    """Each event's values in the HEAD's vector columns ``names``, the first
+    ``nbin`` of each row, or none per event where the HEAD lacks them."""
+    if names[0] not in head_data.colnames:
+        return [[()] * len(nbin) for _ in names]
+    return [[row[:count] for row, count in zip(np.asarray(head_data[name]), nbin)]
+            for name in names]
+
+
 def _override_slot_quantiles(head_data, prefix, keys, table, every_event):
     """Write the override's quantiles into one host slot's HOSTGALz vector
-    columns (created at the 20-wide null layout when the HEAD lacks them),
-    for the events whose ``keys`` the ``table`` holds, or for every event
-    under the QZPHOTnn spelling, which leaves an absent event with none
+    columns, for the events whose ``keys`` the ``table`` holds, or for every
+    event under the QZPHOTnn spelling, which leaves an absent event with none
     (rd_override_qzphot_implicit runs for each event). Returns the mask of
     events written."""
-    n = len(keys)
-    names = [f'{prefix}_NBIN_QUANTILE_ZPHOT', f'{prefix}_QUANTILE_ZPHOT',
-             f'{prefix}_QUANTILE_PERCENT']
-    if names[0] not in head_data.colnames:
-        head_data[names[0]] = np.zeros(n, dtype=np.int16)
-        for name in names[1:]:
-            head_data[name] = np.full((n, MXBIN_HOSTGALz_QUANTILE), SNANA_NULLFLOAT,
-                                      dtype=np.float32)
-    nbin, z, percent = (np.array(head_data[name]) for name in names)
-    written = np.zeros(n, dtype=bool)
+    nbin_name = f'{prefix}_NBIN_QUANTILE_ZPHOT'
+    names = (f'{prefix}_QUANTILE_ZPHOT', f'{prefix}_QUANTILE_PERCENT')
+    nbin = (np.array(head_data[nbin_name]) if nbin_name in head_data.colnames
+            else np.zeros(len(keys), dtype=np.int16))
+    z, percent = _stored_vectors(head_data, nbin, names)
+    written = np.zeros(len(keys), dtype=bool)
     for i, key in enumerate(keys):
         if key in table:
-            zq, pq = table[key]
-            nbin[i] = int((zq >= 0).sum())
-            z[i], percent[i] = SNANA_NULLFLOAT, SNANA_NULLFLOAT
-            z[i, :len(zq)], percent[i, :len(pq)] = zq, pq
+            z[i], percent[i] = table[key]
+            nbin[i] = int((z[i] >= 0).sum())
             written[i] = True
         elif every_event:
-            nbin[i], z[i], percent[i] = 0, SNANA_NULLFLOAT, SNANA_NULLFLOAT
+            nbin[i], z[i], percent[i] = 0, (), ()
             written[i] = True
-    for name, col in zip(names, (nbin, z, percent)):
-        head_data[name] = col
+    head_data[nbin_name] = nbin
+    for name, vectors in zip(names, (z, percent)):
+        head_data[name] = _null_padded(vectors)
     return written
 
 
 def _override_logmass_grid(head_data, keys, values):
     """Write the override's LOGMASS(z) grid into the reported host's
-    HOSTGALz vector columns, created at the 40-wide null layout when the
-    HEAD lacks them, for the events whose key the override holds. SNANA
-    reads the error grid beside the mass grid for every host, so an override
-    without it would leave each error at the -9 fill; it is refused."""
+    HOSTGALz vector columns, for the events whose key the override holds.
+    SNANA reads the error grid beside the mass grid for every host, so an
+    override without it would leave each error at the -9 fill; it is
+    refused."""
     missing = [c for c in LOGMASS_ROW_COLUMNS if c not in values]
     if missing:
         raise SNANAError(
             f"the header override gives {LOGMASS_ROW_COLUMNS[0]} without "
             f"{', '.join(missing)}", function_name="apply_header_override")
-    n = len(keys)
     nbin_name = 'HOSTGALz_NBIN_LOGMASS_ZGRID'
-    if nbin_name not in head_data.colnames:
-        head_data[nbin_name] = np.zeros(n, dtype=np.int16)
-        for name in LOGMASS_ROW_COLUMNS:
-            head_data[name] = np.full((n, MXBIN_HOSTGALz), SNANA_NULLFLOAT,
-                                      dtype=np.float32)
-    nbin = np.array(head_data[nbin_name])
-    grids = [np.array(head_data[name]) for name in LOGMASS_ROW_COLUMNS]
+    nbin = (np.array(head_data[nbin_name]) if nbin_name in head_data.colnames
+            else np.zeros(len(keys), dtype=np.int16))
+    grids = _stored_vectors(head_data, nbin, LOGMASS_ROW_COLUMNS)
     for i, key in enumerate(keys):
-        if key not in values[LOGMASS_ROW_COLUMNS[0]]:
-            continue
-        rows = [np.asarray(values[name][key], dtype=float)
-                for name in LOGMASS_ROW_COLUMNS]
-        nbin[i] = len(rows[0])
-        for grid, row in zip(grids, rows):
-            grid[i] = SNANA_NULLFLOAT
-            grid[i, :len(row)] = row
+        if key in values[LOGMASS_ROW_COLUMNS[0]]:
+            for grid, name in zip(grids, LOGMASS_ROW_COLUMNS):
+                grid[i] = values[name][key]
+            nbin[i] = len(grids[0][i])
     head_data[nbin_name] = nbin
     for name, grid in zip(LOGMASS_ROW_COLUMNS, grids):
-        head_data[name] = grid
+        head_data[name] = _null_padded(grid)
 
 
 def _set_logmass(host, redshifts, redshift_errs, photoz_fit):
     """Replace the reported host's mass and error by its LOGMASS(z) grid
-    (SET_LOGMASS, snana.F90:17831), which SNANA does only when a header
+    (SET_LOGMASS, snana.F90:17923), which SNANA does only when a header
     override carries the grid. A natural cubic spline through the grid
     gives the mass at a redshift and a second through the error grid its
     error, to which half the summed change in mass across one redshift
     error either side is added in quadrature; a mass of 1 or less, which
     includes a redshift outside the grid, leaves the event as it was. The
     step is taken at the redshift the fit uses and, in a photo-z fit, again
-    at the host's photo-z (FITANA_LOGMASS, snlc_fit.F90:13047)."""
+    at the host's photo-z (FITANA_LOGMASS, snlc_fit.F90:13202)."""
     nz = np.asarray(host['HOSTGALz_NBIN_LOGMASS_ZGRID'], dtype=int)
     if np.any(nz == 1):
         raise SNANAError(
@@ -960,7 +1034,7 @@ def _grid_photoz(nbin, z, percent):
     percent it spans (the first by its own percent, the last by the gap to
     its predecessor, the rest by half the gap between their neighbours) over
     the integer sum of those weights (rd_override_zphot,
-    sntools_data.c:2251-2280; STD_from_SUMS); -9 for an empty grid."""
+    sntools_data.c:2253-2282; STD_from_SUMS); -9 for an empty grid."""
     mean = np.full(len(nbin), SNANA_NULLFLOAT)
     std = np.full(len(nbin), SNANA_NULLFLOAT)
     for i, nz in enumerate(nbin):
@@ -983,14 +1057,17 @@ def _grid_photoz(nbin, z, percent):
 def apply_header_override(head_data, override):
     """Apply a header override (from :func:`read_header_override_file`) to a HEAD
     table, returning an overridden copy rather than editing the caller's table.
-    Overrides columns already present (SNANA-FITS ignores absent ones) and
-    the photo-z quantile vectors, then recomputes what follows from them in
-    SNANA's order (RD_OVERRIDE_POSTPROC, sntools_data.c:1975): zHEL <-> zCMB
-    and their errors, the quantiles of each host slot with a sim's zSN/zHOST
-    rescale on the reported host, the point photo-z of a slot whose quantiles
-    were overridden, and the redshift of an event without a spec-z whose
-    point photo-z was."""
-    match_col, values = override
+    Overrides HEAD columns, appending those the HEAD lacks with the null for
+    events the override does not name, and the photo-z quantile vectors, then
+    recomputes what follows from them in SNANA's order (RD_OVERRIDE_POSTPROC,
+    sntools_data.c:1977): zHEL <-> zCMB and their errors, the quantiles of
+    each host slot with a sim's zSN/zHOST rescale on the reported host, the
+    point photo-z of a slot whose quantiles were overridden, and the redshift
+    of an event without a spec-z whose point photo-z was. A variable under
+    NULL_ON_MISSING_EVENT is null for every event the override does not
+    name; for the quantiles that covers every host slot's quantiles and
+    point photo-z (init_override_missing_event, sntools_data.c:1580)."""
+    match_col, values, null_on_missing = override
     head_data = head_data.copy()
     if match_col not in head_data.colnames:
         logger.warning("header-override match column %s absent from HEAD; "
@@ -1003,29 +1080,40 @@ def apply_header_override(head_data, override):
              and v not in QUANTILE_ROW_COLUMNS and v not in LOGMASS_ROW_COLUMNS}
     if LOGMASS_ROW_COLUMNS[0] in values:
         _override_logmass_grid(head_data, keys, values)
+    if null_on_missing & {f'{QZPHOT_OVERRIDE_PREFIX}00', QUANTILE_ROW_COLUMNS[0]}:
+        for prefix in HOSTGAL_PREFIXES:
+            for name in (f'{prefix}z_NBIN_QUANTILE_ZPHOT', f'{prefix}z_QUANTILE_ZPHOT',
+                         f'{prefix}z_QUANTILE_PERCENT', f'{prefix}_PHOTOZ',
+                         f'{prefix}_PHOTOZ_ERR'):
+                if name in head_data.colnames:
+                    head_data[name][:] = _head_null(name)
 
     ra = (np.asarray(head_data['RA'], dtype=float)
           if 'RA' in head_data.colnames else None)
-    dec = None
-    for c in ('DEC', 'DECL'):
-        if c in head_data.colnames:
-            dec = np.asarray(head_data[c], dtype=float)
-            break
+    dec = (np.asarray(head_data['DEC'], dtype=float)
+           if 'DEC' in head_data.colnames else None)
 
     # every row sharing a key is overridden, as SNANA does
     overridden = {}  # varname -> boolean row mask
     for vname, kv in plain.items():
-        if vname not in head_data.colnames:
-            logger.warning("header-override column %s absent from HEAD; ignored "
-                           "(SNANA-FITS no-op)", vname)
-            continue
-        ids = np.asarray(list(kv), dtype=keys.dtype)
+        ids = np.asarray(list(kv), dtype=str)
         vals = np.asarray(list(kv.values()))
         order = np.argsort(ids)
         slot = order[np.minimum(np.searchsorted(ids, keys, sorter=order),
                                 len(ids) - 1)]
         hit = ids[slot] == keys
-        col = np.array(head_data[vname])
+        null = '' if vals.dtype.kind == 'U' else _head_null(vname)
+        if vname in head_data.colnames:
+            col = np.array(head_data[vname])
+        else:
+            log.warn(logger, "HEADER_OVERRIDE", f"{vname} is not in the data, so the override "
+                     f"adds it; check its spelling if it should replace a column")
+            col = np.full(len(keys), null, dtype=vals.dtype)
+        if vals.dtype.kind == 'U':
+            # wide enough for the override's labels
+            col = col.astype(np.result_type(col.dtype, vals.dtype))
+        if vname in null_on_missing:
+            col[~hit] = null
         col[hit] = vals[slot[hit]]
         head_data[vname] = col
         overridden[vname] = hit
@@ -1063,7 +1151,7 @@ def apply_header_override(head_data, override):
                                  plain)
 
     # an overridden point photo-z becomes the redshift of an event that has
-    # no spec-z (rd_override_zphot, sntools_data.c:2206-2218)
+    # no spec-z (rd_override_zphot, sntools_data.c:2208-2220)
     zp = rows('HOSTGAL_PHOTOZ')
     if zp.any() and ra is not None and dec is not None:
         zphot = np.asarray(head_data['HOSTGAL_PHOTOZ'], dtype=float)
@@ -1093,7 +1181,7 @@ def _override_host_quantiles(head_data, match_col, keys, quantiles, implicit,
                              plain):
     """The quantile part of an override: the reported host's vector from the
     event's key, rescaled by zSN over the true host's redshift in a sim
-    (sntools_data.c:2232); under a GALID key the neighbour slots' vectors
+    (sntools_data.c:2234); under a GALID key the neighbour slots' vectors
     from their own GALIDs, unscaled (rd_override_hostgal2z). Unless the
     override also carries the slot's point photo-z column, a slot whose
     quantiles were overridden takes the grid's mean and width as its
@@ -1135,34 +1223,48 @@ def _override_host_quantiles(head_data, match_col, keys, quantiles, implicit,
 
 
 def parse_snana_dat(path, *, header_only=False):
-    """Parse one SNANA TEXT light-curve file (<SN>.DAT): ``KEY: value`` header
-    keywords (comments after ``#`` stripped) and the ``VARLIST:`` / ``OBS:``
-    photometry table. Returns (header dict, varlist, {col: [str values]}).
-    ``header_only`` stops at the photometry table for survey discovery."""
-    header, varlist, obs = {}, None, {}
-    key = None
-    with open_text(path) as fh:
-        for raw in fh:
-            line = raw.split('#', 1)[0].strip()
-            if not line:
-                continue
-            if line.startswith('VARLIST:'):
-                if header_only:
-                    break
-                varlist = line.split()[1:]
-                obs = {c: [] for c in varlist}
-            elif line.startswith('OBS:'):
-                for col, val in zip(varlist, line.split()[1:]):
-                    obs[col].append(val)
-            elif line.startswith(('END', 'DETECTION', 'SPECTRUM', 'NSPECTRA')):
-                continue
-            elif ':' in line:
-                key, rest = line.split(':', 1)
-                key = key.strip()
-                header[key] = rest.strip()
-            elif varlist is None and key is not None:
-                header[key] += ' ' + line
-    return header, varlist, obs
+    """Parse one SNANA TEXT light-curve file (<SN>.DAT), which SNANA reads as
+    one stream of words (RD_SNTEXTIO_EVENT, sntools_dataformat_text.c:2050):
+    the header keys before the first ``OBS:``, each with the words up to the
+    next key, then one ``OBS:`` row per epoch, up to an END key or the
+    spectra's ``NSPECTRA:``. The photometry columns are the first NVAR
+    ``VARLIST:`` names, all of them without NVAR, and each row gives the
+    first that many of its words; SNANA passes over any words after them
+    (rd_sntextio_varlist_obs, parse_SNTEXTIO_OBS). A row short of a value,
+    or a count of rows other than NOBS, is an error. Returns
+    (header {key: words}, varlist, {column: [str values]});
+    ``header_only`` stops at the photometry for survey discovery."""
+    header, rows = {}, []
+    for key, values in key_runs(path):
+        if key == 'OBS':
+            if header_only:
+                break
+            rows.append(values)
+        elif not rows:
+            header[key] = values
+        elif 'END' in key or key == 'NSPECTRA':
+            break
+    if header_only:
+        return header, None, None
+    if 'VARLIST' not in header:
+        raise SNANAError(f"{path} has no VARLIST", function_name="parse_snana_dat")
+    nvar = int(header['NVAR'][0]) if 'NVAR' in header else len(header['VARLIST'])
+    varlist = header.pop('VARLIST')[:nvar]
+    if len(varlist) < nvar:
+        raise SNANAError(f"{path}: VARLIST names {len(varlist)} columns, NVAR {nvar}",
+                         function_name="parse_snana_dat")
+    # NOBS counts the OBS rows, and is 0 where the file gives none (sntools.c:8825)
+    nobs = int(header['NOBS'][0]) if 'NOBS' in header else 0
+    if nobs != len(rows):
+        raise SNANAError(f"{path} holds {len(rows)} OBS rows, NOBS {nobs}",
+                         function_name="parse_snana_dat")
+    for row in rows:
+        if len(row) < nvar:
+            raise SNANAError(f"{path}: 'OBS: {' '.join(row)}' holds {len(row)} values "
+                             f"for the {nvar} VARLIST columns",
+                             function_name="parse_snana_dat")
+    return header, varlist, {name: [row[i] for row in rows]
+                             for i, name in enumerate(varlist)}
 
 
 def read_snana_fits(head_path: str, phot_path: str):
@@ -1175,27 +1277,40 @@ def read_snana_fits(head_path: str, phot_path: str):
 
     The header must carry DATATYPE and SURVEY, and a SNANA simulation's also
     SIMOPT_MWCOLORLAW and SIM_MWRV, the Milky Way law it was simulated with;
-    ``sim_mw_colour_law`` is that pair, None for any other data.
+    ``sim_mw_colour_law`` is that pair, None for any other data. DATATYPE is
+    DATA, SIM_SNANA or SIM_MAGOBS, the last for fakes overlaid on real images,
+    which are read as data (RDGLOBAL, snana.F90:3527-3537).
     """
     primary, head = read_fits_table(resolve_fits_path(head_path))
     datatype = str(primary.get('DATATYPE', '')).strip()
-    required = ('DATATYPE', 'SURVEY', *(
-        SIM_MW_COLOUR_LAW_KEYS if datatype.startswith('SIM_SNANA') else ()))
+    if 'DATATYPE' in primary and not datatype.startswith(('DATA', 'SIM_SNANA', 'SIM_MAGOBS')):
+        raise SNANAError(f"{head_path} has an unrecognised DATATYPE {datatype}",
+                         function_name="read_snana_fits")
+    is_sim = datatype.startswith('SIM_SNANA')
+    required = ('DATATYPE', 'SURVEY', *(SIM_MW_COLOUR_LAW_KEYS if is_sim else ()))
     missing = [k for k in required if k not in primary]
     if missing:
         raise SNANAError(
             f"{head_path} header lacks {', '.join(missing)}",
             function_name="read_snana_fits")
-    is_sim = datatype.startswith('SIM')
     sim_mw_colour_law = (
-        (int(primary['SIMOPT_MWCOLORLAW']), float(primary['SIM_MWRV']))
-        if datatype.startswith('SIM_SNANA') else None)
+        (int(primary['SIMOPT_MWCOLORLAW']), float(primary['SIM_MWRV'])) if is_sim else None)
     survey = str(primary['SURVEY']).strip()
     snana_version = str(primary.get('SNANA_VERSION', '')).strip()
     # Absent in files written before SNANA Jul 2025
     # (sntools_dataformat_fits.c:4203).
     zp_fluxcal = float(primary.get('ZP_FLUXCAL', ZEROPOINT_FLUXCAL_SNANA_ORIG))
     head.convert_bytestring_to_unicode()
+    for alias, name in HEAD_ALIASES.items():
+        if alias in head.colnames and name in head.colnames:
+            head.remove_column(alias)
+        elif alias in head.colnames:
+            head.rename_column(alias, name)
+    # files before CODE_IVERSION 5, or without it, predate NMATCH and take 1
+    # (sntools_dataformat_fits.c:3759-3762, :4499)
+    if int(primary.get('CODE_IVERSION', 1)) <= 4:
+        head['HOSTGAL_NMATCH'] = np.ones(len(head), dtype=int)
+        head['HOSTGAL_NMATCH2'] = np.ones(len(head), dtype=int)
 
     _, phot = read_fits_table(resolve_fits_path(phot_path))
 
@@ -1327,12 +1442,15 @@ def _build_batch(
     phot_fluxcal = np.array(phot_data['FLUXCAL'], dtype=np.float64)
     phot_fluxcalerr = np.array(phot_data['FLUXCALERR'], dtype=np.float64)
 
-    if 'BAND' in phot_data.colnames:
-        band_column = phot_data['BAND']
-    elif 'FLT' in phot_data.colnames:
-        band_column = phot_data['FLT']
-    else:
+    band_names = [name for name in ('FLT', 'BAND') if name in phot_data.colnames]
+    if not band_names:
         raise SNANAError("No BAND or FLT column in PHOT file",
+                         function_name="_build_batch")
+    band_column = phot_data[band_names[0]]
+    if len(band_names) == 2 and np.any(
+            np.char.strip(np.asarray(phot_data['FLT'], dtype='U'))
+            != np.char.strip(np.asarray(phot_data['BAND'], dtype='U'))):
+        raise SNANAError("the PHOT file's FLT and BAND columns disagree",
                          function_name="_build_batch")
 
     # PTROBS pointers (1-indexed in SNANA)
@@ -1346,6 +1464,23 @@ def _build_batch(
     np.cumsum(obs_counts_raw[:-1], out=group_starts[1:])
     valid_offsets = np.arange(total_obs) - np.repeat(group_starts, obs_counts_raw)
     valid_phot_indices = np.repeat(ptrobs_min, obs_counts_raw) + valid_offsets
+
+    # a positive PSF_NEA is one Gaussian PSF (snana.F90:5007-5027, :13906-13917)
+    phot_data = phot_data.copy(copy_data=False)
+    if 'PSF_NEA' in phot_data.colnames or 'PSF_SIG1' in phot_data.colnames:
+        for name in ('PSF_SIG1', 'PSF_SIG2', 'PSF_RATIO'):
+            if name not in phot_data.colnames:
+                phot_data[name] = np.zeros(len(phot_data))
+    if 'PSF_NEA' in phot_data.colnames:
+        nea = np.asarray(phot_data['PSF_NEA'], dtype=float)
+        n_positive = np.concatenate([[0], np.cumsum(nea > 0.0)])
+        event_uses_nea = n_positive[ptrobs_max] > n_positive[ptrobs_min]
+        rows = valid_phot_indices[event_uses_nea[sn_idx_all]]
+        for name, values in (('PSF_SIG1', np.sqrt(nea[rows] / (4.0 * np.pi))),
+                             ('PSF_SIG2', 0.0), ('PSF_RATIO', 0.0)):
+            column = np.array(phot_data[name])
+            column[rows] = values
+            phot_data[name] = column
 
     # the epochs SNANA reads; nothing below sees the others
     head_cols = _head_metadata(head_data)
@@ -1418,7 +1553,7 @@ def _build_batch(
                 band_codes, unique_bands, photflag_detect, fluxerrcalc_zpterr,
                 zp_fluxcal)
     obs_keep_mask = epoch_quality_cuts(obs_keep_mask, *cut_args, at_read=True)
-    # the OPT_SETPKMJD estimate sees every band (snana.F90:17224)
+    # the OPT_SETPKMJD estimate sees every band (snana.F90:17313)
     peak_keep = obs_keep_mask.copy()
     obs_keep_mask &= fit_band
     obs_keep_mask = epoch_quality_cuts(obs_keep_mask, *cut_args, at_read=False)
@@ -1558,6 +1693,19 @@ def _build_batch(
         for col in head_data.colnames
         if col.startswith('HOSTGAL') and not col.startswith('HOSTGAL_ZPHOT_Q')
     } or None
+    # absent: flags 0, NMATCH -9 (sntools.c:8850-8856); NMATCH2 at least NMATCH (fits.c:3654-3657)
+    if batch_host_data is not None:
+        batch_host_data.setdefault('HOSTGAL_FLAG', np.zeros(n_sne, dtype=int))
+        batch_host_data.setdefault('HOSTGAL2_FLAG', np.zeros(n_sne, dtype=int))
+        nmatch = batch_host_data.setdefault('HOSTGAL_NMATCH', np.full(n_sne, -9))
+        nmatch2 = batch_host_data.get('HOSTGAL_NMATCH2', np.full_like(nmatch, -9))
+        nmatch2 = np.where((nmatch >= 0) & (nmatch2 < 0), nmatch, nmatch2)
+        bad = (nmatch2 >= 0) & (nmatch2 < nmatch)
+        if bad.any():
+            i = int(np.flatnonzero(bad)[0])
+            raise SNANAError(f"CID {snids[i]}: HOSTGAL_NMATCH2={nmatch2[i]} is below "
+                             f"HOSTGAL_NMATCH={nmatch[i]}", function_name="_build_batch")
+        batch_host_data['HOSTGAL_NMATCH2'] = nmatch2
 
     _check_helio2cmb(head_data, ras, decs, snids, ztol_helio2cmb)
     zcols = _resolve_redshifts(
@@ -1568,7 +1716,7 @@ def _build_batch(
         use_snhost_qzphot=use_snhost_qzphot, zshifts=zshifts)
     redshifts = zcols['redshifts']
     redshift_errs = zcols['redshift_errs']
-    if override is not None and LOGMASS_ROW_COLUMNS[0] in override[1]:
+    if override is not None and LOGMASS_ROW_COLUMNS[0] in override.values:
         _set_logmass(batch_host_data, redshifts, redshift_errs, dofit_photoz)
     photoz = zcols['photoz']
     photoz_err = zcols['photoz_err']
@@ -1630,61 +1778,117 @@ def _build_batch(
     return _apply_jobsplit(batch, jobsplit)
 
 
-def _text_head_columns(header):
-    """Expand TEXT error pairs, filter lists and host grids into HEAD columns."""
-    bands = header.get('FILTERS', '').strip()
-    per_band = {'MWXT_MAG', 'RA_AVG', 'DEC_AVG', 'SIM_GALFRAC',
-                'SIM_PEAKMAG', 'SIM_EXPOSURE', 'HOSTGAL_SB_FLUXCAL',
-                'HOSTGAL_SB_FLUXCAL_ERR'}
-    per_band.update(f'{prefix}_{suffix}' for prefix in HOSTGAL_PREFIXES
-                    for suffix in ('MAG', 'MAGERR'))
-    grids = {f'{prefix}z_{suffix}': (f'{prefix}z_NBIN_{count}', size)
-             for prefix in HOSTGAL_PREFIXES
-             for count, suffixes, size in (
-                 ('QUANTILE_ZPHOT', ('QUANTILE_ZPHOT', 'QUANTILE_PERCENT'),
-                  MXBIN_HOSTGALz_QUANTILE),
-                 ('LOGMASS_ZGRID', ('LOGMASS_ZGRID', 'LOGMASS_VALGRID', 'LOGMASS_ERRGRID'),
-                  MXBIN_HOSTGALz))
-             for suffix in suffixes}
+# TEXT header keys holding a label rather than a number
+TEXT_LABEL_KEYS = ('SNID', 'FIELD', 'NAME_TRANSIENT', 'NAME_IAUC', 'SUBSURVEY')
+# TEXT header keys holding one value per FILTERS band
+TEXT_PER_BAND_KEYS = frozenset(
+    {'MWXT_MAG', 'RA_AVG', 'DEC_AVG', 'SIM_GALFRAC', 'SIM_PEAKMAG', 'SIM_TEMPLATEMAG',
+     'SIM_EXPOSURE', 'HOSTGAL_SB_FLUXCAL', 'HOSTGAL_SB_FLUXCAL_ERR'}
+    | {f'{prefix}_{suffix}' for prefix in HOSTGAL_PREFIXES for suffix in ('MAG', 'MAGERR')})
+# TEXT VARLIST spellings to FITS PHOT names (sntools_dataformat_text.c:1782-1884)
+TEXT_OBS_COLUMNS = {
+    'MJD': 'MJD', 'BAND': 'BAND', 'FLT': 'BAND', 'IMGNUM': 'IMGNUM', 'EXPNUM': 'IMGNUM',
+    'DETNUM': 'DETNUM', 'CCDNUM': 'DETNUM', 'XPIX': 'XPIX', 'YPIX': 'YPIX', 'FIELD': 'FIELD',
+    'FLUXCAL': 'FLUXCAL', 'FLUXCALERR': 'FLUXCALERR', 'MAG': 'MAG', 'MAGERR': 'MAGERR',
+    'PHOTFLAG': 'PHOTFLAG', 'PHOTPROB': 'PHOTPROB', 'PSF': 'PSF_SIG1', 'PSF_SIG1': 'PSF_SIG1',
+    'NEA': 'PSF_NEA', 'ZPFLUX': 'ZEROPT', 'ZEROPT': 'ZEROPT', 'ZPT': 'ZEROPT', 'Zpt': 'ZEROPT',
+    'ZPERR': 'ZEROPT_ERR', 'SKY_SIG': 'SKY_SIG', 'SKYSIG': 'SKY_SIG', 'SKY_SIG_T': 'SKY_SIG_T',
+    'SKYSIG_T': 'SKY_SIG_T', 'TEXPOSE': 'TEXPOSE', 'GAIN': 'GAIN', 'SIM_MAGOBS': 'SIM_MAGOBS',
+    'dRA': 'dRA', 'dDEC': 'dDEC', 'AIRMASS': 'AIRMASS', 'SIM_DCR_dRA': 'SIM_DCR_dRA',
+    'SIM_DCR_dDEC': 'SIM_DCR_dDEC', 'SIM_DCR_dMAG': 'SIM_DCR_dMAG'}
+TEXT_OBS_IGNORED = ('NITE', 'OBJID', 'SNR')
+# TEXT OBS columns holding labels rather than numbers
+TEXT_OBS_LABELS = ('BAND', 'FIELD')
+# the TEXT OBS numbers that may not be NaN (get_dbl_sntextio_obs, :3230-3262)
+TEXT_OBS_NOT_NAN = ('FLUXCAL', 'FLUXCALERR', 'MAGERR', 'ZEROPT', 'ZEROPT_ERR', 'PSF_SIG1',
+                    'PSF_NEA', 'SKY_SIG', 'SKY_SIG_T', 'GAIN', 'XPIX', 'YPIX', 'TEXPOSE')
+# the header keys every TEXT event needs, any spelling of each
+# (check_head_sntextio, sntools_dataformat_text.c:2938-3000)
+TEXT_REQUIRED_KEYS = (('SURVEY',), ('SNID',), ('FILTERS',), ('RA',), ('DEC', 'DECL'),
+                      ('REDSHIFT_FINAL', 'REDSHIFT_HELIO', 'REDSHIFT_CMB'))
+
+
+def _text_head_columns(path, header):
+    """One event's TEXT header as HEAD columns, each key spelt as FITS spells
+    it (parse_SNTEXTIO_HEAD, sntools_dataformat_text.c:2195). A key's value
+    is its first word, a label kept as text and anything else read as a
+    number; a ``+-`` (or ``+_``) after it gives the error, read as the
+    column's _ERR; a per-band key takes a value for each FILTERS band and a
+    host's redshift grid all its words. As in SNANA, words after these, such
+    as units, are passed over, and a value that is not a number, such as a
+    model name, is not read."""
+    bands = ''.join(header.get('FILTERS', []))
     row = {}
-    for name, value in header.items():
-        if name in ('SNID', 'FIELD', 'NAME_TRANSIENT', 'NAME_IAUC', 'IAUC', 'SUBSURVEY'):
-            row[name] = value
+    for key, values in header.items():
+        name = TEXT_HEAD_ALIASES.get(key, key)
+        if name in TEXT_LABEL_KEYS:
+            row[name] = values[0] if values else ''
         elif name == 'SURVEY':
-            if '(' in value:
-                row['SUBSURVEY'] = value.split('(', 1)[1].rstrip(')')
-        elif name in ('FILTERS', 'SNANA_VERSION', 'SIM_MODEL_NAME', 'SIM_TYPE_NAME', 'TRIGGER',
-                      'VARNAMES_SPEC', 'SPEC', 'SIM_SYNMAG'):
-            continue
-        elif name in per_band:
-            values = value.split()
-            if len(values) != len(bands):
-                raise SNANAError(f"{name} has {len(values)} values for FILTERS={bands}",
-                                 function_name='read_snana_text')
+            if '(' in values[0]:
+                row['SUBSURVEY'] = values[0].split('(', 1)[1].rstrip(')')
+        elif name in TEXT_PER_BAND_KEYS:
+            if len(values) < len(bands):
+                raise SNANAError(f"{path}: {name} has {len(values)} values for "
+                                 f"FILTERS={bands}", function_name='read_snana_text')
             row.update((f'{name}_{band}', float(v)) for band, v in zip(bands, values))
-        elif name in grids:
-            values = np.asarray(value.split(), dtype=float)
-            count, size = grids[name]
-            row[name] = np.full(size, SNANA_NULLFLOAT)
-            row[name][:len(values)] = values
-        elif '+-' in value:
-            number, error = value.split('+-')
-            row[name] = float(number)
-            row[f'{name}_ERR'] = float(error)
-        elif name.startswith('SIM_HOSTLIB('):
-            # TEXT lists the true host and neighbours; FITS stores the true host.
-            row[name] = float(value.split()[0])
-        else:
-            # Preserve scalar numeric metadata, including user-defined columns.
+        elif name in HOSTGALZ_VECTORS:
+            # as many values as its NBIN key counts (sntools_dataformat_text.c:2854-2868)
+            nbin = int(header[HOSTGALZ_VECTORS[name]][0])
+            row[name] = np.asarray(leading_values(path, name, values, nbin),
+                                   dtype=float)
+        elif len(values) >= 3 and values[1] in ('+-', '+_'):
+            row[name], row[f'{name}_ERR'] = float(values[0]), float(values[2])
+        elif values and re.fullmatch(r'[+-]?\d+', values[0]):
             # IDs must not pass through float, which loses large integer bits.
+            row[name] = int(values[0])
+        elif values:
             try:
-                row[name] = int(value)
+                row[name] = float(values[0])
             except ValueError:
-                row[name] = float(value)
-    for name, (count, size) in grids.items():
-        if row.get(count) == 0:
-            row[name] = np.full(size, SNANA_NULLFLOAT)
+                pass
     return row
+
+
+def _text_obs_columns(path, header, obs):
+    """One event's OBS columns as the PHOT columns FITS stores: each VARLIST
+    spelling under its FITS name, a FWHM in arcsec as the PSF sigma in pixels
+    over the header's PIXSIZE (sntools_dataformat_text.c:3137) and a FIELD of
+    NULL as VOID (:3088). Columns SNANA passes over are passed over, as is
+    the SIM_SNRMAGnn column a simulation writes (:990), and any other column
+    is an error. A NaN in :data:`TEXT_OBS_NOT_NAN` is an error."""
+    columns = {}
+    for name, values in obs.items():
+        if name in TEXT_OBS_IGNORED or name.startswith('SIM_SNRMAG'):
+            continue
+        if name == 'FWHM':
+            if 'PIXSIZE' not in header:
+                raise SNANAError(f"{path} gives the PSF as FWHM without PIXSIZE",
+                                 function_name="read_snana_text")
+            pixsize = float(header['PIXSIZE'][0])
+            name = 'PSF'
+            values = np.asarray(values, dtype=float) / (FWHM_PER_SIGMA * pixsize)
+        if name not in TEXT_OBS_COLUMNS:
+            raise SNANAError(f"{path}: VARLIST names {name}, which is not an OBS column",
+                             function_name="read_snana_text")
+        name = TEXT_OBS_COLUMNS[name]
+        if name in columns:
+            raise SNANAError(f"{path}: VARLIST gives {name} twice",
+                             function_name="read_snana_text")
+        if name == 'FIELD':
+            values = ['VOID' if v == 'NULL' else v for v in values]
+        if name in TEXT_OBS_LABELS:
+            columns[name] = np.array(values, dtype='U')
+        elif name == 'PHOTFLAG':
+            columns[name] = np.asarray(values, dtype=float).astype(np.int64)
+        else:
+            columns[name] = np.asarray(values, dtype=float)
+            if name in TEXT_OBS_NOT_NAN and np.isnan(columns[name]).any():
+                raise SNANAError(f"{path}: {name} is NaN", function_name="read_snana_text")
+    missing = sorted({'MJD', 'BAND', 'FLUXCAL', 'FLUXCALERR'} - columns.keys())
+    if missing:
+        raise SNANAError(f"{path} lacks photometry columns {missing}",
+                         function_name="read_snana_text")
+    return columns
 
 
 def read_snana_text(paths):
@@ -1693,59 +1897,55 @@ def read_snana_text(paths):
     Like FITS and HATS readers, this leaves fitting options and batch
     construction to the common loading path.
     """
-    def hval(hdr, key, idx=0):
-        s = hdr.get(key)
-        if s is None:
-            return None
-        toks = s.split()
-        return toks[idx] if idx < len(toks) else None
-
-    heads, nobs, phot = [], [], []
-    rename = {'FLT': 'BAND', 'ZPT': 'ZEROPT', 'PSF': 'PSF_SIG1'}
-    is_sim = False
+    heads, phot = [], []
     for path in paths:
         header, _, obs = parse_snana_dat(path)
-        obs = {rename.get(name, name): values for name, values in obs.items()}
-        missing = {'MJD', 'BAND', 'FLUXCAL', 'FLUXCALERR'} - obs.keys()
+        missing = [' or '.join(keys) for keys in TEXT_REQUIRED_KEYS
+                   if not any(key in header for key in keys)]
         if missing:
-            raise SNANAError(f"{path} lacks photometry columns {sorted(missing)}",
+            raise SNANAError(f"{path} has no {', '.join(missing)} key",
+                             function_name="read_snana_text")
+        # every event has the first's survey, a subsurvey aside, and filters
+        # (sntools_dataformat_text.c:2305-2326)
+        survey_filters = (header['SURVEY'][0].split('(', 1)[0], header['FILTERS'][0])
+        # and as many PRIVATE variables (:3007-3016)
+        n_private = sum(key.startswith('PRIVATE(') for key in header)
+        if not heads:
+            first_survey_filters, first_n_private = survey_filters, n_private
+        elif survey_filters != first_survey_filters:
+            raise SNANAError(f"{path} gives SURVEY and FILTERS {survey_filters}, where "
+                             f"{paths[0]} gives {first_survey_filters}",
+                             function_name="read_snana_text")
+        elif n_private != first_n_private:
+            raise SNANAError(f"{path} gives {n_private} PRIVATE variables, where "
+                             f"{paths[0]} gives {first_n_private}",
                              function_name="read_snana_text")
         heads.append(header)
-        fake = hval(header, 'FAKE')
-        is_sim = is_sim or (fake is not None and int(float(fake)) == 2)
-        nobs.append(len(obs['MJD']))
-        phot.append(obs)
-    zp = hval(heads[0], 'ZP_FLUXCAL') if heads else None
-    zp_fluxcal = float(zp) if zp is not None else ZEROPOINT_FLUXCAL_SNANA_ORIG
+        phot.append(_text_obs_columns(path, header, obs))
+    first = heads[0]
+    is_sim = any('FAKE' in header and int(header['FAKE'][0]) == 2 for header in heads)
+    zp_fluxcal = (float(first['ZP_FLUXCAL'][0]) if 'ZP_FLUXCAL' in first
+                  else ZEROPOINT_FLUXCAL_SNANA_ORIG)
     sim_mw_colour_law = None
     if is_sim:
-        missing = [k for k in SIM_MW_COLOUR_LAW_KEYS
-                   if hval(heads[0], k) is None]
+        missing = [k for k in SIM_MW_COLOUR_LAW_KEYS if k not in first]
         if missing:
-            raise SNANAError(f"{paths[0]} lacks "
-                             f"{', '.join(missing)}",
+            raise SNANAError(f"{paths[0]} lacks {', '.join(missing)}",
                              function_name="read_snana_text")
-        sim_mw_colour_law = (
-            int(hval(heads[0], 'SIMOPT_MWCOLORLAW')),
-            float(hval(heads[0], 'SIM_MWRV')))
+        sim_mw_colour_law = (int(first['SIMOPT_MWCOLORLAW'][0]), float(first['SIM_MWRV'][0]))
 
     # Convert TEXT values into the same event columns as FITS before batching.
-    rows = [_text_head_columns(header) for header in heads]
+    rows = [_text_head_columns(path, header) for path, header in zip(paths, heads)]
     columns = dict.fromkeys(name for row in rows for name in row)
     head_cols = {}
     for name in columns:
+        if name in HOSTGALZ_VECTORS:
+            head_cols[name] = _null_padded([row.get(name, ()) for row in rows])
+            continue
         example = next(row[name] for row in rows if name in row)
-        if isinstance(example, str):
-            missing = ''
-        elif 'NBIN_' in name:
-            missing = 0
-        elif name.startswith('HOSTGAL'):
-            key = re.sub(r'^HOSTGAL[2-9]', 'HOSTGAL', name)
-            key = hostgal_null_key(key, heads[0].get('FILTERS', ''))
-            missing = np.full_like(example, HOSTGAL_NO_HOST_NULL.get(key, SNANA_NULLFLOAT))
-        else:
-            missing = _HEAD_DEFAULTS.get(name, SNANA_NULLFLOAT)
+        missing = '' if isinstance(example, str) else _head_null(name)
         head_cols[name] = [row.get(name, missing) for row in rows]
+    nobs = [len(obs['MJD']) for obs in phot]
     starts = np.concatenate([[0], np.cumsum(nobs)[:-1]]).astype(np.int64)
     head_cols['PTROBS_MIN'] = starts + 1
     head_cols['PTROBS_MAX'] = starts + np.asarray(nobs, dtype=np.int64)
@@ -1753,22 +1953,15 @@ def read_snana_text(paths):
 
     # Optional columns may differ between events. Missing flags mean no flags;
     # other absent measurements remain unknown rather than acquiring a value.
-    str_cols = {'BAND', 'FIELD'}
     phot_cols = {}
     for name in dict.fromkeys(name for obs in phot for name in obs):
-        missing = '' if name in str_cols else 0 if name == 'PHOTFLAG' else np.nan
-        values = [value for obs, count in zip(phot, nobs)
-                  for value in obs.get(name, [missing] * count)]
-        if name in str_cols:
-            phot_cols[name] = np.array(values, dtype='U')
-        elif name == 'PHOTFLAG':
-            phot_cols[name] = np.array([int(float(v)) for v in values])
-        else:
-            phot_cols[name] = np.array(values, dtype=float)
+        missing = '' if name in TEXT_OBS_LABELS else 0 if name == 'PHOTFLAG' else np.nan
+        phot_cols[name] = np.concatenate([obs.get(name, np.full(count, missing))
+                                          for obs, count in zip(phot, nobs)])
 
     return head_data, Table(phot_cols), dict(
-        is_sim=is_sim, survey=(hval(heads[0], 'SURVEY') or '').split('(', 1)[0],
-        snana_version=hval(heads[0], 'SNANA_VERSION') or '',
+        is_sim=is_sim, survey=first['SURVEY'][0].split('(', 1)[0],
+        snana_version=' '.join(first.get('SNANA_VERSION', [])),
         zp_fluxcal=zp_fluxcal, sim_mw_colour_law=sim_mw_colour_law)
 
 
@@ -1776,74 +1969,80 @@ def read_snana_text(paths):
 HATS_PROPERTIES = 'hats.properties'
 
 
-def version_files(sim_dir):
-    """Locate a version's HATS directory, TEXT light curves, or FITS HEAD files."""
-    sim_dir = Path(sim_dir)
-    if (sim_dir / HATS_PROPERTIES).is_file():
-        return [sim_dir]
-    lists = sorted(sim_dir.glob('*.LIST'))
-    if len(lists) > 1:
-        raise SNANAError(f"{sim_dir} holds more than one .LIST: {lists}",
-                         function_name="version_files")
-    if lists:
-        names = [line.split('#', 1)[0].strip()
-                 for line in lists[0].read_text().splitlines()]
-        names = [name for name in names if name]
-        if not names:
-            raise SNANAError(f"{lists[0]} contains no data files",
-                             function_name="version_files")
-        fits_names = [name.endswith(('_HEAD.FITS', '_HEAD.FITS.gz'))
-                      for name in names]
-        if any(fits_names) and not all(fits_names):
-            raise SNANAError(f"{lists[0]} mixes FITS and TEXT files",
-                             function_name="version_files")
-        return [Path(resolve_fits_path(sim_dir / name)) for name in names]
-    files = sorted(sim_dir.glob('*_HEAD.FITS*'))
+def _is_fits(path):
+    """Whether a data file is FITS, by its extension in any case."""
+    return path.name.lower().removesuffix('.gz').endswith('.fits')
+
+
+def version_prefix(version) -> Path:
+    """A data version's path prefix ``<dir>/<VERSION>``, which names its
+    LIST, README and IGNORE files (SNDATA_PREFIX, snana.F90:3364-3365).
+    ``version`` is that prefix, or a directory holding its version's LIST
+    under its own name, as a simulation writes one."""
+    path = Path(version)
+    inside = path / path.name
+    return inside if Path(resolve_fits_path(f"{inside}.LIST")).is_file() else path
+
+
+def version_files(version):
+    """A version's HATS directory, or the TEXT light curves or FITS HEAD
+    files its ``<VERSION>.LIST`` names (sntools.c:5536-5547)."""
+    if (Path(version) / HATS_PROPERTIES).is_file():
+        return [Path(version)]
+    prefix = version_prefix(version)
+    list_file = resolve_fits_path(f"{prefix}.LIST", required=True)
+    files = [Path(resolve_fits_path(prefix.parent / name, required=True))
+             for words in text_lines(list_file) for name in words]
     if not files:
-        raise SNANAError(f"No .LIST or *_HEAD.FITS files found in {sim_dir}",
+        raise SNANAError(f"{list_file} contains no data files",
+                         function_name="version_files")
+    if len({_is_fits(path) for path in files}) > 1:
+        raise SNANAError(f"{list_file} mixes FITS and TEXT files",
                          function_name="version_files")
     return files
 
 
-def version_survey(sim_dir):
+def version_survey(version):
     """Read only the survey metadata, using the normal input-file discovery."""
-    path = version_files(sim_dir)[0]
+    path = version_files(version)[0]
     if path.is_dir():
         return 'LSST'  # Rubin HATS, as in read_rubin_hats.
-    if path.name.endswith(('_HEAD.FITS', '_HEAD.FITS.gz')):
-        header = fits.getheader(path, 0)
+    if _is_fits(path):
+        survey = str(fits.getheader(path, 0).get('SURVEY', ''))
     else:
         header, _, _ = parse_snana_dat(path, header_only=True)
-    survey = str(header.get('SURVEY', '')).strip().split('(', 1)[0]
+        survey = ' '.join(header.get('SURVEY', []))
+    survey = survey.strip().split('(', 1)[0]
     if not survey:
         raise SNANAError(f"{path} names no SURVEY in its header",
                          function_name='version_survey')
     return survey
 
 
-def version_sources(sim_dir, column_overrides):
+def version_sources(version, column_overrides):
     """A version's ``(path, read)`` sources yielding HEAD/PHOT and metadata."""
-    files = version_files(sim_dir)
+    files = version_files(version)
     if files[0].is_dir():
         return [(str(files[0]), partial(read_rubin_hats, files[0], column_overrides))]
-    if not files[0].name.endswith(('_HEAD.FITS', '_HEAD.FITS.gz')):
-        return [(str(sim_dir), partial(read_snana_text, files))]
+    if not _is_fits(files[0]):
+        return [(str(version), partial(read_snana_text, files))]
     sources = []
     for head_path in files:
-        prefix = head_path.name.removesuffix('.gz').removesuffix('_HEAD.FITS')
-        phot_path = resolve_fits_path(head_path.parent / f"{prefix}_PHOT.FITS")
-        if not Path(phot_path).exists():
-            raise SNANAError(f"{head_path} has no {prefix}_PHOT.FITS beside it",
+        # the HEAD names its PHOT file (sntools_dataformat_fits.c:4600-4610)
+        phot_name = fits.getheader(head_path, 0).get('PHOTFILE')
+        if phot_name is None:
+            raise SNANAError(f"{head_path} names no PHOTFILE",
                              function_name="version_sources")
+        phot_path = resolve_fits_path(head_path.parent / phot_name.strip(), required=True)
         sources.append((str(head_path), partial(read_snana_fits, head_path, phot_path)))
     return sources
 
 
-def resolve_version_dir(version: str,
-                        private_data_path: Optional[str] = None) -> str:
-    """Locate the VERSION_PHOTOMETRY data dir
-    (getInfo_PHOTOMETRY_VERSION, sntools.c:5440): an SNANA version, or a
-    Rubin HATS catalogue."""
+def resolve_version(version: str,
+                    private_data_path: Optional[str] = None) -> str:
+    """Locate the VERSION_PHOTOMETRY data (getInfo_PHOTOMETRY_VERSION,
+    sntools.c:5440): an SNANA version's :func:`version_prefix`, or a Rubin
+    HATS catalogue's directory."""
     root = sndata_root()
     private = (None if is_ignorefile(private_data_path)
                else Path(os.path.expandvars(private_data_path)))
@@ -1878,19 +2077,21 @@ def resolve_version_dir(version: str,
         checked = "\n  ".join(str(d) for d in dirs)
         raise SNANAError(
             f"Could not find SNANA version '{version}'; checked:\n  {checked}",
-            function_name="resolve_version_dir")
+            function_name="resolve_version")
     if len(found) > 1:
         raise SNANAError(
             f"Found {len(found)} copies of VERSION='{version}': "
             f"{[str(d) for d in found]}; only one unique version allowed",
-            function_name="resolve_version_dir")
-    return str(found[0])
+            function_name="resolve_version")
+    if (found[0] / HATS_PROPERTIES).is_file():
+        return str(found[0])
+    return str(found[0] / version)
 
 
 def discover_inputs(config):
     """Resolve the data versions, locate the data files, and run the
-    REQUIRE_DOCANA checks. Returns the versions' directories and the first
-    one's HEAD path."""
+    REQUIRE_DOCANA checks. Returns the versions, each as
+    :func:`version_prefix` takes it, and the first one's HEAD path."""
     d = config.data
     if d.kcor_file is None:
         raise SNANAError(
@@ -1907,8 +2108,7 @@ def discover_inputs(config):
         log.line(logger, f"Wildcard matched {len(sim_dirs)} data version(s): "
                  f"{', '.join(Path(p).name for p in sim_dirs)}")
     elif d.version_photometry:
-        sim_dirs = [resolve_version_dir(d.version_photometry,
-                                        d.private_data_path)]
+        sim_dirs = [resolve_version(d.version_photometry, d.private_data_path)]
     else:
         raise SNANAError(
             "VERSION_PHOTOMETRY or VERSION_PHOTOMETRY_WILDCARD is required",
@@ -1916,13 +2116,12 @@ def discover_inputs(config):
 
     data_path = version_sources(sim_dirs[0],
                                 config.data.photometry_columns)[0][0]
-    sim_dir = sim_dirs[0]
-    # the version README and the model's metadata files (snana.F90:3042)
+    # each version's README and the model's metadata files (snana.F90:3042)
     model_files = metadata_files(MODEL_REGISTRY[fitted_model_type(config)],
                                  config.model.fitmodel_name)
-    check_docana(config.fit.require_docana,
-                 sorted(glob.glob(str(Path(sim_dir) / '*.README')))
-                 + list(model_files))
+    readmes = [readme for readme in (Path(f"{version_prefix(d)}.README") for d in sim_dirs)
+               if readme.is_file()]
+    check_docana(config.fit.require_docana, readmes + list(model_files))
     # FLUXERRMODEL_OPTMASK 1024: the same check on the map file (sntools_fluxErrModels.c:85)
     if config.data.fluxerrmodel_optmask & 1024:
         check_docana(1, [os.path.expandvars(p) for p in
@@ -1947,7 +2146,7 @@ def simulation_cosmology(sim_dirs):
     version's README, for the FITRES header; {} for real data. Merged
     versions must agree, as their zero points must."""
     found = {tuple(read_simulation_cosmology(readme).items())
-             for readme in (Path(d) / f"{Path(d).name}.README" for d in sim_dirs)
+             for readme in (Path(f"{version_prefix(d)}.README") for d in sim_dirs)
              if readme.is_file()}
     if len(found) > 1:
         raise SNANAError(
@@ -1984,27 +2183,19 @@ def read_shared_files(config):
 
 
 def load_inputs(config, epoch_cutwin, filter_lamavg, sim_dir, shared):
-    """The loader keyword arguments for the data versions in ``sim_dir``:
-    ``shared`` (:func:`read_shared_files`) and the files the version itself
-    names. ``filter_lamavg`` is FILTOBS_LAMAVG of each fit band, in index
-    order. ``sim_dir`` is the first data version's directory, whose name is
-    the version SNANA checks file-based fudges against."""
-    version = Path(sim_dir).name if sim_dir is not None else (config.data.version_photometry or '')
+    """The loader keyword arguments every data version shares, besides each
+    version's own :func:`version_epoch_ignore`: ``shared``
+    (:func:`read_shared_files`) and the options the config sets.
+    ``filter_lamavg`` is FILTOBS_LAMAVG of each fit band, in index order.
+    ``sim_dir`` is the first data version, as :func:`version_prefix` takes
+    it, whose name SNANA checks file-based fudges against."""
+    if sim_dir is not None:
+        version = version_prefix(sim_dir).name
+    else:
+        version = config.data.version_photometry or ''
     zp_shift = shift_map_with_poly(config.data.magobs_shift_zp,
                                     config.data.magobs_shift_zp_params,
                                     filter_lamavg)
-
-    # DEFAULT reads <version>.IGNORE when present (snana.F90:5583, :13040)
-    epoch_ignore, mskrej = None, config.selection.photflag_mskrej
-    ignore_file = config.selection.epoch_ignore_file
-    if ignore_file == 'DEFAULT':
-        ignore_file = Path(sim_dir) / f'{version}.IGNORE' if sim_dir is not None else None
-        if ignore_file is not None and not ignore_file.exists():
-            ignore_file = None
-    if ignore_file is not None:
-        epoch_ignore, file_mskrej = read_epoch_ignore_file(ignore_file)
-        if file_mskrej is not None:
-            mskrej = (file_mskrej,)
 
     return dict(
         **shared,
@@ -2022,8 +2213,6 @@ def load_inputs(config, epoch_cutwin, filter_lamavg, sim_dir, shared):
         abort_on_badqzphot=config.fit.abort_on_badqzphot,
         dofit_photoz=config.photoz.dofit_photoz,
         quantile_spline=config.photoz.quantile_spline(),
-        epoch_ignore=epoch_ignore,
-        photflag_mskrej=mskrej,
         photflag_detect=config.data.photflag_detect,
         filter_replace=config.data.filter_replace,
         private_varnames=config.data.private_varname_readlist,
@@ -2075,12 +2264,11 @@ def setpkmjd_options(config):
     }
 
 
-def _merge_versions(sources, load_one):
-    """One batch from every source of every data version (`version_sources`),
-    selected and fitted in a single pass."""
+def _merge_versions(source_batches):
+    """One batch from the ``(path, batch)`` of every source of every data
+    version (`version_sources`), selected and fitted in a single pass."""
     batches, zps, laws, sims = [], [], [], []
-    for path, columns in sources:
-        b = load_one(columns)
+    for path, b in source_batches:
         zps.append(b.zp_fluxcal)
         laws.append(b.sim_mw_colour_law)
         sims.append(b.sim_truth is not None)
@@ -2110,16 +2298,16 @@ def _merge_versions(sources, load_one):
     return LightCurveBatch.concatenate(batches)
 
 
-def start_values_from_sncid_list(table, snids, param_names):
+def start_values_from_sncid_list(path, table, snids, param_names):
     """OPT_SNCID_LIST bit 1: each fit parameter's starting value from the
-    list file's fit parameters (FITINI_LIST_FILE, snlc_fit.F90:9997), NaN
-    for an event the file does not list."""
+    fit parameters of ``table``, the list file ``path`` (FITINI_LIST_FILE,
+    snlc_fit.F90:9997), NaN for an event the file does not list."""
     if table is None:
         raise SNANAError(
             "OPT_SNCID_LIST bit 1 seeds the fit from SNCID_LIST_FILE, which "
             "must be a FITRES table; this file is a plain CID list.",
             function_name="OPT_SNCID_LIST")
-    by_cid = {c: i for i, c in enumerate(cid_keys(table.df['CID']))}
+    by_cid = {c: i for i, c in enumerate(cid_keys(table_ids(path, table)))}
     rows = np.array([by_cid.get(c, -1) for c in cid_keys(snids)])
     seeds = {}
     for name in param_names:
@@ -2166,8 +2354,8 @@ def prepare_batch(config, parameter_names, batch, *, apply_selection, ladder):
         batch,
         z_priors=(redshift_priors(config, batch)
                   if config.photoz.dofit_photoz else None),
-        sncid_inival=(start_values_from_sncid_list(listed[2], np.asarray(batch.snids),
-                                                   parameter_names)
+        sncid_inival=(start_values_from_sncid_list(config.selection.sncid_list_file, listed[2],
+                                                   np.asarray(batch.snids), parameter_names)
                       if apply_selection and config.selection.opt_sncid_list & 2 else None))
     if batch.z_priors is not None:
         supported = np.asarray(pdf_support_mask(config, batch.z_priors))
@@ -2215,8 +2403,9 @@ def load(config, model, kcor, sim_dirs, shared, *, keep_preselection=False,
 
     ``keep_preselection`` retains the unmarked batch before sample selection,
     even without SNANA output, so pipeline CID synchronization can reselect it.
-    ``sources`` supplies already-read ``(path, (HEAD, PHOT, metadata))`` pairs;
-    omitted, files stream one at a time. ``photometry`` supplies the cell's
+    ``sources`` supplies the already-read ``(path, (HEAD, PHOT, metadata))``
+    pairs of the one version in ``sim_dirs``; omitted, files stream one at a
+    time. ``photometry`` supplies the cell's
     calibration and ``peak_shape`` bounds peak-estimator execution shapes.
     """
     for msg in config.output._unsupported:
@@ -2234,22 +2423,24 @@ def load(config, model, kcor, sim_dirs, shared, *, keep_preselection=False,
 
     read_seconds = 0.0
 
-    def read_sources():
+    def read_version(directory):
         nonlocal read_seconds
-        for directory in sim_dirs:
-            for path, read in version_sources(directory, config.data.photometry_columns):
-                start = time.perf_counter()
-                columns = read()
-                read_seconds += time.perf_counter() - start
-                yield path, columns
+        for path, read in version_sources(directory, config.data.photometry_columns):
+            start = time.perf_counter()
+            columns = read()
+            read_seconds += time.perf_counter() - start
+            yield path, columns
 
-    def _load_one(columns):
-        head_data, phot_data, header = columns
-        return batch_from_columns(head_data, phot_data, **header, **common,
-                                  peak_shape=peak_shape)
+    def version_batches():
+        versions = ({sim_dirs[0]: sources} if sources is not None
+                    else {directory: read_version(directory) for directory in sim_dirs})
+        for directory, tables in versions.items():
+            inputs = {**common, **version_epoch_ignore(config, directory)}
+            for path, (head_data, phot_data, header) in tables:
+                yield path, batch_from_columns(head_data, phot_data, **header, **inputs,
+                                               peak_shape=peak_shape)
 
-    precut_batch = _merge_versions(
-        read_sources() if sources is None else sources, _load_one)
+    precut_batch = _merge_versions(version_batches())
     if photometry is None:
         photometry = fit_photometry(config, model, kcor)
     precut_batch = dataclasses.replace(precut_batch, photometry={
@@ -2264,7 +2455,7 @@ def load(config, model, kcor, sim_dirs, shared, *, keep_preselection=False,
 
 _OBJECT_HEADER_NAMES = {
     'redshift': 'REDSHIFT_HELIO', 'redshift_err': 'REDSHIFT_HELIO_ERR',
-    'redshift_cmb': 'REDSHIFT_CMB', 'mwebv': 'MWEBV', 'peakmjd': 'PEAKMJD',
+    'redshift_cmb': 'REDSHIFT_FINAL', 'mwebv': 'MWEBV', 'peakmjd': 'PEAKMJD',
     'photoz': 'HOSTGAL_PHOTOZ', 'photoz_err': 'HOSTGAL_PHOTOZ_ERR',
     'ra': 'RA', 'dec': 'DEC',
 }
@@ -2373,5 +2564,5 @@ def batch_from_tables(obs, obj, fitter, cfg, epoch_cuts, shared, zp_fluxcal):
     options = load_inputs(cfg, epoch_cuts, fitter.calibration.filter_lamavg(active), None, shared)
     batch = batch_from_columns(heads, columns, is_sim=False, zp_fluxcal=zp_fluxcal,
         sim_mw_colour_law=None, filter_map={name: i for i, name in enumerate(active)},
-        keep_obs_extras=True, **options)
+        keep_obs_extras=True, **options, **version_epoch_ignore(cfg, None))
     return batch

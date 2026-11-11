@@ -33,7 +33,7 @@ from jax_snlc_core.snana_files import (
     read_fitres,
     resolve_fits_path,
 )
-from jax_snlc_core.cosmology import distance_modulus, hubble_parameter
+from jax_snlc_core.cosmology import distance_modulus, hubble_parameter, zhelio_to_zcmb
 from jax_snlc_core.dust import SFDDustMap
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.models import build_model
@@ -42,6 +42,7 @@ from jax_snlc_core.models.non1a import NON1ASEDModel
 from jax_snlc_core.models.salt import SALTModel
 from jax_snlc_core.models.simsed import (SIMSEDModel, _draw_correlated_truncated,
                                          read_sed_binary)
+from jax_snlc_core.utils import LIGHT_KM
 from jax_snlc_fit import cuts, loader, run as fit_run, uncertainties
 from jax_snlc_fit.config import Fit, FitConfig, Model
 from jax_snlc_fit.fitter import BatchFitResult, prepare
@@ -475,7 +476,7 @@ def test_simsed_gridonly_replay_selects_the_recorded_surface(tmp_path):
 
 def test_simsed_param_header_order_follows_the_declaration(tmp_path):
     """SIMSED_PARAM(...) header lines come in input-declaration order, not
-    SED.INFO order (snlc_sim.c:5975; sntools_dataformat_text.c:452-458)."""
+    SED.INFO order (snlc_sim.c:5975; sntools_dataformat_text.c:456-462)."""
     src = Path(_SIMSED).read_text().replace(
         "SIMSED_PARAM:  stretch", "SIMSED_PARAM:  color").replace(
         "SIMSED_PARAM:  color\nGENPEAK_color", "SIMSED_PARAM:  stretch\nGENPEAK_color")
@@ -556,6 +557,33 @@ def test_genrange_mjd_exclude_drops_observations(tmp_path):
     cut = mjds(f"GENRANGE_MJD_EXCLUDE: {lo} {hi}", "mjx_on")
     assert ((cut > lo) & (cut < hi)).sum() == 0
     assert len(cut) < len(base)
+
+
+def test_simlib_header_skips_peaks_and_sets_photflag_masks(tmp_path):
+    """The SIMLIB global header's GENSKIP_PEAKMJD ranges take no peak
+    (gen_peakmjd, snlc_sim.c:17063-17071), and ranges leaving no peak abort
+    (:17047); its PHOTMASK_ spelling of a PHOTFLAG mask applies where the
+    input leaves it unset (:18509-18518), with keys sharing a line as SNANA's
+    word stream allows."""
+    simlib = tmp_path / "skip.SIMLIB"
+    text = Path(os.path.expandvars("$JAX_TEST_FIXTURE_ROOT/simlib/JAX_TEST_LSST.SIMLIB")).read_text()
+    begin = text.index("\nBEGIN")
+    simlib.write_text(text[:begin] + "\nGENSKIP_PEAKMJD: 60600 60800  PHOTMASK_SNRMAX: 2048"
+                      "\nGENSKIP_PEAKMJD: 61000 61100 # second season gap\n" + text[begin:])
+    inp = tmp_path / "skip.input"
+    inp.write_text(_merge(Path(_SALT3).read_text(), f"SIMLIB_FILE: {simlib}"))
+    sim = sim_run.prepare(str(inp), n_sne=200, random_seed=4)
+    assert sim.instrument.photflag_snrmax == 2048
+    results, _, _ = sim_run.run_simulation(sim)
+    peaks = np.asarray(results["parameters"]["peakmjd_true"], dtype=float)
+    assert np.all((peaks >= 60540.0) & (peaks <= 61460.0))
+    for lo, hi in ((60600.0, 60800.0), (61000.0, 61100.0)):
+        assert not np.any((peaks > lo) & (peaks < hi))
+
+    simlib.write_text(text[:begin] + "\nGENSKIP_PEAKMJD: 60000 62000\n" + text[begin:])
+    sim = sim_run.prepare(str(inp), n_sne=5, random_seed=4)
+    with pytest.raises(SNANAError, match="leave no PEAKMJD"):
+        sim_run.run_simulation(sim)
 
 
 @pytest.mark.parametrize("value", ["SJPAR", "FITZ99"])
@@ -641,9 +669,9 @@ def test_cidran_skiplist_excludes_listed_cids(tmp_path):
 
 
 def test_cidran_never_draws_either_end_of_its_range(tmp_path):
-    """init_CIDRAN redraws CIDRAN_MIN and CIDRAN_MAX (snlc_sim.c:23430-23431),
+    """init_CIDRAN redraws CIDRAN_MIN and CIDRAN_MAX (snlc_sim.c:23485-23486),
     and aborts once CIDOFF-CIDRAN_MIN plus the event count reaches CIDRAN_MAX
-    (:23366). Ten events on (0, 11) can only be the CIDs 1 to 10."""
+    (:23419). Ten events on (0, 11) can only be the CIDs 1 to 10."""
     pool = "CIDRAN_MIN: 0\nCIDRAN_MAX: 11\nFORMAT_MASK: 48\n"
     assert _written_cids(tmp_path, pool, "ends", n_sne=10) <= set(range(1, 11))
     with pytest.raises(SNANAError, match="reaches CIDRAN_MAX"):
@@ -857,8 +885,8 @@ def test_use_simlib_truth_overrides(tmp_path, layout):
 
 def test_hostlib_need_not_span_a_simlib_redshift(tmp_path):
     """The HOSTLIB must span GENRANGE_REDSHIFT (check_redshift_HOSTLIB,
-    sntools_host.c:3322) unless USE_SIMLIB_REDSHIFT pins the redshift to
-    the SIMLIB header instead (:3320): the bundled catalogue stops at z=0.5,
+    sntools_host.c:3347) unless USE_SIMLIB_REDSHIFT pins the redshift to
+    the SIMLIB header instead (:3345): the bundled catalogue stops at z=0.5,
     and a range to 0.8 aborts only while the redshift is drawn from it."""
     src = Path(_HOSTLIB).read_text()
     src = re.sub(r"SIMLIB_FILE:.*",
@@ -1188,7 +1216,7 @@ def test_exposure_time_global(tmp_path):
 
 def test_exposure_time_is_written_as_sim_exposure(tmp_path):
     """SIM_EXPOSURE_<band> carries the band's EXPOSURE_TIME_FILTER ratio
-    (snlc_sim.c:25536), 1 for a band it does not name."""
+    (snlc_sim.c:25591), 1 for a band it does not name."""
     inp = tmp_path / "x.input"
     inp.write_text(Path(_SALT3).read_text() + "\nEXPOSURE_TIME_FILTER: g 4.0\n")
     config = dict(n_sne=20, random_seed=5)
@@ -1724,10 +1752,69 @@ def test_hostlib_varname_zphot_err_nounderscore(tmp_path):
     assert np.allclose(r.columns['ZPHOT_ERR'], 0.02)
 
 
+def test_hostlib_column_spellings(tmp_path):
+    """SNANA reads REDSHIFT as ZTRUE and VPECERR as VPEC_ERR
+    (checkAlternateVarNames_HOSTLIB, sntools_host.c:3020-3026), and matches
+    column names whatever their case, except the _obs magnitudes, where the
+    case tells u from U (match_varname_HOSTLIB, sntools_host.c:2863)."""
+    rows = ["VARNAMES: GALID REDSHIFT ra_gal dec_gal logmass VPEC VPECERR u_obs U_obs"]
+    for i in range(20):
+        rows.append(f"GAL: {1000 + i} {0.05 + i * 0.01:.4f} 10.0 -30.0 "
+                    f"{9.0 + i * 0.1:.2f} {100.0 + i:.1f} 250.0 21.0 22.0")
+    hostlib = tmp_path / "SPELLINGS.HOSTLIB"
+    hostlib.write_text("\n".join(rows) + "\n")
+    table = read_hostlib(str(hostlib),
+                         essential_columns() + ['VPEC', 'VPEC_ERR', 'u_obs', 'U_obs'],
+                         use_cache=False)
+    i = table.columns['GALID'] - 1000
+    np.testing.assert_allclose(table.columns['ZTRUE'], 0.05 + i * 0.01, rtol=1e-6)
+    np.testing.assert_allclose(table.columns['LOGMASS'], 9.0 + i * 0.1, rtol=1e-6)
+    np.testing.assert_allclose(table.columns['VPEC'], 100.0 + i, rtol=1e-6)
+    assert np.all(table.columns['VPEC_ERR'] == 250.0)
+    assert np.all(table.columns['RA_GAL'] == 10.0)
+    assert np.all(table.columns['u_obs'] == 21.0)
+    assert np.all(table.columns['U_obs'] == 22.0)
+
+
+def test_hostlib_ztrue_cmb_is_read_as_heliocentric(tmp_path):
+    """A HOSTLIB giving ZTRUE_CMB has it turned into the heliocentric ZTRUE
+    at each galaxy's coordinates, with its VPEC under USEVPEC; a VEL_CMBAPEX
+    of 0 keeps the CMB-frame value (transform_ZTRUE_HOSTLIB,
+    sntools_host.c:4091-4157)."""
+    rows = ["VARNAMES: GALID ZTRUE_CMB RA_GAL DEC_GAL VPEC VPEC_ERR"]
+    for i in range(20):
+        rows.append(f"GAL: {1000 + i} {0.05 + i * 0.01:.4f} {i * 18.0:.1f} "
+                    f"{-60.0 + i * 6.0:.1f} 300.0 250.0")
+    hostlib = tmp_path / "CMB.HOSTLIB"
+    hostlib.write_text("\n".join(rows) + "\n")
+
+    def read(vel_cmbapex, use_vpec):
+        table = read_hostlib(str(hostlib), essential_columns() + ['VPEC', 'VPEC_ERR'],
+                             vel_cmbapex=vel_cmbapex, use_vpec=use_vpec,
+                             use_cache=False)
+        assert table.ztrue_cmb
+        i = table.columns['GALID'] - 1000
+        return table.columns, 0.05 + i * 0.01
+
+    cmb, ztrue_cmb = read(0.0, False)
+    np.testing.assert_allclose(cmb['ZTRUE'], ztrue_cmb, rtol=1e-6)
+
+    helio, ztrue_cmb = read(369.82, False)
+    assert np.max(np.abs(helio['ZTRUE'] - ztrue_cmb)) > 5e-4
+    np.testing.assert_allclose(
+        zhelio_to_zcmb(helio['ZTRUE'].astype(np.float64), helio['RA_GAL'],
+                       helio['DEC_GAL']),
+        ztrue_cmb, rtol=1e-5)
+
+    with_vpec, ztrue_cmb = read(0.0, True)
+    np.testing.assert_allclose(1.0 + with_vpec['ZTRUE'],
+                               (1.0 + ztrue_cmb) * (1.0 + 300.0 / LIGHT_KM), rtol=1e-6)
+
+
 def test_hostlib_swapzphot_draws_on_the_aliased_photoz(tmp_path):
     """SWAPZPHOT swaps in the column HOSTLIB_VARNAME_ZPHOT names: SNANA
     replaces ZPHOT with the alias when it reads the header
-    (checkAlternateVarNames_HOSTLIB, sntools_host.c:2988-2996) and swaps
+    (checkAlternateVarNames_HOSTLIB, sntools_host.c:3006-3014) and swaps
     afterwards (:3643). Every host's aliased photo-z is then within
     HOSTLIB_DZTOL (0.05 z here) of the SN's redshift, which its ZTRUE is not;
     SNANA's own run of this input gives the same."""
@@ -1803,8 +1890,8 @@ def test_sed_binary_reads_either_snana_layout(tmp_path):
     same grid must read back identically, the last flux zero-padded as
     pack_SEDBINARY leaves it. The old 8-byte ints were written from 4-byte
     fields, so their high halves carry the neighbouring struct member (a
-    version-2 library on disk has 6 there), and a version other than 4 is
-    refused."""
+    version-2 library on disk has 6 there). A version other than 4, and a
+    binary written for other SED files, are refused."""
 
     nday, nlam = 3, 4
     days = [-2.0, 0.0, 2.419]
@@ -1826,22 +1913,27 @@ def test_sed_binary_reads_either_snana_layout(tmp_path):
     (tmp_path / "old.BINARY").write_bytes(old)
     (tmp_path / "new.BINARY").write_bytes(new)
 
-    phases_old, lam_old, flux_old = read_sed_binary(str(tmp_path / "old.BINARY"), 2)
-    phases_new, lam_new, flux_new = read_sed_binary(str(tmp_path / "new.BINARY"), 2)
-
-    np.testing.assert_array_equal(phases_old, phases_new)
-    np.testing.assert_array_equal(lam_old, lam_new)
-    np.testing.assert_array_equal(flux_old, flux_new)
-    np.testing.assert_allclose(phases_new[1], days, rtol=1e-6)   # float32 file
-    np.testing.assert_array_equal(lam_new, lams)
+    names = ["sed_000.dat", "sed_001.dat"]
+    old_read = read_sed_binary(str(tmp_path / "old.BINARY"), names)
+    new_read = read_sed_binary(str(tmp_path / "new.BINARY"), names)
+    for (phases_old, lam_old, flux_old), (phases_new, lam_new, flux_new) in zip(old_read, new_read):
+        np.testing.assert_array_equal(phases_old, phases_new)
+        np.testing.assert_array_equal(lam_old, lam_new)
+        np.testing.assert_array_equal(flux_old, flux_new)
+        np.testing.assert_allclose(phases_new, days, rtol=1e-6)   # float32 file
+        np.testing.assert_array_equal(lam_new, lams)
+    # each record's last flux is unwritten and must be zero-padded
+    np.testing.assert_array_equal([flux for _, _, flux in new_read], [
+        [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 0]],
+        [[10, 11, 12, 13], [14, 15, 16, 17], [18, 19, 20, 0]],
+    ])
 
     (tmp_path / "v2.BINARY").write_bytes(struct.pack("<ii", 2, 0) + old[8:])
     with pytest.raises(SNANAError, match="format version 2"):
-        read_sed_binary(str(tmp_path / "v2.BINARY"), 2)
-    np.testing.assert_array_equal(flux_new, [
-        [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 0]],
-        [[10, 11, 12, 13], [14, 15, 16, 17], [18, 19, 20, 0]],
-    ])  # each record's last flux is unwritten and must be zero-padded
+        read_sed_binary(str(tmp_path / "v2.BINARY"), names)
+    # a binary written for other SED files is stale
+    with pytest.raises(SNANAError, match="holds models/SIMSED.TEST/sed_000.dat where"):
+        read_sed_binary(str(tmp_path / "new.BINARY"), ["other.dat", "sed_001.dat"])
 
 
 def test_simsed_shapepar_feeds_simsed_params(tmp_path):
@@ -1912,7 +2004,7 @@ def test_simlib_nskipmjd_parse_and_aborts(tmp_path):
 
 def test_mxradius_random_shift_moves_sn_and_hosts(tmp_path):
     """MXRADIUS_RANDOM_SHIFT displaces the SN within the radius and moves every
-    host by the same offset (gen_random_coord_shift, snlc_sim.c:13113)."""
+    host by the same offset (gen_random_coord_shift, snlc_sim.c:13131)."""
     hostlib = Path(_HOSTLIB).read_text()
     base = _run(_HOSTLIB, "", tmp_path, n_sne=200, seed=3)
     inp = _write(tmp_path, hostlib + "\nMXRADIUS_RANDOM_SHIFT: 0.05\n")
@@ -1959,7 +2051,7 @@ def test_keep_spectrum_rule():
     then per-key WGT, then exact FIELD_REQUIRE, then the partial-match dict
     prescale with host spectra exempt."""
     assert keep_spectrum('', '', 0.1, {'C3': 100.0}, 0.99, 0.99) is True      # no field
-    assert keep_spectrum('FIELD_NONAME', '', 0.1, {'C3': 100.0}, 0.99, 0.99) is True
+    assert keep_spectrum('VOID', '', 0.1, {'C3': 100.0}, 0.99, 0.99) is True
     assert keep_spectrum('C3', '', 0.5, {}, 0.4, 0.0) is True                 # wgt keep
     assert keep_spectrum('C3', '', 0.5, {}, 0.6, 0.0) is False                # wgt drop
     assert keep_spectrum('C3', '', 1.0, {}, 0.99, 0.0) is True                # wgt=1 inert
@@ -2641,7 +2733,7 @@ def test_hzfun_map_interpolates_linearly():
 def test_mushift_range_is_reweighted_only_under_a_z_dependent_rewgt(tmp_path):
     """A MUSHIFT range is drawn from the DNDZ reweight's CDF against MU when
     DNDZ_ZPOLY_REWGT or DNDZ_Z1POLY_REWGT has order above zero, and flat
-    otherwise (prep_user_murewgt gate, snlc_sim.c:7650). The CDF grid runs
+    otherwise (prep_user_murewgt gate, snlc_sim.c:7665). The CDF grid runs
     from the lowest generated redshift in steps of 0.001; its distribution
     against SNANA's is tests/live_snana."""
     base = Path(_SALT3).read_text()
@@ -3149,31 +3241,41 @@ def test_dumpall_keeps_host_columns_when_events_are_rejected(tmp_path):
     off the end. MINDAYSEP_SAMEGAL over a narrow redshift slice is the cheapest
     way to leave collisions unresolved, and no fixture sets it.
     """
-    n_sne = 120
-    inp = tmp_path / "in.input"
-    inp.write_text(_merge(Path(_SALT3).read_text(),
-                          f"HOSTLIB_FILE: {_HOSTLIB_PATH}\n"
-                          "GENRANGE_REDSHIFT: 0.0500 0.0510\n"
-                          "HOSTLIB_MINDAYSEP_SAMEGAL: 9000\n"
-                          "SIMGEN_DUMPALL: 4 CID CUTMASK GALID GALZTRUE"))
-    config = dict(
-        n_sne=n_sne, random_seed=5)
-    sim = sim_run.prepare(str(inp), **config)
-    simulation = None if sim is None else sim.config
-    resources = sim
-    res, sel, spectra_cache = sim_run.run_simulation(sim)
-    out = str(tmp_path / "out")
-    os.makedirs(out, exist_ok=True)
-    save_snana_outputs(sim, res, "D", sel, spectra_by_sn=spectra_cache, output_dir=out)
-
-    rows = [l.split()[1:] for l in open(f"{out}/D/D.DUMP") if l.startswith("SN:")]
-    assert len(rows) == n_sne, "DUMPALL emits one row per generated event"
+    rows = _dumpall_rows(tmp_path, "HOSTLIB_MINDAYSEP_SAMEGAL: 9000\n")
+    assert len(rows) == 120, "DUMPALL emits one row per generated event"
     cutmask = [r[1] for r in rows]
     assert cutmask.count('0') > 0, "config must actually reject events"
     # GALID/GALZTRUE resolve for rejected rows too; a short column would have
     # taken the writer past the end long before here.
     assert all(int(r[2]) > 0 for r in rows)
-    assert len({r[2] for r in rows}) < n_sne, "rejects share the colliding hosts"
+    assert len({r[2] for r in rows}) < 120, "rejects share the colliding hosts"
+
+
+def test_dumpall_writes_no_host_for_events_rejected_before_the_host_draw(tmp_path):
+    """An event the NEPOCH cut rejects before its host is drawn keeps the
+    null GALID and a GALZTRUE of 0.0001 (init_event_GENLC,
+    snlc_sim.c:9841-9842)."""
+    rows = _dumpall_rows(tmp_path, "CUTWIN_NEPOCH: 3 5\n")
+    undrawn = [r for r in rows if r[2] == '-9']
+    assert undrawn, "config must reject events on NEPOCH"
+    assert {(r[1], float(r[3])) for r in undrawn} == {('0', 0.0001)}
+    assert all(int(r[2]) > 0 for r in rows if r[2] != '-9')
+
+
+def _dumpall_rows(tmp_path, keys):
+    """The SIMGEN_DUMPALL rows of 120 SALT3 events at z = 0.05 with the
+    test HOSTLIB and the extra input ``keys``."""
+    inp = tmp_path / "in.input"
+    inp.write_text(_merge(Path(_SALT3).read_text(),
+                          f"HOSTLIB_FILE: {_HOSTLIB_PATH}\n"
+                          "GENRANGE_REDSHIFT: 0.0500 0.0510\n" + keys +
+                          "SIMGEN_DUMPALL: 4 CID CUTMASK GALID GALZTRUE"))
+    sim = sim_run.prepare(str(inp), n_sne=120, random_seed=5)
+    res, sel, spectra_cache = sim_run.run_simulation(sim)
+    out = str(tmp_path / "out")
+    os.makedirs(out, exist_ok=True)
+    save_snana_outputs(sim, res, "D", sel, spectra_by_sn=spectra_cache, output_dir=out)
+    return [l.split()[1:] for l in open(f"{out}/D/D.DUMP") if l.startswith("SN:")]
 
 
 _SPECTRO = "tests/fixtures/snana/simlib_spectro_replay/input.input"
@@ -3399,7 +3501,7 @@ def test_sim_redshift_host_match_is_the_matched_host_redshift(tmp_path):
 
     SIM_REDSHIFT_HOST is a different quantity: the drawn galaxy's own
     redshift (GENLC.REDSHIFT_HOST, set by GEN_SNHOST_GALID,
-    sntools_host.c:6481), which is the matched one wherever the DDLR sort
+    sntools_host.c:6910), which is the matched one wherever the DDLR sort
     reports the drawn galaxy.
     """
     inp = tmp_path / "zhost.input"
@@ -4325,6 +4427,48 @@ def test_non1a_keys_defaults_to_index_and_wgt(tmp_path):
     assert int(non1a['sntype_per_template'][0]) == 0
 
 
+def test_simsed_seds_on_their_own_wavelength_grids(tmp_path):
+    """Each SED of a SIMSED library may have its own wavelength grid
+    (genmag_SEDtools.c:1047-1050): a SED linear in wavelength stays that line
+    on the library's grid, the model covers only the range every SED covers
+    (:1062-1071), and UVLAM_EXTRAPFLUX extends each SED on its own grid
+    (genmag_SIMSED.c:376-377)."""
+    (tmp_path / 'SED.INFO').write_text("RESTLAMBDA_RANGE: 2000 9000\nPARNAMES: STRETCH\n"
+                                       "SED: a.SED 0.0\nSED: b.SED 1.0\n")
+    for name, waves, scale in (('a.SED', np.arange(2000., 9001., 100.), 1.0),
+                               ('b.SED', np.arange(3000., 9001., 250.), 2.0)):
+        rows = [f"{day:.1f} {wave:.1f} {scale * (1. + wave / 1.e4) * np.exp(-(day / 20.) ** 2):.8e}"
+                for day in np.arange(-20., 41.) for wave in waves]
+        (tmp_path / name).write_text("\n".join(rows) + "\n")
+
+    model = SIMSEDModel.load(str(tmp_path), {})
+    assert model.get_wavelength_range() == (3000., 9000.)
+    peak = np.flatnonzero(model.common_phases == 0.)[0]
+    waves = model.native_wavelengths
+    np.testing.assert_allclose(model.template_seds[0, peak], 1. + waves / 1.e4, rtol=1e-6)
+    own = waves >= 3000.
+    np.testing.assert_allclose(model.template_seds[1, peak, own], 2. * (1. + waves[own] / 1.e4),
+                               rtol=1e-6)
+
+    extended = SIMSEDModel.load(str(tmp_path), {'UVLAM_EXTRAPFLUX': 2500.})
+    assert extended.get_wavelength_range() == (2500., 9000.)
+    waves = extended.native_wavelengths
+    ramp = (waves > 2500.) & (waves < 3000.)
+    assert np.all(extended.template_seds[1, peak, ramp] > 0.)
+
+    # SED.INFO's extrapolations apply where the sim input sets none
+    # (genmag_SIMSED.c:861-873)
+    info = tmp_path / 'SED.INFO'
+    info.write_text(info.read_text() + "UVLAM_EXTRAPFLUX: 2500\nMINSLOPE_EXTRAPMAG_LATE: 0.02\n")
+    from_info = SIMSEDModel.load(str(tmp_path), {})
+    assert from_info.get_wavelength_range() == (2500., 9000.)
+    assert from_info.minslope_extrapmag_late == 0.02
+    given = SIMSEDModel.load(str(tmp_path), {'UVLAM_EXTRAPFLUX': 2750.,
+                                             'MINSLOPE_EXTRAPMAG_LATE': 0.05})
+    assert given.get_wavelength_range() == (2750., 9000.)
+    assert given.minslope_extrapmag_late == 0.05
+
+
 def test_simsed_sequential_writes_every_parameter_as_baggage(tmp_path):
     """SEQUENTIAL declares no parameter, so every SED.INFO parameter is
     baggage: written as SIMSED_param(<name>) in the TEXT header, the FITS
@@ -4424,7 +4568,7 @@ def test_cutwin_host_zphot_cuts_on_the_masked_photoz(tmp_path):
 
 def test_zphoteff_file_short_of_the_hostlib_redshifts_aborts(tmp_path):
     """SNANA aborts on a host outside the file's ZTRUE range
-    (sntools.c:8234); the build refuses the file up front."""
+    (sntools.c:7929); the build refuses the file up front."""
     eff_file = tmp_path / "NARROW.DAT"
     eff_file.write_text("0.20 0.5\n0.25 0.5\n")
     inp = tmp_path / "in.input"

@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import pytest
+from astropy.io import fits
 
 from jax_snlc_core.snana_files import read_fitres_header
 
@@ -165,7 +166,7 @@ def test_snlc_fit_inival_inistp_pins_a_parameter(
 def test_snlc_fit_cutwin_rejecting_every_sn(
         tmp_path, repo_root, fixture_root, data_root) -> None:
     """A CUTWIN keeping nothing names the cut and still writes the FITRES
-    header, matching SNANA (snana.F90:9071; the table is created in FITPAR_INI2
+    header, matching SNANA (snana.F90:9137; the table is created in FITPAR_INI2
     before any SN). It previously died in BatchFitResult.concatenate."""
     fx = fixture_root / "snana" / "salt3_fit_dense"
     nml, head, phot = fx / "fit.nml", fx / "HEAD.FITS", fx / "PHOT.FITS"
@@ -239,7 +240,7 @@ def test_snlc_fit_fitwin_postfit_cuts(
     assert sorted(kept) == sorted(v for v in all_x1 if -0.5 <= v <= 0.5)
 
     # an error window on a derived column resolves through the same path, and
-    # must actually cut. SNANA copies only the upper edge (snlc_fit.F90:1411).
+    # must actually cut. SNANA copies only the upper edge (snlc_fit.F90:1420).
     base_mberr = sorted(column(base_out, "mBERR"))
     cutoff = base_mberr[len(base_mberr) // 2]
     err, err_out = run("FWERR.FITRES.TEXT", "FITWIN_MB_ERR", "0.0", str(cutoff))
@@ -295,7 +296,7 @@ def test_jobsplit_and_event_cap_with_a_header_cut(
 def test_event_caps_and_selection_scope(tmp_path, repo_root, fixture_root,
                                         data_root):
     """MXLC_FIT caps events surviving the fit rather than events read
-    (snana.F90:3204). OPT_SNCID_LIST bit 0 is covered by
+    (snana.F90:3210). OPT_SNCID_LIST bit 0 is covered by
     test_opt_sncid_list_bit0_skips_the_post_fit_cuts."""
     fixture = fixture_root / "snana" / "salt3_fit_dense"
     version = "JAX_TEST_SALT3_FIT_DENSE"
@@ -530,7 +531,7 @@ def test_create_covariance_cli_end_to_end(tmp_path, repo_root) -> None:
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
     assert (tmp_path / "INFO.YML").is_file()
     assert (tmp_path / "hubble_diagram.txt").is_file()
-    assert (tmp_path / "covtot_inv_000.npz").is_file()
+    assert (tmp_path / "covtot_factorized_000.npz").is_file()
 
 
 def test_jax_pipeline_main_runs_a_config(tmp_path, repo_root,
@@ -597,3 +598,29 @@ def test_named_and_snana_cli_fits_write_identical_rows(tmp_path, repo_root, fixt
         rows.append([line for line in output.read_text().splitlines() if line.startswith('SN:')])
     assert len(rows[0]) == 2
     assert rows[0] == rows[1]
+
+
+def test_wildcard_fit_tables_name_the_first_matched_version(tmp_path, repo_root, fixture_root, data_root):
+    """VERSION_PHOTOMETRY_WILDCARD replaces VERSION_PHOTOMETRY with the matched
+    folder names (snana.F90:6425-6433), so the FITRES and SNANA tables write
+    the first match in their VERSION_PHOTOMETRY line (snana.F90:23642-23647),
+    also when the nml sets VERSION_PHOTOMETRY as well."""
+    fixture = fixture_root / 'snana' / 'salt3_fit_dense'
+    env = _stage_fit_version(tmp_path, fixture / 'HEAD.FITS', fixture / 'PHOT.FITS', data_root)
+    for version in ('WILD_B', 'WILD_A'):
+        sim_dir = tmp_path / version
+        sim_dir.mkdir()
+        for suffix in ('HEAD', 'PHOT'):
+            name = f'JAX_TEST_SALT3_FIT_DENSE_{suffix}.FITS'
+            (sim_dir / name).write_bytes((tmp_path / 'JAX_TEST_SALT3_FIT_DENSE' / name).read_bytes())
+        (sim_dir / f'{version}.LIST').write_text('JAX_TEST_SALT3_FIT_DENSE_HEAD.FITS\n')
+    # a CID may appear in only one version
+    with fits.open(tmp_path / 'WILD_B' / 'JAX_TEST_SALT3_FIT_DENSE_HEAD.FITS', mode='update') as hdus:
+        hdus[1].data['SNID'] = [f'B{snid.strip()}' for snid in hdus[1].data['SNID']]
+    result = subprocess.run([sys.executable, str(repo_root / 'snlc_fit.py'), str(fixture / 'fit.nml'),
+        'VERSION_PHOTOMETRY_WILDCARD', str(tmp_path / 'WILD_*'), 'SNTABLE_LIST', 'FITRES SNANA',
+        'TEXTFILE_PREFIX', str(tmp_path / 'wild'), 'MAX_FIT', '1'],
+        env=env, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for table in ('FITRES', 'SNANA'):
+        assert read_fitres_header(str(tmp_path / f'wild.{table}.TEXT'))['VERSION_PHOTOMETRY'] == 'WILD_A'

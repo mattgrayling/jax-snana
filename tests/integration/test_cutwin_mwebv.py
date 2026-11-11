@@ -1,5 +1,5 @@
 """CUTWIN_MWEBV, the cut on the SN sightline's Milky Way E(B-V), which
-selection applies as SNANA's gen_cutwin does (snlc_sim.c:24454-24456), and
+selection applies as SNANA's gen_cutwin does (snlc_sim.c:24506-24508), and
 the generic CUTWIN_<VAR> family.
 """
 

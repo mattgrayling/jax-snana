@@ -174,10 +174,10 @@ class CreateCovConfig:
 
     # Output
     #: SNANA WRITE_MASK_COV; sum of the bits selecting which matrices to write:
-    #: 1 the systematic covariance, 2 the inverse of the total, 4 the total.
-    #: Standalone default is 2; pipelines default to compact output (8).
-    #: 8 writes compact factors, with a dense inverse fallback for external covariances.
-    write_mask_cov: int = 2
+    #: 1 the systematic covariance, 2 the inverse of the total, 4 the total,
+    #: 8 the total's compact factors, which a COVOPT with an external
+    #: covariance cannot have.
+    write_mask_cov: int = 8
     #: SNANA WRITE_FORMAT_COV; ``npz`` for a compressed NumPy archive or
     #: ``text`` for gzipped text.
     write_format_cov: CovFormat = "npz"
@@ -242,7 +242,7 @@ class CreateCovConfig:
 
 def read_yaml(path) -> dict:
     """A YAML file's contents. An empty file aborts, where SNANA's read_yaml
-    returns None and fails at its first use (:312)."""
+    returns None and fails at its first use (:318)."""
     values = yaml.safe_load(Path(path).read_text())
     if values is None:
         raise SNANAError(f"{path} is empty", function_name="read_yaml")

@@ -72,7 +72,7 @@ def test_bbc_fit_matches_salt2mu():
 
 
 def test_bbc_fit_mad_matches_salt2mu():
-    """MAD (opt_biascor bit 2048, SALT2mu.c:13394): MUCOVSCALE = (1.48*median|pull|)^2
+    """MAD (opt_biascor bit 2048, SALT2mu.c:13404): MUCOVSCALE = (1.48*median|pull|)^2
     instead of Var(pull). alpha0=0.18135 (vs 0.18189 without MAD)."""
     _des_check(_des_cfg(0, opt_biascor=112 | 2048), "SALT2mu_mad.M0DIF",
                alpha0=0.18135, beta0=3.80337)
@@ -97,10 +97,10 @@ def test_bbc_fit_gamma0_matches_salt2mu(bbc_biascor_variants):
 
 
 def test_bbc_fit_mucovadd_needs_the_mucovscale_bit():
-    """Only the muCOVscale bit builds the map (SALT2mu.c:11532), so opt_biascor with
+    """Only the muCOVscale bit builds the map (SALT2mu.c:11542), so opt_biascor with
     muCOVADD but not muCOVSCALE applies neither correction -- the same answer as a
     plain 5D biasCor, not the muCOVADD one. The column is still written, because the
-    writer gates on the bit alone (:24733)."""
+    writer gates on the bit alone (:24767)."""
     cfg = _des_cfg(0, opt_biascor=112 & ~32 | 4096)
     output = _des_check(cfg, "SALT2mu_covadd_nomucov.M0DIF",
                         alpha0=0.17952, beta0=3.78224)
@@ -136,7 +136,7 @@ def test_bbc_fit_mucovadd_matches_salt2mu():
 
 def test_bbc_fit_bias_on_mu_matches_salt2mu():
     """opt_biascor bit 128: one bias per cell, on mu, from each biasCor event's
-    own SIM alpha/beta (compute_more_TABLEVAR, SALT2mu.c:9149-9161), with
+    own SIM alpha/beta (compute_more_TABLEVAR, SALT2mu.c:9159-9171), with
     coefficient 1 in the fit. The biasCor residual behind sigInt(biasCor) and
     muCOVscale then takes the input alpha/beta, 0 here with no p1/p2, which is
     why sigInt(5D-BIASCOR) is 0.319 against 0.083 for the parameter bias."""
@@ -164,11 +164,11 @@ def test_bbc_fit_bias_on_mu_matches_salt2mu():
     (0, 16, "SALT2mu_chi2max16.M0DIF", 887, 0.13880, 2.83822),
     (0, 8, "SALT2mu_chi2max8.M0DIF", 698, 0.10076, 2.17912),
     # a 5D biasCor forces fitflag_sigmb=1 -> 2, and the cut reads the same per-event
-    # chi2 the fit stores, log(sigma) term included (SALT2mu.c:11445, :5622)
+    # chi2 the fit stores, log(sigma) term included (SALT2mu.c:11455, :5632)
     (1, 16, "SALT2mu_chi2max_sigmb.M0DIF", 887, 0.07326, 1.78314),
     # the log term divides by the mu-variance of the pass before it, which the
-    # pass itself stores (DO_H0marg runs the FCN at iflag=3, SALT2mu.c:5024,
-    # :5660). Dividing by the LC-fit mB variance instead leaves eight events on
+    # pass itself stores (DO_H0marg runs the FCN at iflag=3, SALT2mu.c:5027,
+    # :5670). Dividing by the LC-fit mB variance instead leaves eight events on
     # the wrong side of this ceiling, and none of the one above.
     (1, 12, "SALT2mu_chi2max_sigmb12.M0DIF", 801, 0.06262, 1.62827),
 ])
@@ -182,7 +182,7 @@ def test_bbc_fit_chi2max_matches_salt2mu(fitflag_sigmb, chi2max, ref, nsnfit,
 
 def test_bbc_fit_log_sigma_chi2_column():
     """The stored per-event CHI2 carries the log(sigma) term once a 5D biasCor forces
-    fitflag_sigmb to 2 (SALT2mu.c:5506), so it is not mures^2/muerrsq."""
+    fitflag_sigmb to 2 (SALT2mu.c:5516), so it is not mures^2/muerrsq."""
     cfg = _des_cfg(1)
     cfg.chi2max = 16.0
     _, output, _, tv, accept = run_bbc_fit(cfg)
@@ -210,7 +210,7 @@ def test_bbc_fit_per_event_columns():
         d = np.array([arr[i] - rmap[c] for i, c in enumerate(cids) if c in rmap])
         assert np.max(np.abs(d)) < 5e-4, f"{col} max|d|={np.max(np.abs(d)):.2e}"
     # with no log term and no CC prior each event's CHI2 is its pull squared
-    # (chi2evt = sqmures/muerrsq, SALT2mu.c:5500)
+    # (chi2evt = sqmures/muerrsq, SALT2mu.c:5510)
     np.testing.assert_allclose(output.chi2, output.mupull ** 2, rtol=1e-5)
 
 
@@ -258,7 +258,7 @@ def test_bbc_output_files_match_salt2mu(tmp_path):
     cid = [str(c) for c in fr.get("CID")]
 
     # the SALT2mu-appended block: same columns in the same order as SNANA
-    # (define_varnames_append, SALT2mu.c:24671), starting at CUTMASK
+    # (define_varnames_append, SALT2mu.c:24705), starting at CUTMASK
     jcols, rcols = list(fr.df.columns), list(rf.df.columns)
     assert jcols[jcols.index("CUTMASK"):] == rcols[rcols.index("CUTMASK"):]
     for col, tol in (("MU", 5e-4), ("MUMODEL", 5e-4), ("MUERR", 5e-4),
@@ -414,7 +414,7 @@ def test_bbc_fit_ccprior_beams_perevent():
 
 def test_chi2max_fitwgt0_deweights_instead_of_rejecting():
     """chi2max(FITWGT0) keeps every event and sets MUERR to 8888.8 for the
-    outliers (SALT2mu.c:3491, :6185)."""
+    outliers (SALT2mu.c:3494, :6195)."""
     cfg = _des_cfg(0)
     cfg.chi2max = 8.0
     cfg.chi2max_fitwgt0 = True
@@ -434,7 +434,7 @@ def test_chi2max_fitwgt0_deweights_instead_of_rejecting():
 
 def test_chi2max_per_survey_thresholds(bbc_biascor_variants):
     """chi2max(SURVEYLIST) cuts each listed survey at its own threshold while
-    the bare key covers the rest (SALT2mu.c:20510)."""
+    the bare key covers the rest (SALT2mu.c:20524)."""
     cfg = _cfg(0, surveygroup=f"{_DES_GROUP},SDSS(zbin=0.15:x1bin=2.0:cbin=0.2)")
     cfg.datafile = [f"{_DES}/DATA_SDSS.FITRES"]
     cfg.simfile_biascor = [f"{bbc_biascor_variants}/BIASCOR_SDSS.FITRES"]
@@ -449,7 +449,7 @@ def test_chi2max_per_survey_thresholds(bbc_biascor_variants):
 
 def test_u13_bayes_factor_scalepcc():
     """u13=2 floats scalePCC as the H11 Eq. 4 Bayes factor,
-    PTOT_Ia = P*s / (1 + (s-1)*P) (SALT2mu.c:5530-5535), reported as
+    PTOT_Ia = P*s / (1 + (s-1)*P) (SALT2mu.c:5540-5545), reported as
     scalePIa."""
     cfg = _des_ccprior_cfg(varname_pia="PROBIA")
     cfg.nuisance_float["scalePCC"] = True
@@ -490,7 +490,7 @@ def test_u13_bayes_factor_scalepcc():
 
 def test_biascor_unmatched_idsample_is_cut(bbc_biascor_variants):
     """BiasCor events matching no data IDSAMPLE (photo-z rows against
-    spec-z-only data) fail the IDSAMPLE cut (SALT2mu.c:18957-18958), so
+    spec-z-only data) fail the IDSAMPLE cut (SALT2mu.c:18971-18972), so
     sigInt and the maps are built from the matched half only."""
     cfg = _des_cfg(0)
     cfg.simfile_biascor = [f"{bbc_biascor_variants}/BIASCOR_PHOTOZ.FITRES"]
@@ -502,7 +502,7 @@ def test_biascor_unmatched_idsample_is_cut(bbc_biascor_variants):
 @pytest.mark.parametrize("key,value,ref,nsnfit,alpha0,beta0", [
     # exact field names: the overlap C3+X3 and E2 match no group, carry
     # FIELDGROUP NONE, and join the survey's first field sample through the
-    # SURVEYGROUP match (get_IDSAMPLE, SALT2mu.c:11215-11216)
+    # SURVEYGROUP match (get_IDSAMPLE, SALT2mu.c:11225-11226)
     ("fieldlist_biascor", "C3,X3", "SALT2mu_fieldlist", 1474, 0.17663, 3.78604),
     # |C3| exact and X3 by substring: C3+X3 goes to X3, E2 to DES(C3)
     ("fieldgroup_biascor", "|C3|,X3", "SALT2mu_fieldgroup_exact", 1473,
@@ -542,9 +542,9 @@ def _grab_contam(path):
 def test_contam_true_lines_match_salt2mu(tmp_path):
     """Sim data under a CC prior with a spec-typed subset: SUM_PROBIa drops
     the spec-confirmed Ia and CONTAM_TRUE appears in the fit summary
-    (write_fitres_misc, SALT2mu.c:24968-24986), and the YAML carries
+    (write_fitres_misc, SALT2mu.c:25002-25020), and the YAML carries
     CONTAM_DATA plus CONTAM_TRUE with its Poisson error (write_yaml_info,
-    :23775-23801)."""
+    :23789-23815)."""
     cfg = _des_ccprior_cfg(datafile="CONTAM_SIMTYPE.FITRES",
                            varname_pia="PROBIA", typeIa_ccprior=1)
     result, output, zbins, tv, accept = run_bbc_fit(cfg)
@@ -612,7 +612,7 @@ def testforce_probcc0_mask_matches_salt2mu(datafile, ref, cc_kw, forced):
     """Which events force_probcc0 pins to pIa=1, per event against SALT2mu.exe.
 
     The mask is a pure function of SNTYPE/IDSURVEY and the three keys
-    (SALT2mu.c:22772), so this reads it directly rather than through a fit: on this
+    (SALT2mu.c:22786), so this reads it directly rather than through a fit: on this
     sample the all-forced configurations put every contaminant in at full weight and
     drive beta into its bound, and the resulting fit says nothing about the mask.
     SNANA exposes the mask as PROBCC_BEAMS = 0 exactly.
@@ -650,7 +650,7 @@ def test_bbc_fit_ccprior_force_pia_runs():
 
 def test_force_pia_spec_confirmed_count_needs_varname_pia():
     """NSNSPEC_IA counts events forced to pIa=1, which SNANA does only under a
-    varname_pIa (REQUIRE_pIa, SALT2mu.c:9301). With force_pIa alone and a data
+    varname_pIa (REQUIRE_pIa, SALT2mu.c:9311). With force_pIa alone and a data
     table whose SNTYPE (-9, no TYPE column) equals typeIa_ccprior's default,
     nothing is spec-confirmed, so the SUM_PROBIa / CONTAM_DATA header values
     stay a probability sum and its ratio."""
@@ -663,7 +663,7 @@ def test_force_pia_spec_confirmed_count_needs_varname_pia():
 
 def test_varname_pia_names_an_absent_column():
     """A data table without the varname_pIa column aborts naming it, unless a
-    probcc0 list forces every event to pIa=1 (SALT2mu.c:9516-9557)."""
+    probcc0 list forces every event to pIa=1 (SALT2mu.c:9526-9567)."""
     cfg = resolve(_des_ccprior_cfg(varname_pia="NOSUCH"), SALTModel)
     with pytest.raises(SNANAError, match="Missing column varname_pIa='NOSUCH'"):
         read_tablevar(cfg.datafile, EVENT_TYPE_DATA, cfg, SALTModel)
@@ -675,7 +675,7 @@ def test_varname_pia_names_an_absent_column():
 
 def test_no_fittable_zbin_aborts():
     """Zero events in every z bin abort as setup_zbins_fit does
-    (SALT2mu.c:3133), before anything downstream sees an empty sample."""
+    (SALT2mu.c:3136), before anything downstream sees an empty sample."""
     cfg = BBCConfig(datafile=[f"{_DES}/DATA.FITRES"], nzbin=5, zmin=2.0, zmax=3.0)
     with pytest.raises(SNANAError, match="no z bin with at least 1 SN"):
         run_bbc_fit(cfg)
@@ -683,7 +683,7 @@ def test_no_fittable_zbin_aborts():
 
 def test_bbc_fit_h11_prob_matches_salt2mu():
     """Per-event H11 (Hlozek 2011) CC probability vs SALT2mu.exe (prob_CCprior_H11,
-    SALT2mu.c:18311): the analytic prior models the CC population as a poly(z) Gaussian,
+    SALT2mu.c:18325): the analytic prior models the CC population as a poly(z) Gaussian,
     dPdmu_CC = (1/sqrt(2pi)/sigCC) exp(-(dmu-CCpoly)^2 / 2 sqsigCC). Validated against
     SNANA's instrumented per-event values at the fit's starting polynomial (the two codes
     compute an identical objective). The end-to-end M0DIF is checked only for sane running
@@ -722,7 +722,7 @@ def test_bbc_fit_h11_runs():
     cfg.nuisance_float.update(alpha0=True, beta0=True)
     cfg.nuisance_onebin.update(alpha0=False, beta0=False)
     # u13: without it scalePCC is held at its parval of 0, which turns the prior
-    # off in SALT2mu as well (prep_input, SALT2mu.c:22117)
+    # off in SALT2mu as well (prep_input, SALT2mu.c:22131)
     cfg.nuisance_float["scalePCC"] = True
     # A broad CC population starts around a 1.6-mag offset and 1.5-mag width,
     # decreasing with redshift. The generic near-zero width starting point
@@ -773,8 +773,8 @@ def test_bbc_fit_4d_logmass(bbc_biascor_variants):
 
 def test_dmubin_ccprior_matches_salt2mu():
     """dmubin_ccprior sets the CC-prior dmu bin width. The window is fixed at
-    [-3,+4] with nbin=int(7/width) (SALT2mu.c:17290), so 1.5 stops the axis at +3.0
-    and the CC events above it stop feeding DMUAVG/DMURMS (:17449).
+    [-3,+4] with nbin=int(7/width) (SALT2mu.c:17304), so 1.5 stops the axis at +3.0
+    and the CC events above it stop feeding DMUAVG/DMURMS (:17463).
 
     The effect is only 3.6e-4 in MUDIF, so this asserts against the default
     reference too -- otherwise a tolerance loose enough to pass would also pass if
@@ -792,8 +792,8 @@ def test_dmubin_ccprior_matches_salt2mu():
 
 
 def test_um0_boxes_m0_in_a_narrow_window():
-    """uM0=0 narrows each per-z-bin M0 to M0_DEFAULT +/-0.001 (SALT2mu.c:2634) but
-    leaves it floating -- ISFLOAT_z depends only on min_per_zbin (:3101) -- so the
+    """uM0=0 narrows each per-z-bin M0 to M0_DEFAULT +/-0.001 (SALT2mu.c:2637) but
+    leaves it floating -- ISFLOAT_z depends only on min_per_zbin (:3104) -- so the
     bins settle on the walls of the box rather than at M0_DEFAULT.
 
     alpha/beta are not asserted: boxed 100x tighter than their own step, the M0
@@ -819,7 +819,7 @@ def test_um0_boxes_m0_in_a_narrow_window():
 ])
 def test_cut_shorthands_set_the_biascor_binning(key, value, ref, nsnfit, beta0):
     """cmin/cmax/x1min/x1max set the biasCor cell ranges, not only the cut
-    (SALT2mu.c:6987, :17297), so narrowing one moves which cell an event lands in.
+    (SALT2mu.c:6997, :17297), so narrowing one moves which cell an event lands in.
 
     Taking the ranges from default_cuts() instead selected the right events and
     binned them over the unnarrowed window: cmin was 4.4e-3 out in MUDIF and cmax
@@ -841,8 +841,8 @@ def test_cut_shorthands_set_the_biascor_binning(key, value, ref, nsnfit, beta0):
 def test_biascor_grid_cut_matches_salt2mu():
     """Windows wider than the biasCor grid (x1 +-4, c -0.3..0.5) put events
     between window and grid, where outside_biasCor_grid rejects biasCor
-    events per axis (SALT2mu.c:19239) and the sigInt subset drops only the
-    z bit (:14326-14335)."""
+    events per axis (SALT2mu.c:19253) and the sigInt subset drops only the
+    z bit (:14339-14348)."""
     cfg = _des_cfg(0)
     for var, lo, hi in (("x1", -6.0, 6.0), ("c", -1.0, 1.0)):
         cfg.lcpar_range[var] = (lo, hi)
@@ -861,7 +861,7 @@ def test_biascor_grid_cut_matches_salt2mu():
 ])
 def test_x1_shorthand_sets_the_ccprior_shape_axis(key, value, ref, nsnfit, beta0):
     """The x1 pair reaches the binning only through the CC-prior shape axis
-    (SALT2mu.c:17303) -- muCOVscale collapses its shape axis to one bin and takes
+    (SALT2mu.c:17317) -- muCOVscale collapses its shape axis to one bin and takes
     the range from biascor_lcpar_binning. Without a CC prior the x1 keys look
     correct whether or not lcpar_windows is wired up, which is why this exists:
     the bug moved MUDIF by 1.1e-3 (x1min) and 1.8e-3 (x1max) only along this path.
@@ -880,8 +880,8 @@ def test_x1_shorthand_sets_the_ccprior_shape_axis(key, value, ref, nsnfit, beta0
 
 
 def test_lensing_zpar_matches_salt2mu():
-    """lensing_zpar is added inside fcn_muerrsq (SALT2mu.c:6224), so it scales with
-    muCOVscale on the data side (:5468) and enters every biasCor muerrsq. Having it
+    """lensing_zpar is added inside fcn_muerrsq (SALT2mu.c:6234), so it scales with
+    muCOVscale on the data side (:5478) and enters every biasCor muerrsq. Having it
     outside the scale, and absent from the biasCor, put MUDIF 2.4e-3 out."""
     cfg = _des_cfg(0)
     cfg.lensing_zpar = 0.055
@@ -900,7 +900,7 @@ def test_lensing_zpar_matches_salt2mu():
      "leaves no bins"),
     # varname_z is a required read-variable
     (lambda c: setattr(c, "varname_z", "NOSUCHCOLUMN"),
-     "is not in the input table"),
+     "has no NOSUCHCOLUMN column"),
 ])
 def test_bbc_fit_aborts_where_salt2mu_aborts(setup, match):
     """Configs SALT2mu.exe rejects outright; each of these used to reach a bare
@@ -917,7 +917,7 @@ def test_bbc_fit_aborts_where_salt2mu_aborts(setup, match):
     (0, None, "CONTAM_DATA.FITRES", "all CCPRIOR events fail cuts"),
     # prepare_CCprior rejects a 1D biasCor outright
     (1, None, "CONTAM_DATA.FITRES", "1D biasCor with the CC likelihood"),
-    # force_pIa=perfect reads SIM_TEMPLATE_INDEX, which real data has not got (:9263)
+    # force_pIa=perfect reads SIM_TEMPLATE_INDEX, which real data has not got (:9273)
     (112, -1.0, "DATA_REAL.FITRES", "only on simulated data"),
 ])
 def test_bbc_ccprior_aborts_where_salt2mu_aborts(biascor, force_pia, datafile, match):
@@ -929,7 +929,7 @@ def test_bbc_ccprior_aborts_where_salt2mu_aborts(biascor, force_pia, datafile, m
     cfg.simfile_ccprior = [f"{_DES}/CCPRIOR.FITRES"]
     cfg.typeIa_ccprior = 999
     # a fixed scalePCC of 0 would turn the CC prior off before any of these
-    # aborts could fire, in SALT2mu as well (prep_input, SALT2mu.c:22117)
+    # aborts could fire, in SALT2mu as well (prep_input, SALT2mu.c:22131)
     cfg.nuisance_val["scalePCC"] = 1.0
     if force_pia is None:
         cfg.varname_pia = "PROBIA"
@@ -943,7 +943,7 @@ def test_bbc_ccprior_aborts_where_salt2mu_aborts(biascor, force_pia, datafile, m
 
 def test_bbc_fit_diagnostic_muerr_columns():
     """MUERR_RAW is the LC-fit variance alone and MUERR_VPEC the peculiar-velocity
-    term alone: neither carries sigint or muCOVscale (SALT2mu.c:5642). BASE has
+    term alone: neither carries sigint or muCOVscale (SALT2mu.c:5652). BASE has
     VPECERR=0 and a secant that lands on sigint=0, so vpecerr plus chi2max is what
     makes both terms non-zero at once."""
     cfg = _des_cfg(1)
@@ -965,7 +965,7 @@ def test_bbc_fit_diagnostic_muerr_columns():
 
 def test_a_fixed_scalepcc_of_zero_turns_the_cc_prior_off():
     """prep_input drops the CC prior when scalePCC is held at its parval of 0
-    (SALT2mu.c:22117), which is what an input naming simfile_ccprior but no p13 or
+    (SALT2mu.c:22131), which is what an input naming simfile_ccprior but no p13 or
     u13 asks for. The appended block is then the plain one: CHI2 rather than
     CHI2_BEAMS, and no PROBCC_BEAMS or MUERR_RENORM.
     """

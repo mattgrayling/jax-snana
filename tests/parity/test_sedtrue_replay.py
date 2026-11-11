@@ -70,7 +70,7 @@ def test_sedtrue_replay(snana_fixture, tmp_path):
     simulation = None if sim is None else sim.config
     resources = sim
     # LAMBIN_SED_TRUE sets the SED-true bit on the working mask, not the
-    # user's own (snlc_sim.c:2619-2624)
+    # user's own (snlc_sim.c:2625-2630)
     assert simulation.spectra.spectrograph_optmask == 0
     assert simulation.effective_spectrograph_optmask == 128
 
@@ -134,7 +134,7 @@ def test_sedtrue_replay(snana_fixture, tmp_path):
     # VERIFY_SED_TRUE table: broadband MAG and synthetic MAG_VERIFY per epoch
     snana_v = _load_verify(fx.root / "VERIFY_SED_TRUE.DAT")
     # written at the output base with no directory prefix, like SNANA
-    # (snlc_sim.c:11569)
+    # (snlc_sim.c:11587)
     jax_v = _load_verify(tmp_path / "SEDT_VERFIY_SED_TRUE.DAT")
     keys = set(snana_v) & set(jax_v)
     assert len(keys) > 100

@@ -4,9 +4,9 @@ The fixture sets all four global scales at distinct values (1.2 / 1.3 /
 1.5 / 1.4), plus FUDGESHIFT_ZPT (r +0.30), on a SIMLIB variant with
 per-field template noise and RDNOISE large enough (4.0) that a missing
 READ scaling separates from the replay floor. The r-band error gate covers
-the template-ZPT shift (snlc_sim.c:20835): the template zpt_scale term
-mismatches if only the search ZPT is shifted. SNANA applies them per epoch at SIMLIB prep (snlc_sim.c:20777-20783,
-template product at :20827-20832); a missing scale shows up in the per-band
+the template-ZPT shift (snlc_sim.c:20877): the template zpt_scale term
+mismatches if only the search ZPT is shifted. SNANA applies them per epoch at SIMLIB prep (snlc_sim.c:20819-20825,
+template product at :20869-20874); a missing scale shows up in the per-band
 FLUXCALERR ratio (SNANA-vs-control ratios are 1.4-1.7).
 """
 

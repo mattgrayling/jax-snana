@@ -335,7 +335,7 @@ def test_detection_threshold_excludes_undetected_neighbour():
 
 def test_nmatch_counts_are_uncapped():
     """HOSTGAL_NMATCH/NMATCH2 carry the full neighbour counts; SNANA writes
-    them uncapped since the Feb 9 2026 fix (snlc_sim.c:26045-26046)."""
+    them uncapped since the Feb 9 2026 fix (snlc_sim.c:26101-26102)."""
     a_half_deg = 1.0 / 3600.0
     gals = [(10.0 + k * 0.2 * a_half_deg, -30.0,
              1.0, 0.5, 1.0, 0.0, 0.0, 0.0, 0.0) for k in range(4)]
@@ -361,7 +361,7 @@ def test_nmatch_counts_are_uncapped():
 def test_true_host_dlr_smear_applies_on_top_of_dlr_columns():
     """The true-host path follows SNANA's order: weighted Sersic average,
     THEN the a_DLR/b_DLR override, THEN SMEAR_SERSIC on top
-    (GEN_SNHOST_DDLR, sntools_host.c:8559-8573). With a_DLR=5, b_DLR=2 and
+    (GEN_SNHOST_DDLR, sntools_host.c:8956-8970). With a_DLR=5, b_DLR=2 and
     SMEAR_SERSIC=2 (ab_smear=1), the DLR along the major axis is
     sqrt(5^2 + 1^2)."""
     from types import SimpleNamespace
@@ -400,7 +400,7 @@ def test_true_host_dlr_smear_applies_on_top_of_dlr_columns():
 
 def test_position_sampling_supports_three_sersic_components():
     """Component choice walks the cumulative weights over all packed
-    components (GEN_SNHOST_POS, sntools_host.c:7662-7671); a third or later
+    components (GEN_SNHOST_POS, sntools_host.c:8100-8109); a third or later
     component is reachable, up to MXSERSIC_HOSTLIB=9."""
     from types import SimpleNamespace
     from jax_snlc_sim.hostlib.selection import HostSelector
@@ -439,7 +439,7 @@ def test_position_sampling_supports_three_sersic_components():
         [offsets[1] / offsets[0], offsets[2] / offsets[0]],
         [2.0, 4.0], rtol=1e-4)
 
-    # HOSTLIB_FIXRAN_WGT replaces the component draw (sntools_host.c:6005),
+    # HOSTLIB_FIXRAN_WGT replaces the component draw (sntools_host.c:6303),
     # so the same draw of 0.1 now lands in the third component
     sel.fixran_wgt = 0.9
     out = HostSelector._generate_sn_positions(

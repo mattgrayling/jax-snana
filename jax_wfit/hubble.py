@@ -20,7 +20,7 @@ from jax_snlc_core.utils import LIGHT_KM
 from .config import WFITConfig
 
 
-#: HDIBC syncs redshifts only for diagrams this size or smaller (wfit.c:2282)
+#: HDIBC syncs redshifts only for diagrams this size or smaller (wfit.c:2349)
 _HDIBC_SYNC_MAX_ROWS = 100
 
 _CID_ALIASES = ("CID", "ROW")
@@ -148,7 +148,7 @@ def _parse_is_data_real(
         ) from None
     # any value at or below zero is simulated data, so -1, which
     # create_covariance writes where the BBC header carried no key, unblinds
-    # (read_ISDATA_REAL, wfit.c:1791)
+    # (read_ISDATA_REAL, wfit.c:1844)
     return value > 0
 
 
@@ -472,7 +472,7 @@ def _idealize_hubble_diagram(
         radiation=config.radiation,
     )
     # per-dataset seed from the input mu values, as SNANA's ISEED_UNIQUE
-    # (wfit.c:2575); the exact value cannot match, only the determinism
+    # (wfit.c:2841); the exact value cannot match, only the determinism
     seed = int.from_bytes(
         hashlib.sha256(np.asarray(input_mu).tobytes()).digest()[:4], "big")
     key = jax.random.fold_in(jax.random.PRNGKey(seed), realisation_index)
@@ -734,31 +734,40 @@ def _load_hdibc(config: WFITConfig) -> HubbleDiagram:
     )
 
 
-def hubble_diagram_from_covariance(diagram, covtot_inv, isdata_real: int,
+def hubble_diagram_from_covariance(diagram, covariance, isdata_real: int,
                                    source: str, *,
                                    truth: dict[str, float | str] | None = None) -> HubbleDiagram:
-    """Combine an HD with one COVOPT's dense inverse or factor arrays.
+    """Combine an HD with one COVOPT's covariance: its factor arrays, its
+    dense total inverse, or its dense systematic covariance, to which the
+    HD's MUERR is added as wfit adds it to a ``-mucovsys_file`` matrix.
 
     Factor arrays stay compact through preparation and likelihood evaluation.
     """
     cid_col = _find_column(diagram.columns, _CID_ALIASES)
-    kind = covtot_inv.get("kind", "factorized") if isinstance(covtot_inv, dict) else "total_inverse"
-    if kind not in ("factorized", "total_inverse"):
-        raise SNANAError(f"expected covariance factors or a total inverse, got {kind!r}")
-    compact = kind == "factorized"
-    if compact:
-        covtot_inv = validate_factorized_covariance(covtot_inv)
-    elif isinstance(covtot_inv, dict):
-        covtot_inv = covtot_inv["matrix"]
+    muerr = np.asarray(diagram["MUERR"], dtype=float)
+    kind = covariance.get("kind", "factorized") if isinstance(covariance, dict) else "total_inverse"
+    if kind == "factorized":
+        covariance = validate_factorized_covariance(covariance)
+        precision = prepare_precision(covariance["diag"], covariance["U"])
+    elif kind == "total_inverse":
+        precision = jnp.asarray(covariance["matrix"] if isinstance(covariance, dict)
+                                else covariance)
+        covariance = None
+    elif kind == "systematics":
+        precision, covariance = conditioned_precision(
+            kind, muerr, np.asarray(covariance["matrix"]) + np.diag(muerr**2), 0.)
+        precision, covariance = jnp.asarray(precision), jnp.asarray(covariance)
+    else:
+        raise SNANAError(f"expected covariance factors, a total inverse or a systematic "
+                         f"covariance, got {kind!r}")
     return HubbleDiagram(
         cid=np.asarray(diagram[cid_col], dtype=str),
         redshift=jnp.asarray(np.asarray(diagram["zHD"], dtype=float)),
         mu=jnp.asarray(np.asarray(diagram["MU"], dtype=float)),
-        muerr=jnp.asarray(np.asarray(diagram["MUERR"], dtype=float)),
-        precision=(prepare_precision(covtot_inv["diag"], covtot_inv["U"]) if compact
-                   else jnp.asarray(covtot_inv)),
+        muerr=jnp.asarray(muerr),
+        precision=precision,
         covariance_kind=kind,
-        covariance=covtot_inv if compact else None,
+        covariance=covariance,
         meta={"ISDATA_REAL": str(isdata_real)},
         source=source,
         truth=truth,

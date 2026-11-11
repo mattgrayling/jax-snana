@@ -35,10 +35,10 @@ from jax_snlc_sim.photometry import (check_crazy_flux, check_finite_flux, simula
 from jax_snlc_sim.inputs import parse_input
 from jax_snlc_sim.lensing import apply_lensdmu_smear
 from jax_snlc_sim.simulation import run_key
-from jax_snlc_sim.sampler import (NO_SBI_INPUTS, PREFILTER_REASON_CODES, draw_dust,
+from jax_snlc_sim.sampler import (NO_SBI_INPUTS, draw_dust,
                                   draw_grey_offset, draw_input_checks, draw_input_failures,
                                   draw_model, draw_placement, drawn_dust_parameters,
-                                  prepare_population_functions, sbi_value)
+                                  prepare_population_functions, reached_host, sbi_value)
 from jax_snlc_sim.selection import (apply_selection_effects, evaluate_selection,
                                     finalize_selection, generated_record, kept_mask)
 from jax_snlc_sim.observations import SIMLIB_EPOCH_KEYS, epoch_layout, keep_events
@@ -117,7 +117,7 @@ def photometry_stage(simulator, key, start_index, n_events,
                      population_functions=()):
     """The forward model up to the photometry for one batch, every draw off
     the root ``key``, in SNANA's order (gen_event_driver,
-    snlc_sim.c:12826-13030).
+    snlc_sim.c:12844-13048).
 
     Draws the placement of the events from ``start_index`` on, schedules them on
     it, applies the prefilter and forms the NREPEAT blocks; then the host,
@@ -198,7 +198,7 @@ def photometry_stage(simulator, key, start_index, n_events,
         host_state = {**host_state, 'reuse': reuse}
         if supplied or model_first:
             # the amplitude follows the host's distance (gen_modelPar
-            # OBS runs after the host, snlc_sim.c:12909)
+            # OBS runs after the host, snlc_sim.c:12927)
             batch_parameters.update(simulator.model.shift_amplitude(
                 batch_parameters, batch_parameters['mu'] - mu_before_host))
     if not supplied and not model_first:
@@ -246,7 +246,7 @@ def selection_stage(simulator, results, record,
 
     Under MINDAYSEP_SAMEGAL the passing events then hold their galaxy
     against the later batches: SNANA frees a rejected event's galaxy
-    (FREEHOST_GALID, snlc_sim.c:13512), repeat followers never reach
+    (FREEHOST_GALID, snlc_sim.c:13530), repeat followers never reach
     GEN_SNHOST_GALID, and padding lanes are not events. Returns
     ``(selection, host_state)``.
     """
@@ -345,11 +345,8 @@ def validate_batch(simulator, results, record, start_index, n_events):
     params = results['parameters']
     schedule = results['observation_schedule']
     real = np.arange(len(params['cid'])) < n_events
-    # the events that reach the host and the population draw, past the
-    # NEPOCH gate (snlc_sim.c:12864)
-    reason = np.asarray(params['prefilter_reason_code'])
-    reached = real & (np.asarray(params['prefilter_pass'])
-                      | (reason == PREFILTER_REASON_CODES['HOSTLIB_NOHOST']))
+    # the events that reach the host and the population draw
+    reached = real & reached_host(params)
 
     def first(mask):
         return int(np.argmax(mask))
@@ -419,7 +416,7 @@ def validate_batch(simulator, results, record, start_index, n_events):
                 f"tolerance. Use a larger HOSTLIB.",
                 function_name="validate_batch")
 
-    # Map and REDCOV matching apply only to generated epochs (snlc_sim.c:28035-28090).
+    # Map and REDCOV matching apply only to generated epochs (snlc_sim.c:28093-28148).
     if simulator.fluxerr_enabled:
         generated = ((real & np.asarray(params['prefilter_pass']))[:, None]
                      & np.asarray(results['filter_z_valid']))
@@ -512,7 +509,7 @@ def generate_events(simulator,
         n_obs_batch = int(np.sum(np.asarray(
             batch_results['observation_schedule']['n_obs_per_sn'])))
 
-        # the saturation-masked flux, error and SNR (snlc_sim.c:28544-28548)
+        # the saturation-masked flux, error and SNR (snlc_sim.c:28602-28606)
         for name in ('fluxcals_noisy', 'fluxcalerrs', 'snrs'):
             batch_results[name] = sel_batch.pop(f'{name}_sat')
         # the NOISE dump covers every generated event, before the trigger and cuts
@@ -950,7 +947,7 @@ def run_simulation(simulator, timings=None,
             results['parameters']['snrsum_rest_v'] = np.asarray(snrsum_rest_v)
 
     # SNANA writes SIM_SYNMAG for every simulated spectrum, not just the
-    # SED-true reduced format (sntools_dataformat_text.c:1269).
+    # SED-true reduced format (sntools_dataformat_text.c:1267).
     if spectra_by_sn:
         compute_sed_true_synmags(spectra_by_sn, simulator.photometry,
                                  simulator.calibration)
@@ -1012,7 +1009,7 @@ def _prepare(snana_input, settings, *, allow_setup_modes):
         log.line(logger, "INIT_ONLY: stopping after initialization")
         return None
 
-    # SIMGEN_DUMP: 0 lists the dump variables and stops (snlc_sim.c:14860-14862)
+    # SIMGEN_DUMP: 0 lists the dump variables and stops (snlc_sim.c:14878-14880)
     if dump_variables:
         print_simgen_dump_variables(simulation_config, simulator)
         return None

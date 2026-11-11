@@ -19,6 +19,7 @@ from jax_pipeline import (BBC, Classify, Cosmology, Covariance, Data, Fit, Sim, 
                           register_classifier)
 from jax_pipeline.classify import CLASSIFIER_REGISTRY, Perfect
 from jax_pipeline.pippin import _survey, check, main, read
+from jax_pipeline.stages import batch_cid_offsets
 from jax_salt2mu.tablevar import EVENT_TYPE_DATA
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import FitresTable
@@ -164,7 +165,7 @@ def test_fitopts_come_from_the_file_and_inline(tmp_path):
 def test_lcfit_options_set_the_same_events(tmp_path, in_file, opts, synced):
     """submit_batch reads FLAG_USE_SAME_EVENTS or OPT_SNCID_LIST from
     Pippin's LCFIT OPTS, OPT_SNCID_LIST when both are given, and uses it
-    when positive (submit_prog_lcfit.py:733-745); a FITOPTS file's positive
+    when positive (submit_prog_lcfit.py:765-777); a FITOPTS file's positive
     FLAG_USE_SAME_EVENTS is written over both (snana_fit.py:190)."""
     task = {"BASE": str(_NML), "OPTS": opts}
     if in_file is not None:
@@ -458,6 +459,50 @@ def test_systematics_seed_changes_with_each_job(tmp_path, global_keys, seeds):
             job_seeds.append(override["RANSYSTPAR_RANSEED_SYST"])
         seeds_by_stage[stage.name] = job_seeds
     assert seeds_by_stage == seeds
+
+
+@pytest.mark.parametrize("global_keys,expected", [
+    ({"RANSEED_REPEAT": "2 100"}, {"S": ([(0, 2), (1, 2)], 0)}),
+    ({"RANSEED_REPEAT": "2 100", "RESET_CIDOFF": 2}, {"S": ([(0, 2), (1, 2)], 2)}),
+    ({"RANSEED_CHANGE": "2 100", "RESET_CIDOFF": 2},
+     {"S-0001": ([(0, 2)], 1), "S-0002": ([(1, 2)], 1)})])
+def test_sim_jobs_carry_their_position_and_reset_cidoff(tmp_path, global_keys, expected):
+    """Each job is placed as SNANA's batch layer orders them, and RESET_CIDOFF
+    reaches the batch layer, 2 becoming 1 when every job is its own version
+    (snana_sim.py:330-343; submit_prog_sim.py:960-977)."""
+    stages = read(_write(tmp_path, {"SIM": {"S": {**_sim(), "GLOBAL": global_keys}}}))
+    assert {stage.name: (list(stage.jobs), stage.reset_cidoff) for stage in stages} == expected
+
+
+@pytest.mark.parametrize("counts,jobs,reset_cidoff,cidoffs,cidran_max", [
+    # SNANA's sim_prep_CIDRAN for two files of three jobs, and of two
+    ([465171] * 3 + [30000] * 3, [(0, 3), (1, 3), (2, 3)] * 2, 1,
+     [0, 512701, 1025402, 2000000, 2034013, 2068026], 2312242),
+    ([465171] * 3 + [30000] * 3, [(0, 3), (1, 3), (2, 3)] * 2, 2,
+     [0, 512701, 1025402, 1538103, 1572116, 1606129], 1804156),
+    # sequential CIDs take no range
+    ([465171] * 3 + [30000] * 3, [(0, 3), (1, 3), (2, 3)] * 2, 0,
+     [0, 465171, 930342, 2000000, 2030000, 2060000], None),
+    ([4000] * 2 + [120] * 2, [(0, 2), (1, 2)] * 2, 1, [0, 5413, 20000, 21145], 24519),
+    # the second job of each file, as a version of its own
+    ([465171, 30000], [(1, 3), (1, 3)], 1, [512701, 2034013], 2312242),
+])
+def test_batch_cid_offsets_match_snana(counts, jobs, reset_cidoff, cidoffs, cidran_max):
+    """The offsets and range are those SNANA's batch layer passes each job
+    (sim_prep_CIDRAN, submit_prog_sim.py:909-1011, run at v12_02f)."""
+    actual_cidoffs, actual_cidran_max = batch_cid_offsets(counts, jobs, reset_cidoff)
+    assert actual_cidoffs == cidoffs
+    if cidran_max is not None:
+        assert actual_cidran_max == cidran_max
+
+
+def test_a_large_version_has_room_for_its_random_cids():
+    """Thirty NGEN_UNIT jobs of 465171 events exceed SNANA's default
+    CIDRAN_MAX of 3000000, but the batch layer's range holds every job's
+    CIDs (snlc_sim.c:23419)."""
+    cidoffs, cidran_max = batch_cid_offsets([465171] * 30, [(job, 30) for job in range(30)], 1)
+    assert cidran_max > 3_000_000
+    assert all(cidoff + 465171 < cidran_max for cidoff in cidoffs)
 
 
 def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
@@ -903,6 +948,8 @@ def _cov_config(tmp_path, opts):
     ({"REBIN_BINS": {}}, "rebin", {}),
     ({"REBINNED_X1": 0, "REBINNED_C": 0}, "binned", None),
     ({"BINNED": False}, "unbinned", None),
+    # an empty EXTRA_OPTS adds nothing (create_cov.py:228-230)
+    ({"BINNED": False, "EXTRA_OPTS": None}, "unbinned", None),
 ])
 def test_covariance_binning(tmp_path, opts, mode, bins):
     stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, opts))))["C"]
@@ -914,10 +961,11 @@ def test_covariance_binning(tmp_path, opts, mode, bins):
 
 def test_external_covariance_and_calibrators(tmp_path):
     """SNANA reads an EXTRA_COVS entry's first three words as its label,
-    scale and file (create_covariance.py:2712-2715), and an empty EXTRA_OPTS
-    adds nothing (create_cov.py:228-230)."""
+    scale and file (create_covariance.py:2853-2856)."""
+    # an EXTRA_COVS matrix has no compact factors, so the inverse is written
     opts = {"BINNED": False, "EXTRA_COVS": [f"calibration 0.5 {tmp_path / 'external.npz'} note"],
-            "CALIBRATORS": ["SN_A"], "SYSTEMATIC_HD": True, "EXTRA_OPTS": None}
+            "CALIBRATORS": ["SN_A"], "SYSTEMATIC_HD": True,
+            "EXTRA_OPTS": "--write_mask_cov 2"}
     stage = _by_name(read(_write(tmp_path, _cov_config(tmp_path, opts))))["C"]
     assert stage.extra_covs == (("calibration", 0.5, tmp_path / "external.npz"),)
     assert stage.calibrators == ["SN_A"] and stage.systematic_hd
@@ -1121,8 +1169,8 @@ def test_unknown_wfit_options_are_rejected(tmp_path):
 @pytest.mark.parametrize("key", ["COVOPT", "COVOPTS"])
 def test_wfit_covopts_select_the_covariances_fitted(tmp_path, key):
     """SNANA fits only the covariance labels COVOPT or COVOPTS lists, and no
-    covariance none of whose labels is listed (submit_prog_cosmofit.py:272-275,
-    581-599)."""
+    covariance none of whose labels is listed (submit_prog_cosmofit.py:274-277,
+    608-628)."""
     config = _cov_config(tmp_path, {"COVOPTS": ["[NOSYS] [=DEFAULT,=DEFAULT]"]})
     config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"], key: "NOSYS"}}}}
     assert _by_name(read(_write(tmp_path, config)))["WFIT_W_lcdm"].covopts == ("NOSYS",)
@@ -1146,10 +1194,22 @@ def test_a_wfit_section_must_give_wfit_tasks(tmp_path, cosmofit):
                                              ({"BLIND_DATA": False}, "none")])
 def test_wfit_blinding_follows_snana(tmp_path, opts, blind_mode):
     """SNANA blinds data, and not simulations, unless BLIND_DATA and
-    BLIND_SIM say otherwise (submit_prog_cosmofit.py:698-750)."""
+    BLIND_SIM say otherwise (submit_prog_cosmofit.py:732-784)."""
     config = _cov_config(tmp_path, {})
     config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"], **opts}}}}
     assert _by_name(read(_write(tmp_path, config)))["WFIT_W_lcdm"].overrides["blind_mode"] == blind_mode
+
+
+@pytest.mark.parametrize("opts,expected", [({}, (True, True)),
+                                           ({"USE_COVTOT_FACTORIZED": False,
+                                             "USE_COVSYS_INV": False}, (False, False))])
+def test_wfit_covariance_files_follow_snana(tmp_path, opts, expected):
+    """USE_COVTOT_FACTORIZED and USE_COVSYS_INV, both true unless given,
+    choose the covariance file each fit reads (submit_prog_cosmofit.py:533-543)."""
+    config = _cov_config(tmp_path, {})
+    config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": ["/lcdm/ -lcdm"], **opts}}}}
+    stage = _by_name(read(_write(tmp_path, config)))["WFIT_W_lcdm"]
+    assert (stage.use_covtot_factorized, stage.use_covsys_inv) == expected
 
 
 def test_wfit_options_are_labelled_or_numbered(tmp_path):
@@ -1170,7 +1230,7 @@ def test_wfit_options_are_labelled_or_numbered(tmp_path):
     ("-lcdm -blind", "-blind cannot be a WFITOPT")])
 def test_wfit_option_refusals(tmp_path, entry, match):
     """A label must be one word, and any / makes an entry labelled
-    (submit_util.py:399-435); -blind is refused (submit_prog_cosmofit.py:719-732)."""
+    (submit_util.py:399-435); -blind is refused (submit_prog_cosmofit.py:753-766)."""
     config = _cov_config(tmp_path, {})
     config["COSMOFIT"] = {"WFIT": {"W": {"OPTS": {"WFITOPTS": [entry]}}}}
     with pytest.raises(SNANAError, match=match):
@@ -1251,7 +1311,7 @@ def test_external_fits_for_another_task_are_ignored(tmp_path):
 
 
 @pytest.mark.parametrize("flags,match", [
-    ("--write_mask_cov 1", "WRITE_MASK_COV"), ("--write_mask_cov 16", "WRITE_MASK_COV"),
+    ("--write_mask_cov 4", "WRITE_MASK_COV"), ("--write_mask_cov 16", "WRITE_MASK_COV"),
     ("--mxsize_test_posdef -1", "mxsize_test_posdef"), ("--write_format_cov csv", "EXTRA_OPTS"),
     ("--outdir elsewhere", "EXTRA_OPTS"), ("--write_mask 2", "EXTRA_OPTS"),
     ("--label_cov_rows ; touch unwanted", "EXTRA_OPTS"), ("'", "EXTRA_OPTS")])
@@ -1455,17 +1515,20 @@ def test_survey_selection_uses_included_simulation_settings(tmp_path):
 def test_data_survey_discovery_reads_only_metadata(tmp_path, kind):
     """Survey selection supports every loader format without reading photometry."""
 
+    version = tmp_path / 'VERSION'
+    version.mkdir()
     if kind == 'text':
-        (tmp_path / 'VERSION.LIST').write_text('event.DAT\n')
-        (tmp_path / 'event.DAT').write_text(
+        (version / 'VERSION.LIST').write_text('event.DAT\n')
+        (version / 'event.DAT').write_text(
             'SURVEY: DES(SHALLOW)\nVARLIST: MJD BAND FLUXCAL FLUXCALERR\n'
             'OBS: deliberately invalid photometry\n')
         expected = 'DES'
     elif kind == 'fits':
+        (version / 'VERSION.LIST').write_text('VERSION_HEAD.FITS\n')
         header = fits.Header({'SURVEY': 'DES'})
-        fits.PrimaryHDU(header=header).writeto(tmp_path / 'VERSION_HEAD.FITS')
+        fits.PrimaryHDU(header=header).writeto(version / 'VERSION_HEAD.FITS')
         expected = 'DES'  # No PHOT file is needed for this metadata query.
     else:
-        (tmp_path / 'hats.properties').write_text('obs_collection=LSST\n')
+        (version / 'hats.properties').write_text('obs_collection=LSST\n')
         expected = 'LSST'
-    assert _survey(Data('data', tmp_path)) == expected
+    assert _survey(Data('data', version)) == expected

@@ -1,16 +1,17 @@
 # Fixture: salt3_fit_nonlin_pix
 
-Generated: 2026-09-17
-SNANA version: v12_02d-12-g74dfb2c5
-Command: `snlc_sim.exe salt3_fit_dense/input.input` (run from a scratch dir with `JAX_TEST_FIXTURE_ROOT=fixtures`, a link to `tests/fixtures/data`)
+Generated: 2026-11-06
+SNANA version: v12_02f
+Command: `snlc_sim.exe salt3_fit_dense/input.input` (run from a scratch dir with `JAX_TEST_FIXTURE_ROOT=fixtures`, a decompressed copy of `tests/fixtures/data`)
+Fit command: `snlc_fit.exe tests/fixtures/snana/salt3_fit_nonlin_pix/fit.nml`
+Fit environment: `JAX_TEST_FIXTURE_ROOT=fixtures`, `JAX_TEST_FIT_SIM_DIR` points to the private simulation directory.
 
 GENVERSION: `JAX_TEST_SALT3_FIT_DENSE`
 
 Files:
-- FITRES.TEXT (55.0 KB)
-- OUTLIER.TEXT (445.2 KB)
+- FITRES.TEXT (55.1 KB)
+- OUTLIER.TEXT.gz (151.4 KB)
+
+Shared simulation: `../salt3_fit_dense`.
 
 Refresh with `python tests/fixtures/regenerate.py --only salt3_fit_nonlin_pix`.
-
-Photometry is shared with `../salt3_fit_dense`; only this fit’s configuration
-and SNANA reference tables are stored here. `regenerate.py` uses `sim_from`.

@@ -22,12 +22,12 @@ import numpy as np
 from jax_snlc_core import logging as log
 from jax_snlc_core.interpolation import linear_between, linear_bin
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import resolve_fits_path
+from jax_snlc_core.snana_files import key_runs, leading_values, read_sed_file, resolve_fits_path
 
 from .input_keys import SIM_ONLY
 from .roles import SimulatedModel
 from .sed_model import (SED_WAVELENGTH_RANGE, SNModel, compute_explosion_tshift,
-                        late_time_decay, late_time_tables, read_sed_file, resample_surfaces,
+                        late_time_decay, late_time_tables, resample_surfaces,
                         uvlam_extrapflux_sedmodel)
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,11 @@ def read_non1a_list(list_filepath: str
     """Parse a NON1A.LIST template catalogue file (read_NON1A_LIST,
     genmag_NON1ASED.c:554-698).
 
-    Reads ``NON1A:`` and ``PEC1A:`` entries. Both name their SED the same
-    way: SNANA resolves either class through getName_SED_FILE_NON1ASED(PATH,
-    name), relative to the model directory. ``#``/``!``/``%`` start a
-    comment. ``FLUX_SCALE:`` is a running value: each entry keeps the scale
-    in force where it appears, so template groups can differ.
+    Reads ``NON1A:`` and ``PEC1A:`` entries, each an index, a type and an
+    SED name. ``FLUX_SCALE:`` is a running value: each entry keeps the scale
+    in force where it appears, so template groups can differ. Each key takes
+    the words it needs and words after them are passed over, as SNANA reads
+    the file as a stream of words; any other key is reported and not read.
 
     Returns ``(templates, restlambda_range)``: dicts with keys index (int),
     type (str), sed_file (str), is_pec1a (bool), flux_scale (float), and the
@@ -54,45 +54,29 @@ def read_non1a_list(list_filepath: str
     templates: List[Dict] = []
     restlambda_range = None
     flux_scale = 1.0
-    with open(list_filepath, 'r') as f:
-        for line in f:
-            tokens = line.split()
-            for i, token in enumerate(tokens):
-                if token[0] in '#!%':
-                    tokens = tokens[:i]
-                    break
-            if not tokens:
-                continue
-            key = tokens[0]
-
-            if key == 'FLUX_SCALE:':
-                flux_scale = float(tokens[1])
-                continue
-            if key == 'RESTLAMBDA_RANGE:':
-                restlambda_range = (float(tokens[1]), float(tokens[2]))
-                continue
-            if key in ('NON1A:', 'NONIA:', 'NON1ASED:', 'NONIASED:'):
-                is_pec1a = False
-            elif key in ('PEC1A:', 'PECIA:'):
-                is_pec1a = True
-            else:
-                continue
-            if len(tokens) < 4:
-                continue
-
+    for key, values in key_runs(list_filepath):
+        if key == 'FLUX_SCALE':
+            flux_scale = float(leading_values(list_filepath, key, values, 1)[0])
+        elif key == 'RESTLAMBDA_RANGE':
+            restlambda_range = tuple(
+                float(v) for v in leading_values(list_filepath, key, values, 2))
+        elif key in ('NON1A', 'NONIA', 'NON1ASED', 'NONIASED', 'PEC1A', 'PECIA'):
+            index, sn_type, sed_file = leading_values(list_filepath, key, values, 3)
             templates.append({
-                'index': int(tokens[1]),
-                'type': tokens[2],
-                'sed_file': os.path.expandvars(tokens[3]),
-                'is_pec1a': is_pec1a,
+                'index': int(index),
+                'type': sn_type,
+                'sed_file': os.path.expandvars(sed_file),
+                'is_pec1a': key in ('PEC1A', 'PECIA'),
                 'flux_scale': flux_scale,
             })
+        else:
+            log.warn(logger, "NON1A", f"{list_filepath}: {key}: is not read")
     return templates, restlambda_range
 
 
 def template_slots(mxgen, one_based_index):
     """Catalogue slot per event: the first whose cumulative budget MXGEN covers
-    its index (pick_NON1ASED, snlc_sim.c:14378)."""
+    its index (pick_NON1ASED, snlc_sim.c:14398)."""
     slots = jnp.searchsorted(jnp.asarray(mxgen), one_based_index, side='left')
     return jnp.clip(slots, 0, len(mxgen) - 1)
 
@@ -113,7 +97,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
     mjd_explode_anchor = 'optmask'
 
     #: A magnitude added to every event, with its template's MAGOFF
-    #: (pick_NON1ASED, snlc_sim.c:14462). Read by the simulator only.
+    #: (pick_NON1ASED, snlc_sim.c:14482). Read by the simulator only.
     genmag_off_non1a: Annotated[float, SIM_ONLY] = field(
         default=0.0, metadata={"static": True})
 
@@ -180,14 +164,16 @@ class NON1ASEDModel(SNModel, SimulatedModel):
         template_data = []
 
         for entry in loaded:
+            # the name with .SED appended, then as given (getName_SED_FILE_NON1ASED,
+            # genmag_NON1ASED.c:470-520), then by basename in PATH_NON1ASED
             sed_file = Path(entry['sed_file'])
             named = sed_file if sed_file.is_absolute() else model_dir / sed_file
-            sed_path = Path(resolve_fits_path(named))
-            if not sed_path.exists() and self._path_non1ased:
-                # SNANA PATH_NON1ASED: the extra search directory, by basename
-                sed_path = Path(resolve_fits_path(
-                    self._path_non1ased / sed_file.name))
-            if not sed_path.exists():
+            candidates = [model_dir / f"{sed_file}.SED", named]
+            if self._path_non1ased:
+                candidates.append(self._path_non1ased / sed_file.name)
+            found = [Path(resolve_fits_path(c)) for c in candidates]
+            sed_path = next((path for path in found if path.exists()), None)
+            if sed_path is None:
                 raise SNANAError(f"SED file not found: {named}",
                                  function_name="NON1ASEDModel")
 
@@ -258,7 +244,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
             self._apply_uvlam_extrap(self.uvlam_extrapflux)
         self.resample_to_grid(self.choose_grid())
 
-    # NON1A input-key spellings (parse_input_NON1ASED, snlc_sim.c:3528); the
+    # NON1A input-key spellings (parse_input_NON1ASED, snlc_sim.c:3534); the
     # table declares the row columns, the row keys carry one template each.
     NON1A_TABLE_KEYS = ('NON1A_KEYS', 'NONIA_KEYS',
                         'NON1ASED_KEYS', 'NONIASED_KEYS')
@@ -269,9 +255,9 @@ class NON1ASEDModel(SNModel, SimulatedModel):
     @classmethod
     def structured_input(cls, raw):
         """The NON1A_KEYS table: every declared column read wherever
-        NON1A_KEYS names it (snlc_sim.c:3559-3591; NKEY defaults to 2, INDEX
-        and WGT, :1394), in the order template budgets are assigned."""
-        # (field, dtype, default or None if required), snlc_sim.c:3568-3591
+        NON1A_KEYS names it (snlc_sim.c:3565-3597; NKEY defaults to 2, INDEX
+        and WGT, :1397), in the order template budgets are assigned."""
+        # (field, dtype, default or None if required), snlc_sim.c:3574-3597
         columns = {
             'INDEX':    ('index_per_template',    np.int32,   None),
             'WGT':      ('weight_per_template',   np.float64, None),
@@ -301,7 +287,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
                 if len(values) >= n_keys:
                     rows.append({'is_pec1a': is_pec1a, 'values': values})
 
-        # NON1A_INDEX_FORCE keeps one template, at WGT=1 (snlc_sim.c:3607-3625)
+        # NON1A_INDEX_FORCE keeps one template, at WGT=1 (snlc_sim.c:3613-3631)
         force = next((raw[k] for k in ('NON1A_INDEX_FORCE', 'NONIA_INDEX_FORCE')
                       if k in raw), None)
         if not rows:
@@ -319,7 +305,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
         index_at, weight_at = declared['INDEX'], declared['WGT']
 
         if force is not None:
-            # INDEX 0 matches any force; last match wins (snlc_sim.c:3610-3623)
+            # INDEX 0 matches any force; last match wins (snlc_sim.c:3616-3629)
             kept = [e for e in rows
                     if int(float(e['values'][index_at])) in (int(force), 0)]
             if not kept:
@@ -422,7 +408,7 @@ class NON1ASEDModel(SNModel, SimulatedModel):
     def _budget_slots(self, n_sne, global_start_idx, template_budget):
         """Template slot per event: the cumulative-budget search over MXGEN,
         or over the caller's per-batch budget (pick_NON1ASED,
-        snlc_sim.c:14378). Redshift class and template assignment must use
+        snlc_sim.c:14398). Redshift class and template assignment must use
         the same slots, so both go through here."""
         if template_budget is None:
             mxgen = self._mxgen_per_template

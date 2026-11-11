@@ -202,6 +202,13 @@ class BayeSNModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         logger.info(f"Loading BayeSN model: {yaml_file.name}")
         with open(yaml_file, 'r') as f:
             bayesn_data = yaml.safe_load(f)
+        required = ['L_KNOTS', 'TAU_KNOTS', 'W0', 'W1', 'M0', 'SIGMA0', 'TAUA', 'L_SIGMA_EPSILON']
+        if not ('MUR' in bayesn_data and 'SIGMAR' in bayesn_data):
+            required.append('RV')
+        missing = [key for key in required if key not in bayesn_data]
+        if missing:
+            raise SNANAError(f"{yaml_file} lacks {', '.join(missing)}",
+                             function_name="BayeSNModel")
 
         model.wavelength_knots = jnp.array(bayesn_data['L_KNOTS'])
         model.phase_knots = jnp.array(bayesn_data['TAU_KNOTS'])
@@ -839,8 +846,8 @@ class BayeSNModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
 
     fitres_aliases = {
         "MU": ("DLMAG", "MU_LCFIT"),
-        "MUERR": ("DLMAGERR", "MU_LCFITERR", "MUERR_LCFIT"),
-        "THETA": ("THETA",),
+        "MUERR": ("DLMAGERR", "MUERR_LCFIT"),
+        "THETA": ("THETA", "THETA1"),
         "AV": ("AV",),
     }
     nuisance_spec = {}

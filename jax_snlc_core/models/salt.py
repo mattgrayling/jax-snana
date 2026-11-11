@@ -26,14 +26,15 @@ from jax_snlc_core.interpolation import (compute_catmullrom_slopes, hermite_grid
                                          hermite_interp_1d_select, hermite_interp_grid,
                                          linear_between, linear_bin, upsample_grid_linear)
 from jax_snlc_core.logging import SNANAError
-from jax_snlc_core.snana_files import (SNANA_NULLFLOAT, check_file_docana,
-                                       read_two_column_file, resolve_fits_path, skip_docana)
+from jax_snlc_core.snana_files import (SNANA_NULLFLOAT, check_file_docana, key_runs,
+                                       leading_values,
+                                       read_sed_file, read_two_column_file, resolve_fits_path)
 from jax_snlc_core.utils import LN10
 
 from .input_keys import BBC_ONLY, FIT_ONLY
 from .roles import FittedModel, SimulatedModel, StandardisedModel, flux_error_from_fracerr
 from .sed_model import (SED_WAVELENGTH_RANGE, LatetimeExtrapIa, SNModel, modelflux_extrap,
-                        read_sed_file, resample_surfaces, uvlam_extrapflux_sedmodel)
+                        resample_surfaces, uvlam_extrapflux_sedmodel)
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,19 @@ def _parse_template_file(filepath: Path) -> Tuple[np.ndarray, np.ndarray, np.nda
 
 
 def _parse_info_file(filepath: Path) -> Dict:
-    """Parse SALT{2,3}.INFO file into a flat parameter dict.
+    """Parse SALT{2,3}.INFO file into a flat parameter dict
+    (read_SALT2_INFO_FILE, genmag_SALT2.c:1180-1330).
 
-    Defaults follow init_SALT2infoDefaults (genmag_SALT2.c:1180-1216).
+    Defaults follow read_SALT2_INFO_FILE (genmag_SALT2.c:1184-1215). The
+    colour-law parameters, under COLORLAW_PARAMS or the older
+    COLORCOR_PARAMS, are three numbers then as many coefficients as the
+    third gives (:1253-1262): LAM_MIN LAM_MAX NPAR for law 1, and for law 0
+    COR0 COR1 in those first two places (SALT2colorlaw0, :3775-3779). Each
+    key takes the words it needs and any words after them are passed over,
+    as SNANA reads the file as a stream of words. MAGSHIFT, WAVESHIFT
+    and LAMSHIFT are read with the model's other metadata, and SIGMA_INT or
+    SIGMA_COH with the intrinsic-scatter model; any other key is reported
+    and not read.
     """
     params = {
         'colorlaw_version': 0,
@@ -117,59 +128,55 @@ def _parse_info_file(filepath: Path) -> Dict:
         'errmap_kcor_opt': 1,
         'errmap_badval_abort': 1,
     }
-    with open(filepath, 'r') as f:
-        for line in skip_docana(f):
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if ':' not in line:
-                continue
-            parts = line.split(':', 1)
-            key = parts[0].strip()
-            value = parts[1].strip()
-            if '#' in value:
-                value = value.split('#')[0].strip()
+    colorlaw = None
+    for key, values in key_runs(filepath):
+        if key == 'RESTLAMBDA_RANGE':
+            lam_min, lam_max = leading_values(filepath, key, values, 2)
+            params['restlambda_min'], params['restlambda_max'] = float(lam_min), float(lam_max)
+        elif key == 'COLORLAW_VERSION':
+            params['colorlaw_version'] = int(leading_values(filepath, key, values, 1)[0])
+        elif key in ('COLORLAW_PARAMS', 'COLORCOR_PARAMS'):
+            colorlaw = values
+        elif key == 'COLOR_OFFSET':
+            params['color_offset'] = float(leading_values(filepath, key, values, 1)[0])
+        elif key == 'MAG_OFFSET':
+            params['mag_offset'] = float(leading_values(filepath, key, values, 1)[0])
+        elif key == 'SEDFLUX_INTERP_OPT':
+            params['sedflux_interp_opt'] = int(leading_values(filepath, key, values, 1)[0])
+        elif key == 'ERRMAP_INTERP_OPT':
+            params['errmap_interp_opt'] = int(leading_values(filepath, key, values, 1)[0])
+        elif key == 'MAGERR_FLOOR':
+            params['magerr_floor'] = float(leading_values(filepath, key, values, 1)[0])
+        elif key == 'MAGERR_LAMOBS':
+            params['magerr_lamobs'] = tuple(
+                float(v) for v in leading_values(filepath, key, values, 3))
+        elif key == 'MAGERR_LAMREST':
+            params['magerr_lamrest'] = tuple(
+                float(v) for v in leading_values(filepath, key, values, 3))
+        elif key == 'COLOR_DISP_MAX':
+            params['color_disp_max'] = float(leading_values(filepath, key, values, 1)[0])
+        elif key == 'RESTLAM_FORCEZEROFLUX':
+            params['restlam_forcezeroflux'] = tuple(
+                float(v) for v in leading_values(filepath, key, values, 2))
+        elif key == 'ERRMAP_KCOR_OPT':
+            params['errmap_kcor_opt'] = int(leading_values(filepath, key, values, 1)[0])
+        elif key == 'ERRMAP_BADVAL_ABORT':
+            params['errmap_badval_abort'] = int(leading_values(filepath, key, values, 1)[0])
+        elif (key not in ('MAGSHIFT', 'WAVESHIFT', 'LAMSHIFT')
+              and not key.startswith(('SIGMA_INT', 'SIGMA_COH'))):
+            log.warn(logger, "SALT", f"{filepath}: {key}: is not read")
 
-            if key == 'RESTLAMBDA_RANGE':
-                lam_min, lam_max = value.split()
-                params['restlambda_min'] = float(lam_min)
-                params['restlambda_max'] = float(lam_max)
-            elif key == 'COLORLAW_VERSION':
-                params['colorlaw_version'] = int(value)
-            elif key in ('COLORLAW_PARAMS', 'COLORCOR_PARAMS'):
-                # either spelling (genmag_SALT2.c:1253); law 0 stores COR0, COR1 in the lam slots (:3779)
-                fields = value.split()
-                params['colorlaw_lam_min'] = float(fields[0])
-                params['colorlaw_lam_max'] = float(fields[1])
-                if len(fields) == 2:
-                    params['colorlaw_coeffs'] = np.array(
-                        [float(fields[0]), float(fields[1])])
-                else:
-                    params['colorlaw_coeffs'] = np.array(
-                        [float(x) for x in fields[3:3 + int(fields[2])]])
-            elif key == 'COLOR_OFFSET':
-                params['color_offset'] = float(value)
-            elif key == 'MAG_OFFSET':
-                params['mag_offset'] = float(value)
-            elif key == 'SEDFLUX_INTERP_OPT':
-                params['sedflux_interp_opt'] = int(value)
-            elif key == 'ERRMAP_INTERP_OPT':
-                params['errmap_interp_opt'] = int(value)
-            elif key == 'MAGERR_FLOOR':
-                params['magerr_floor'] = float(value)
-            elif key == 'MAGERR_LAMOBS':
-                params['magerr_lamobs'] = tuple(float(x) for x in value.split()[:3])
-            elif key == 'MAGERR_LAMREST':
-                params['magerr_lamrest'] = tuple(float(x) for x in value.split()[:3])
-            elif key == 'COLOR_DISP_MAX':
-                params['color_disp_max'] = float(value)
-            elif key == 'RESTLAM_FORCEZEROFLUX':
-                params['restlam_forcezeroflux'] = tuple(
-                    float(x) for x in value.split()[:2])
-            elif key == 'ERRMAP_KCOR_OPT':
-                params['errmap_kcor_opt'] = int(value.split()[0])
-            elif key == 'ERRMAP_BADVAL_ABORT':
-                params['errmap_badval_abort'] = int(value.split()[0])
+    if colorlaw is not None:
+        first, second, npar = (float(v) for v in leading_values(
+            filepath, 'COLORLAW_PARAMS', colorlaw, 3))
+        coeffs = [float(v) for v in leading_values(
+            filepath, 'COLORLAW_PARAMS coefficients', colorlaw[3:], int(npar))]
+        if params['colorlaw_version'] == 0:
+            params['colorlaw_coeffs'] = np.array([first, second])
+            params['colorlaw_lam_min'] = params['colorlaw_lam_max'] = None
+        else:
+            params['colorlaw_lam_min'], params['colorlaw_lam_max'] = first, second
+            params['colorlaw_coeffs'] = np.array(coeffs)
     return params
 
 
@@ -931,9 +938,9 @@ def gammadm(gamma0, gamma1, logmass_cen, logmass_tau, z, host_var, offset,
     ``gamma = gamma0 + gamma1*z``; the step is
     ``gamma * (0.5 - 1/(1 + exp(-(host_var - logmass_cen)/logmass_tau)))``.
     ``offset`` is GAMMADM_OFFSET, the midpoint of the biasCor sample's
-    SIM_gammaDM range (SALT2mu.c:16228), subtracted at the end
-    (SALT2mu.c:16782). ``use_gamma0`` is SNANA's USE_GAMMA0: with it off the
-    routine returns zero before evaluating anything (SALT2mu.c:16776), so
+    SIM_gammaDM range (SALT2mu.c:16241), subtracted at the end
+    (SALT2mu.c:16795). ``use_gamma0`` is SNANA's USE_GAMMA0: with it off the
+    routine returns zero before evaluating anything (SALT2mu.c:16789), so
     neither ``gamma1`` nor ``logmass_tau`` is read.
     """
     if not use_gamma0:
@@ -1006,8 +1013,8 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
 
     GENMODEL_ALIASES = ('salt2', 'salt3')
 
-    # SNANA's spellings and init values (snlc_sim.c:895-917); alpha and beta
-    # are also the HOSTLIB columns USESNPAR reads (sntools_host.c:676-680)
+    # SNANA's spellings and init values (snlc_sim.c:897-919); alpha and beta
+    # are also the HOSTLIB columns USESNPAR reads (sntools_host.c:684-688)
     population_parameters = ('x1', 'c', 'SALT2alpha', 'SALT2beta')
     population_aliases = {'x1': ('SALT2x1',), 'c': ('SALT2c',),
                           'SALT2alpha': ('SALT2ALPHA', 'alpha'),
@@ -1059,7 +1066,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
     # beyond the fit parameters' truth: BBC's biasCor reads these
     SIM_TRUTH_COLUMNS = ('SIM_SALT2mB', 'SIM_SALT2alpha', 'SIM_SALT2beta',
                          'SIM_SALT2gammaDM')
-    # SIMNAME_SHAPEPAR/COLORPAR/SHAPELAW/COLORLAW naming (snana.F90:24614-24650)
+    # SIMNAME_SHAPEPAR/COLORPAR/SHAPELAW/COLORLAW naming (snana.F90:24722-24763)
     SNANA_TABLE_SIM_COLUMNS = (
         ('SIM_x1', 'SIM_SALT2x1'), ('SIM_c', 'SIM_SALT2c'),
         ('SIM_alpha', 'SIM_SALT2alpha'), ('SIM_beta', 'SIM_SALT2beta'),
@@ -1091,14 +1098,14 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
 
     def _amplitude_at_distance(self, mu, params):
         """SALT2x0calc, then the encoding the fit vector uses (SNANA
-        GET_DIST8, snlc_fit.F90:6122). Brightness depends on shape and colour,
+        GET_DIST8, snlc_fit.F90:6172). Brightness depends on shape and colour,
         so those must arrive physical."""
         return self._x0_to_amplitude(compute_expected_x0_scale(
             mu, self.salt2alpha, self.salt2beta, params['x1'], params['c']))
 
     def _distance_at_amplitude(self, value, params):
         """The distance modulus FCNSNLC forms from SALT's parameters,
-        30 - 2.5 log10(x0) + alpha x1 - beta c (snlc_fit.F90:4832)."""
+        30 - 2.5 log10(x0) + alpha x1 - beta c (snlc_fit.F90:4883)."""
         return (-2.5 * jnp.log10(X0SCALE_SALT2 * self._amplitude_to_x0(value))
                 + self.salt2alpha * params['x1'] - self.salt2beta * params['c'])
 
@@ -1308,7 +1315,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         """x0 from the distance and the drawn x1, c, alpha and beta, by
         SNANA's SALT2x0calc. SALT2BETA_cPOLY adds a polynomial in c to beta,
         and is the whole of beta when beta has no population
-        (snlc_sim.c:915, :14071-14078); a (lo, hi) term is drawn per SN."""
+        (snlc_sim.c:917, :14089-14096); a (lo, hi) term is drawn per SN."""
         c = params['c']
         # without cPOLY, beta must have been drawn
         if 'SALT2beta' in params or not self._beta_cpoly:
@@ -1326,7 +1333,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
             beta = beta + coef * cpow
             cpow = cpow * c
 
-        # SNANA aborts on negative alpha/beta (snlc_sim.c:14083); not checked
+        # SNANA aborts on negative alpha/beta (snlc_sim.c:14101); not checked
         x0 = compute_expected_x0_scale(params['mu'], params['SALT2alpha'],
                                        beta, params['x1'], c)
         return {'x0': x0, 'SALT2beta': beta}
@@ -1334,7 +1341,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
     def apply_host_snpar_overrides(self, params, host_values):
         params = super().apply_host_snpar_overrides(params, host_values)
         # x0 must stay consistent with the overridden parameters
-        # (SALT2x0calc re-run, snlc_sim.c:13099-13102)
+        # (SALT2x0calc re-run, snlc_sim.c:13117-13120)
         params['x0'] = compute_expected_x0_scale(
             params['mu'], params['SALT2alpha'], params['SALT2beta'],
             params['x1'], params['c'])
@@ -1508,7 +1515,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
             'SIM_SALT2gammaDM': parameters['gammaDM'],
         }
 
-    # SNANA's name lists, verbatim (snlc_sim.c:16461-16507, :16524-16531)
+    # SNANA's name lists, verbatim (snlc_sim.c:16479-16525, :16542-16549)
     SNANA_DUMP_SIM_COLUMNS = (
         ('S2x0',         'SIM_SALT2x0'),
         ('SALT2x0',      'SIM_SALT2x0'),
@@ -1573,7 +1580,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         return {
             'PKMJD': {**super().get_fit_parameters()['PKMJD'],
                       'covariance': False},
-            # SALT2xx1 (snlc_fit.F90:13725): the error surface takes x1 = 0
+            # SALT2xx1 (snlc_fit.F90:13880): the error surface takes x1 = 0
             # on the first round
             'x1': {'bounds': (-5.0, 5.0), 'scale': 1.0, 'init': 0.001,
                    'sim_truth': 'SIM_SALT2x1', 'inistp': 0.3,
@@ -1584,7 +1591,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
                    'grid_search': (-2.0, 0.0, 2.0),
                    'coarse_grid': {'range': (-3.0, 1.0), 'nbin': 3},
                    'error_surface_round1': 0.0},
-            # CMAX_SALT2 = 0.5, on top of the flat prior (snlc_fit.F90:4770)
+            # CMAX_SALT2 = 0.5, on top of the flat prior (snlc_fit.F90:4821)
             'c': {'bounds': (-1.0, 1.0), 'scale': 1.0, 'init': 0.01,
                   'sim_truth': 'SIM_SALT2c', 'inistp': 0.03,
                   'errmax_bad': 0.001, 'error_bounds': (1.0e-8, 3.0),
@@ -1742,7 +1749,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
 
         ``error_redshift`` sets the phases and rest wavelengths the surface is
         read at, where those differ from the trial redshift (SALT2zz,
-        snlc_fit.F90:13776). ``band_weights_err`` integrates the error
+        snlc_fit.F90:13931). ``band_weights_err`` integrates the error
         denominators (Finteg_forErr, genmag_SALT2.c:2899).
         """
         t0 = sed_params['t0']
@@ -1912,7 +1919,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         return flux.reshape(shape), flux_err.reshape(shape)
 
     def _amplitude_shifted(self, value, dmu):
-        """x0 scales by 10^(-0.4dmu) (snlc_fit.F90:15210), whichever of x0 and
+        """x0 scales by 10^(-0.4dmu) (snlc_fit.F90:15371), whichever of x0 and
         log10(x0) the fit vector holds."""
         return self._x0_to_amplitude(
             self._amplitude_to_x0(value) * jnp.power(10.0, -0.4 * dmu))
@@ -1954,7 +1961,7 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
 
     def get_fitres_derived_columns(self, params):
         """RADIUS_POP = sqrt((x1/3)^2 + (c/0.3)^2) (RADIUS_CALC,
-        snlc_fit.F90:14444)."""
+        snlc_fit.F90:14605)."""
         x1 = np.asarray(params['x1'])
         c = np.asarray(params['c'])
         return [('RADIUS_POP', np.sqrt((x1 / 3.0)**2 + (c / 0.3)**2))]
@@ -1963,20 +1970,21 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
     m0_reference = -30.0
     lcpar_names = ("mB", "x1", "c")
 
-    # COV columns carry both the jax writer's and SNANA's spellings as fallbacks
+    # each column's FITRES spellings, the first present read, as SALT2mu reads
+    # them (SALT2mu.c:8675-8716)
     fitres_aliases = {
         "x0": ("x0",),
-        "x0err": ("x0ERR", "x0err"),
+        "x0err": ("x0ERR",),
         "x1": ("x1",),
-        "x1err": ("x1ERR", "x1err"),
+        "x1err": ("x1ERR",),
         "c": ("c",),
-        "cerr": ("cERR", "cerr"),
-        "COV_x1_x0": ("COV_x1_x0", "COV_x0x1", "COV_x0_x1"),
-        "COV_x1_c": ("COV_x1_c", "COV_x1c"),
-        "COV_c_x0": ("COV_c_x0", "COV_x0c", "COV_x0_c"),
+        "cerr": ("cERR",),
+        "COV_x1_x0": ("COVx0x1", "COV_x1_x0"),
+        "COV_x1_c": ("COVx1c", "COV_x1_c"),
+        "COV_c_x0": ("COVx0c", "COV_c_x0"),
     }
 
-    # bounds from prep_fitpar (SALT2mu.c:22354-22369)
+    # bounds from prep_fitpar (SALT2mu.c:22368-22383)
     nuisance_spec = {
         "alpha0": (0.14, 0.02, 0.30, 1),
         "beta0": (3.2, 1.0, 6.0, 2),
@@ -1998,19 +2006,19 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
     }
     bbc_cut_bits = {"x1": (1, 14), "c": (2, 15)}
     biascor_binning = {"x1": (-4.0, 4.0, 0.5),
-                       "c": (-0.30, 0.50, 0.05)}          # SALT2mu.c:547-549
+                       "c": (-0.30, 0.50, 0.05)}          # SALT2mu.c:549-551
     biascor_coeffs = (("alpha0", "SIM_alpha", False),
                       ("beta0", "SIM_beta", False),
                       ("gamma0", "SIM_gammaDM", True))
     gammadm_coeff = "gamma0"
     dust_forced_coeffs = ("alpha0", "beta0")
+    # as SALT2mu reads them (SALT2mu.c:8865-8930)
     biascor_truth_aliases = {
-        "SIM_x0": ("SIM_x0", "SIM_SALT2x0"),
-        "SIM_x1": ("SIM_x1", "SIM_SALT2x1"),
-        "SIM_c": ("SIM_c", "SIM_SALT2c"),
-        "SIM_alpha": ("SIM_alpha", "SIM_SALT2alpha"),
-        "SIM_beta": ("SIM_beta", "SIM_SALT2beta"),
-        "SIM_gammaDM": ("SIM_gammaDM", "SIM_SALT2gammaDM"),
+        "SIM_x0": ("SIMx0", "SIM_x0"),
+        "SIM_x1": ("SIMx1", "SIM_x1", "SIM_SALT2x1"),
+        "SIM_c": ("SIMc", "SIM_c", "SIM_SALT2c"),
+        "SIM_alpha": ("SIM_alpha", "SIMalpha"),
+        "SIM_beta": ("SIM_beta", "SIMbeta"),
     }
     cut_aliases = {
         "x1min": ("x1", "lo"), "x1max": ("x1", "hi"),
@@ -2041,10 +2049,10 @@ class SALTModel(SNModel, SimulatedModel, FittedModel, StandardisedModel):
         """``(GAMMADM_OFFSET, USE_GAMMA0)`` for these events, both from BBC.
 
         The offset is the midpoint of the biasCor SIM_gammaDM range
-        (SALT2mu.c:16228), and zero where there is no such axis. USE_GAMMA0 is
+        (SALT2mu.c:16241), and zero where there is no such axis. USE_GAMMA0 is
         SNANA's flag for the mass step being floated or started non-zero
-        (prep_input_gamma, SALT2mu.c:22820); with it off get_gammadm_host
-        returns zero before reading anything (SALT2mu.c:16776).
+        (prep_input_gamma, SALT2mu.c:22834); with it off get_gammadm_host
+        returns zero before reading anything (SALT2mu.c:16789).
         """
         missing = [k for k in ("gammadm_offset", "use_gamma0") if k not in host]
         if missing:

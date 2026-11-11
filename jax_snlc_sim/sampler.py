@@ -124,7 +124,7 @@ def coord_shift_from_polar(r, phi, dec):
     """(RA, DEC) offsets for a polar displacement (r, phi) at declination `dec`.
 
     SNANA takes one COSDEC from the SN position and applies the resulting
-    offsets to the SN and every host (snlc_sim.c:13139-13153).
+    offsets to the SN and every host (snlc_sim.c:13159-13173).
     """
     return {'ra': r * jnp.cos(phi) / jnp.cos(jnp.radians(dec)),
             'dec': r * jnp.sin(phi), 'radius': r, 'phi': phi}
@@ -136,6 +136,15 @@ PREFILTER_REASON_CODES = {
     'NEPOCH': 1,
     'HOSTLIB_NOHOST': 4,
 }
+
+
+def reached_host(params):
+    """Whether each event got past the NEPOCH gate to the host draw
+    (gen_event_driver, snlc_sim.c:12883): it passed the prefilter, or failed
+    only for want of a host."""
+    return (np.asarray(params['prefilter_pass'])
+            | (np.asarray(params['prefilter_reason_code'])
+               == PREFILTER_REASON_CODES['HOSTLIB_NOHOST']))
 
 
 def _ebv_igm_shift(model, redshifts_cmb, n_sne):
@@ -266,7 +275,7 @@ def _gen_mwebv(simulator, global_indices: jnp.ndarray,
                  if opt_mwebv == 1 else zeros)
         return mwebv.astype(jnp.float32), zeros, zeros
 
-    # GENRANGE_MWEBV replaces only the map value (snlc_sim.c:13632-13685)
+    # GENRANGE_MWEBV replaces only the map value (snlc_sim.c:13650-13703)
     if genrange[0] >= 0:
         mwebv = jax.vmap(
             lambda k: jax.random.uniform(
@@ -292,7 +301,7 @@ def _gen_mwebv(simulator, global_indices: jnp.ndarray,
         mwebv_err = (0.05 * mwebv).astype(jnp.float32)
         mwebv = mwebv + _ebv_igm_shift(simulator.model_settings, redshifts_cmb, n_sne)
 
-    # error chain (snlc_sim.c:13663-13685)
+    # error chain (snlc_sim.c:13681-13703)
     if opt_mwebv == 1:
         mwebv_err = jnp.sqrt(
             sigma_fixed**2 + (sigma_ratio * mwebv)**2).astype(jnp.float32)
@@ -315,7 +324,7 @@ def draw_mwebv(simulator, params: Dict[str, jnp.ndarray], *,
                key) -> Dict[str, jnp.ndarray]:
     """gen_MWEBV at the SN's position: its SIMLIB pointing, or under
     SN2GAL_RADEC its place on its host, where SNANA defers the lookup to
-    (snlc_sim.c:12878-12880, load_SNHOST_GENLC_COORDS). Only the SFD98 paths
+    (snlc_sim.c:12896-12898, load_SNHOST_GENLC_COORDS). Only the SFD98 paths
     read the position; OPT_MWEBV=1 reads the SIMLIB field value either way.
     Returns the map value, its error and the smeared truth."""
     sky = ((params['ra'], params['dec']) if simulator.host_settings.mskopt & 8
@@ -328,7 +337,7 @@ def draw_mwebv(simulator, params: Dict[str, jnp.ndarray], *,
 
 def anisotropy_cos_sep(simulator, ra, dec):
     """Per-SN cos(angle to the CMB apex) at the SN's position (gen_dLmag
-    takes the SN's galactic coords, snlc_sim.c:17626)."""
+    takes the SN's galactic coords, snlc_sim.c:17644)."""
     if not simulator.cosmology.anisotropy_modelname:
         return 0.0
     return cos_sep_cmb_apex(ra, dec)
@@ -359,7 +368,7 @@ def assign_simlib_field(simulator, global_indices, redshifts, *,
     SIMLIB_NREPEAT and SIMLIB_MAXRANSTART drive the cycle, which the
     observation scheduler repeats from the same formula. With CUTWIN_REDSHIFT
     windows the entry is instead drawn among those whose window holds the
-    redshift, one per NREPEAT block (keep_SIMLIB_HEADER, snlc_sim.c:20144).
+    redshift, one per NREPEAT block (keep_SIMLIB_HEADER, snlc_sim.c:20184).
     """
     n_fields = simulator.field_data['ra'].shape[0]
     s = simulator.survey
@@ -389,11 +398,11 @@ def _entry_gengauss(field_data, name, field_indices):
 def _simlib_redshifts(simulator, redshifts, field_indices, global_indices,
                       *, key):
     """The entry's say over zCMB. A GENRANGE_REDSHIFT window redraws it from
-    the same dN/dz inside the window (genz_hubble, snlc_sim.c:22358). The
+    the same dN/dz inside the window (genz_hubble, snlc_sim.c:22397). The
     entry's REDSHIFT under USE_SIMLIB_REDSHIFT, or its DISTANCE under
     USE_SIMLIB_DISTANCE through the distance modulus, is a zero-width window
     and sets zCMB to that value (regen_SIMLIB_GENRANGES,
-    snlc_sim.c:22360-22370). The last of these keys in the entry header
+    snlc_sim.c:22399-22409). The last of these keys in the entry header
     wins, and a window applies only when its lower edge lies above
     ``ZMIN_SIMLIB_REGEN``. Each rebinds the drawn value rather than adding
     to it.
@@ -419,9 +428,9 @@ def draw_peculiar_velocity(cosmology, batch_n_sne, redshifts, sn_ras,
     """VPEC and the heliocentric redshift it produces.
 
     Returns ``(redshifts_helio, vpec_true, vpec_smear, vpec_err)``. VPEC_FORCE
-    pins the velocity (snlc_sim.c:17204); otherwise a HOSTLIB VPEC
+    pins the velocity (snlc_sim.c:17224); otherwise a HOSTLIB VPEC
     (``from_hostlib``, USEVPEC) leaves it zero for the host to set, and
-    GENSIGMA_VPEC draws it (gen_redshift_helio, :17226-17236). VPEC_ERR
+    GENSIGMA_VPEC draws it (gen_redshift_helio, :17244-17254). VPEC_ERR
     smears the reported value. A VEL_CMBAPEX of at least 1 adds galactic
     motion first, so zHEL is zCMB plus galactic motion plus VPEC.
     """
@@ -434,11 +443,11 @@ def draw_peculiar_velocity(cosmology, batch_n_sne, redshifts, sn_ras,
     else:
         redshifts_helio_galmotion = redshifts
 
-    if cosmo_cfg.vpec_force < 1.0e8:  # snlc_sim.c:17204
+    if cosmo_cfg.vpec_force < 1.0e8:  # snlc_sim.c:17224
         vpec_true = jnp.full(batch_n_sne, cosmo_cfg.vpec_force, dtype=jnp.float32)
         redshifts_helio = (1.0 + redshifts_helio_galmotion) * (1.0 + vpec_true / LIGHT_KM) - 1.0
         # the measured VPEC follows APPLY_VPEC_SMEAR = VPEC_ERR < GENSIGMA_VPEC
-        # (gen_zsmear, snlc_sim.c:17441-17459); with the defaults it stays 0
+        # (gen_zsmear, snlc_sim.c:17459-17477); with the defaults it stays 0
         if vpec_err_config < gensigma_vpec:
             vpec_smear = vpec_true + vpec_err_config * jax.vmap(
                 jax.random.normal)(vpec_smear_keys)
@@ -646,7 +655,7 @@ def grey_offset(simulator, subpop_index, redshifts, host_properties, drawn,
                 n_sne):
     """GENMAG_OFF_GLOBAL per SN, the drawn class's value where classes are
     declared, with the shifts a ZVARIATION or VARIATION puts on it
-    (snlc_sim.c:12941). A class's own shift reaches only its own events.
+    (snlc_sim.c:12959). A class's own shift reaches only its own events.
     """
     model = simulator.model_settings
     if model.subpops:
@@ -684,8 +693,8 @@ def _draw_host_dust(simulator, batch_n_sne, sample_param, av_keys):
 
     RV comes first because the EBV path takes AV = EBV * RV per SN. GENAV_WV07
     replaces the EBV/AV draw entirely. SNANA leaves SIM_AV/SIM_RV at NULLFLOAT
-    unless gen_modelPar_dust runs (snlc_sim.c:9612-9613, gated at :14335); the
-    branches here are its DOGEN_AV decision (prep_dustFlags, :7968-7975). The
+    unless gen_modelPar_dust runs (snlc_sim.c:9623-9624, gated at :14353); the
+    branches here are its DOGEN_AV decision (prep_dustFlags, :7983-7990). The
     drawn values stay 0 and 3.1 for the extinction maths, only the reported
     pair differs.
     """
@@ -715,7 +724,7 @@ def _draw_host_dust(simulator, batch_n_sne, sample_param, av_keys):
 def distance_modulus_at(simulator, redshifts, redshifts_helio,
                         vpec, ra, dec):
     """The distance modulus per SN, with the dipole anisotropy at the SN's
-    position (gen_dLmag, snlc_sim.c:17626)."""
+    position (gen_dLmag, snlc_sim.c:17644)."""
     omega_m, _omega_k, omega_l, hubble_distance, w0, wa = cosmo_params(simulator.cosmology)
     _aniso = (ANISOTROPY_V04_PARS
               if simulator.cosmology.anisotropy_modelname else None)
@@ -728,7 +737,7 @@ def distance_modulus_at(simulator, redshifts, redshifts_helio,
 
 
 def distance_mag(simulator, params, host_properties, *, key):
-    """gen_distanceMag (snlc_sim.c:17468): the distance modulus, the
+    """gen_distanceMag (snlc_sim.c:17486): the distance modulus, the
     weak-lensing offset and MUSHIFT at the SN's zCMB, zHEL, VPEC and
     position. Run for the placement, and again when the host moves the SN's
     redshift, then with the host's lensing column."""
@@ -753,7 +762,7 @@ def _draw_mushift(model, keys, mu, murewgt):
     over its range, or under a DNDZ reweight drawn from the reweight's CDF
     between mu plus either end of the range and returned as the drawn
     distance less mu. An event whose shifted range leaves the CDF's grid
-    takes the flat draw (gen_MUSHIFT, snlc_sim.c:17542)."""
+    takes the flat draw (gen_MUSHIFT, snlc_sim.c:17560)."""
     mushift_lo, mushift_hi = model.mushift
     if not (mushift_lo or mushift_hi):
         return None
@@ -774,7 +783,7 @@ def _simlib_header_override(simulator, sample_param, field_indices, keys_for):
     """USE_SIMLIB_SALT2: a population parameter the entry header names, under
     the same spelling as its GENGAUSS keys, is drawn from the entry's
     GENRANGE/GENSIGMA or pinned to its single value at draw time, so the model
-    builds the SED from the overridden value (snlc_sim.c:22194, :22380-22387).
+    builds the SED from the overridden value (snlc_sim.c:22233, :22419-22426).
     """
     field_data = simulator.field_data
 
@@ -796,7 +805,7 @@ def _simlib_header_override(simulator, sample_param, field_indices, keys_for):
 
 def _draw_redshift_smear(rates, keys):
     """Observed-redshift smear normals (GENSIGMA_REDSHIFT / GENBIAS_REDSHIFT,
-    snlc_sim.c:17405)."""
+    snlc_sim.c:17425)."""
     if (rates.gensigma_redshift < 0.0 or rates.gensigma_redshift > 0.999
             or not (rates.gensigma_redshift > 0.0
                     or rates.genbias_redshift != 0.0)):
@@ -810,20 +819,34 @@ def _draw_peak_mjd(simulator, field_indices, peak_keys,
 
     Uniform over GENRANGE_PEAKMJD, then USE_SIMLIB_PEAKMJD pins it to the
     per-LIBID header value and MJD_EXPLODE pins every SN to the explosion time
-    (SNANA sets GENRANGE_PEAKMJD=[MJD,MJD]; snlc_sim.c:2085). GENSIGMA_PEAKMJD
+    (SNANA sets GENRANGE_PEAKMJD=[MJD,MJD]; snlc_sim.c:2091). GENSIGMA_PEAKMJD
     is keyed on the global index so it stays batch-invariant, and is applied
     post-photometry by gen_peakmjd_smear.
     """
     mjd_min, mjd_max = simulator.rates.peakmjd_range
-    # uniform with GENRANGE_PEAKMJD_EXCLUDE cut out (snlc_sim.c:17038-17039)
+    # uniform outside the excluded and GENSKIP ranges (snlc_sim.c:17038-17071)
     exclude_min, exclude_max = simulator.rates.peakmjd_exclude
-    gap_lo = max(exclude_min, mjd_min)
-    gap = max(min(exclude_max, mjd_max) - gap_lo, 0.0) if exclude_max > 0.0 else 0.0
+    skipped = list(simulator.simlib_genskip_peakmjd)
+    if exclude_max > 0.0:
+        skipped.append((exclude_min, exclude_max))
+    gaps = []
+    for lo, hi in sorted((max(lo, mjd_min), min(hi, mjd_max)) for lo, hi in skipped):
+        if gaps and lo <= gaps[-1][1]:
+            gaps[-1] = (gaps[-1][0], max(hi, gaps[-1][1]))
+        elif hi > lo:
+            gaps.append((lo, hi))
+    width = sum(hi - lo for lo, hi in gaps)
+    # SNANA gives up when its draws find no peak outside the gaps (snlc_sim.c:17047)
+    if gaps and width >= mjd_max - mjd_min:
+        raise SNANAError(
+            f"GENSKIP_PEAKMJD and GENRANGE_PEAKMJD_EXCLUDE leave no PEAKMJD in "
+            f"GENRANGE_PEAKMJD {mjd_min} to {mjd_max}", function_name="_draw_peak_mjd")
     peak_mjd = jax.vmap(
-        lambda key: jax.random.uniform(key, minval=mjd_min, maxval=mjd_max - gap))(peak_keys)
-    peak_mjd = jnp.where(peak_mjd >= gap_lo, peak_mjd + gap, peak_mjd)
+        lambda key: jax.random.uniform(key, minval=mjd_min, maxval=mjd_max - width))(peak_keys)
+    for lo, hi in gaps:
+        peak_mjd = jnp.where(peak_mjd >= lo, peak_mjd + (hi - lo), peak_mjd)
 
-    # entry GENRANGE_PEAKMJD, whatever USE_SIMLIB_PEAKMJD (snlc_sim.c:22166-22185, :22375)
+    # entry GENRANGE_PEAKMJD, whatever USE_SIMLIB_PEAKMJD (snlc_sim.c:22205-22224, :22414)
     gengauss = _entry_gengauss(simulator.field_data, 'PEAKMJD', field_indices)
     if gengauss is not None:
         lo, hi, sigma = gengauss
@@ -851,7 +874,7 @@ def draw_placement(simulator, batch_n_sne: int,
                    template_budget: Optional[np.ndarray] = None,
                    *, key) -> Dict[str, jnp.ndarray]:
     """Where and when each event happens, SNANA's gen_event_driver up to the
-    host (snlc_sim.c:12826-12887): the peak MJD, zCMB and the SIMLIB entry
+    host (snlc_sim.c:12844-12905): the peak MJD, zCMB and the SIMLIB entry
     it picks, the SN's position, the peculiar velocity and so zHEL, the
     distance, and MWEBV unless the host will move the SN. The host and the
     population follow.
@@ -886,7 +909,7 @@ def draw_placement(simulator, batch_n_sne: int,
         'sim_redshift_cmb': redshifts,
         'sim_redshift_helio': redshifts_helio,
         # the host-lookup redshift and match flag, which WRONGHOST_FILE
-        # overrides (GENLC.REDSHIFT_HOST, CORRECT_HOSTMATCH; snlc_sim.c:12886)
+        # overrides (GENLC.REDSHIFT_HOST, CORRECT_HOSTMATCH; snlc_sim.c:12904)
         'sim_redshift_host': redshifts_helio,
         'CORRECT_HOSTMATCH': jnp.ones(batch_n_sne, dtype=jnp.int32),
         'vpec_true': vpec_true,
@@ -932,7 +955,7 @@ def _parameter_sampler(simulator, params, host_properties, keys_for,
     ``drawn``, so a later parameter's VARIATION may read it, and returns
     with it a callable giving SNANA's population weight so far,
     prob(nominal)/prob(reweighted) over every reweighted parameter
-    (wgt_population_event, snlc_sim.c:31576)."""
+    (wgt_population_event, snlc_sim.c:31636)."""
     redshifts = params['sim_redshift_cmb']
     weight = jnp.ones_like(redshifts)
     step_draws = {}
@@ -993,7 +1016,7 @@ def draw_model(simulator, params,
                host_properties: Optional[Dict[str, jnp.ndarray]],
                template_budget: Optional[np.ndarray] = None,
                *, key, sbi_inputs, population_functions) -> Dict[str, jnp.ndarray]:
-    """What each event is (gen_modelPar, snlc_sim.c:12892-12910): the SUBPOP
+    """What each event is (gen_modelPar, snlc_sim.c:12910-12928): the SUBPOP
     class, the model's parameters with the amplitude from the distance, and
     the per-event smears. SNANA draws them after the host, or before it when
     the host's weight map reads them.
@@ -1057,7 +1080,7 @@ def draw_model(simulator, params,
         'subpop': (subpop_index if subpop_index is not None
                    else jnp.full(batch_n_sne, -1, dtype=jnp.int32)),
         # coherent smear, MAGOFF and the host mass step, which a HOSTLIB
-        # weight map or an SBI call can set later (snlc_sim.c:8483-8491, :9585)
+        # weight map or an SBI call can set later (snlc_sim.c:8498-8506, :9596)
         'magsmear': jnp.zeros(batch_n_sne),
         'magoff': jnp.zeros(batch_n_sne),
         'gammaDM': jnp.zeros(batch_n_sne),
@@ -1081,7 +1104,7 @@ def draw_model(simulator, params,
 def draw_dust(simulator, params,
               host_properties: Optional[Dict[str, jnp.ndarray]], *,
               key, sbi_inputs, population_functions) -> Dict[str, jnp.ndarray]:
-    """Host-galaxy AV and RV (gen_modelPar_dust, snlc_sim.c:12912), at the
+    """Host-galaxy AV and RV (gen_modelPar_dust, snlc_sim.c:12932), at the
     event's final redshift. SNANA draws them after the host; a weight map
     that reads them needs them before it. Returns the dust columns and the
     population weight with the dust's reweighting folded in."""
@@ -1100,7 +1123,7 @@ def draw_dust(simulator, params,
 def draw_grey_offset(simulator, params,
                      host_properties: Optional[Dict[str, jnp.ndarray]]):
     """GENMAG_OFF_GLOBAL per SN, with its redshift variation at the final
-    zCMB, once the host's overrides are in (snlc_sim.c:12940)."""
+    zCMB, once the host's overrides are in (snlc_sim.c:12958)."""
     return grey_offset(simulator, _subpop_index(simulator, params),
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),

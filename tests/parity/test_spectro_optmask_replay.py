@@ -91,7 +91,7 @@ def test_spectro_snrmode_replay(snana_fixture, tmp_path):
 
     Two TAKE_SPECTRUM configs: near-peak SNR_ZPOLY(25) whose solved
     exposure fixes the SN's template exposure (TEMPLATE_TEXPOSE_SCALE
-    default 1.0, snlc_sim.c:11954), and a fixed 1500 s epoch that reuses
+    default 1.0, snlc_sim.c:11974), and a fixed 1500 s epoch that reuses
     it. OPTMASK 64 lets exposures extrapolate outside the calibration
     table (SNANA solved 47 s to 1.05e5 s here). Solver convergence is 3%
     in SNR on both sides, so exposures are gated at 15% per spectrum / 5%
@@ -361,8 +361,8 @@ def test_spectro_snrscale_replay(snana_fixture, tmp_path):
     the spectrum is written.
 
     SPECTROGRAPH_OPTMASK bit 8 sets a fixed SNR x100 (SPECTROGRAPH_OPTMASK_SNRx100,
-    snlc_sim.h:346). SNANA folds it into GENPOLY_SCALE_SNR (snlc_sim.c:10348) and
-    applies it inside GENSPEC_SMEAR (:12184) -- which is the very function its
+    snlc_sim.h:346). SNANA folds it into GENPOLY_SCALE_SNR (snlc_sim.c:10368) and
+    applies it inside GENSPEC_SMEAR (:12202) -- which is the very function its
     exposure solver calls for SNR_MIN/SNR_MAX, so its solve and its output agree
     by construction.
 

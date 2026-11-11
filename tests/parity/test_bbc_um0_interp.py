@@ -1,9 +1,9 @@
 """Parity vs SALT2mu.exe for uM0=2 (interpolated M0) and muref_zpoly.
 
 uM0=2 makes M0 linear between z-bin knots instead of flat per bin (fcn_M0,
-SALT2mu.c:5826); the knots are the biasCor's weighted mean z per bin
-(calc_zM0_biasCor, :14774), so the mode needs a biasCor and aborts without one.
-muref_zpoly replaces the LCDM distance in cosmodl (:25755) and force-sets uM0=2.
+SALT2mu.c:5836); the knots are the biasCor's weighted mean z per bin
+(calc_zM0_biasCor, :14787), so the mode needs a biasCor and aborts without one.
+muref_zpoly replaces the LCDM distance in cosmodl (:25789) and force-sets uM0=2.
 
 References are on the bbc_des_beams 5D config; see that fixture's refs.py.
 """
@@ -61,7 +61,7 @@ def test_um0_interp_differs_from_flat():
 
 
 def test_um0_interp_needs_a_biascor():
-    """fcn_M0 aborts without simfile_biascor (SALT2mu.c:5828): the knots are the
+    """fcn_M0 aborts without simfile_biascor (SALT2mu.c:5838): the knots are the
     biasCor's weighted mean z per bin, and there is nothing to interpolate over."""
     config = parse_bbc_input(None, overrides=[
         f"datafile={_DIR}/DATA.FITRES", "nzbin=10", "zmin=0.1", "zmax=1.0", "uM0=2"])
@@ -75,7 +75,7 @@ def test_muref_zpoly_matches_salt2mu():
 
 
 def test_muref_zpoly_forces_interp_and_disables_chi2max():
-    """prep_input (SALT2mu.c:22203) sets uM0=2 and iflag_chi2max=0 whenever the
+    """prep_input (SALT2mu.c:22217) sets uM0=2 and iflag_chi2max=0 whenever the
     polynomial is given, whatever the user asked for."""
     config = parse_bbc_input(None, overrides=_BASE + [_ZPOLY, "uM0=1", "chi2max=16"])
     assert config.uM0 == 2
@@ -83,7 +83,7 @@ def test_muref_zpoly_forces_interp_and_disables_chi2max():
 
 
 def test_crazy_m0_errors_matches_salt2mu():
-    """crazy_M0_errors (SALT2mu.c:4811) flags z bins whose fitted M0 error is below
+    """crazy_M0_errors (SALT2mu.c:4814) flags z bins whose fitted M0 error is below
     0.67*sqrt(<muCOVscale>)*0.1/sqrt(N). On this config SNANA reports two:
     'iz=0 M0ERR=0.01430 ERRMIN_COMPUTE=0.10/sqrt(18)=0.02452' and
     'iz=1 M0ERR=0.00854 ERRMIN_COMPUTE=0.10/sqrt(64)=0.01288'.
@@ -96,7 +96,7 @@ def test_crazy_m0_errors_matches_salt2mu():
 
 
 def test_crazy_check_skipped_under_fixpar_all():
-    """fixpar_all returns before the check (SALT2mu.c:4845): nothing is fitted, so
+    """fixpar_all returns before the check (SALT2mu.c:4848): nothing is fitted, so
     an M0 error below the floor carries no information."""
     out = _run(["fixpar_all=1"])
     assert not out.crazy_m0.any()

@@ -1,5 +1,5 @@
 # OPT_SETPKMJD parity fixture: the Fmax-clump estimator that sets the
-# reported PEAKMJD (get_obs_atFLUXMAX, sntools.c:1595). Its window and
+# reported PEAKMJD (get_obs_atFLUXMAX, sntools.c:1590). Its window and
 # both SNR cuts are hard-wired in SNANA at 60 days, 5 and 3, with no
 # input key of their own, so the only knob is OPT_SETPKMJD itself.
 # GENSIGMA_PEAKMJD is 0 and SMEARFLAG_FLUX/ZEROPT are 0, so both codes

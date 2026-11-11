@@ -19,6 +19,7 @@ from jax_snlc_core.snana_files import (HOSTGAL_PROPERTY_BASENAMES, SNANA_NULLFLO
 from jax_snlc_sim.cutwin import CUTMASK_ALL_PASS
 from jax_snlc_sim.output.tables import model_dump_columns, model_header_params, per_event_types
 from jax_snlc_sim.rate import compute_rate_on_grid, apply_rate_modifiers
+from jax_snlc_sim.sampler import reached_host
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ _DUMP_EVENT_COLUMNS = (
 # SNANA name -> parameter key (PREP_SIMGEN_DUMP, snlc_sim.c:16588, :16650-16695)
 _DUMP_PARAM_COLUMNS = (
     ('SIM_SEARCHEFF_MASK', 'sim_searcheff_mask'),
-    ('SIM_EFFMASK',        'sim_searcheff_mask'),  # older name, :16730
+    ('SIM_EFFMASK',        'sim_searcheff_mask'),  # older name, :16748
     ('MJD_TRIGGER',        'mjd_trigger'),
     ('MJD_DETECT_FIRST',   'mjd_detect_first'),
     ('MJD_DETECT_LAST',    'mjd_detect_last'),
@@ -61,12 +62,12 @@ _DUMP_PARAM_COLUMNS = (
     ('ZCMB_SMEAR',         'redshift_final'),
     ('REDSHIFT_FINAL_ERR', 'redshift_smear_err'),
     ('ZHELIO_ERR',         'redshift_smear_err'),
-    ('FLAG_ACCEPT',        'passing_mask'),  # snlc_sim.c:416, 5061-5065
+    ('FLAG_ACCEPT',        'passing_mask'),  # snlc_sim.c:416, 5073-5077
     ('NEPOCH',             'nepoch'),
     ('VPEC',               'vpec_true'),
     ('LENSDMU',            'lensdmu'),
     ('SPEC_SNRSUM_REST_V', 'snrsum_rest_v'),
-    ('WGT_POPULATION',     'wgt_population'),  # snlc_sim.c:16417
+    ('WGT_POPULATION',     'wgt_population'),  # snlc_sim.c:16435
     ('AV',                 'sim_av'),
     ('RV',                 'sim_rv'),
     ('ZHELIO',             'sim_redshift_helio'),
@@ -92,8 +93,12 @@ _DUMP_ALIASES = (
 
 _DUMP_SNRMAX_RANKS = 5
 
-# refused names and their replacements (VARNAME_ABORT, snlc_sim.c:16658-16663)
+# refused names and their replacements (VARNAME_ABORT, snlc_sim.c:16678-16683)
 _DUMP_REFUSED_NAMES = {'TMAX': 'TRESTMAX'}
+
+# the host redshift of an event rejected before its host is drawn
+# (init_event_GENLC, snlc_sim.c:9842)
+_HOST_ZTRUE_UNDRAWN = 0.0001
 
 
 def canonical_dump_columns(columns, model):
@@ -111,7 +116,7 @@ def canonical_dump_columns(columns, model):
 
 def cutwin_reject_rows(config, full_results, selection_result):
     """Rows for APPLY_CUTWIN_OPT=3: the accepted events plus the ones CUTWIN
-    rejected (doReject_SIMGEN_DUMP, snlc_sim.c:16927). None when unset."""
+    rejected (doReject_SIMGEN_DUMP, snlc_sim.c:16945). None when unset."""
     if (config.cuts.apply_cutwin_opt != 3
             or not full_results or not selection_result):
         return None
@@ -121,7 +126,7 @@ def cutwin_reject_rows(config, full_results, selection_result):
 
 def write_dump_dcr(columnar_data, version_name, output_dir, to_written_cid):
     """Write the per-obs <VERSION>.DCR table (ATMOSPHERE_OPTMASK bit 512,
-    wr_SIMGEN_DUMP_DCR, snlc_sim.c:15127). One row per obs with SNR_OBS>3 and
+    wr_SIMGEN_DUMP_DCR, snlc_sim.c:15145). One row per obs with SNR_OBS>3 and
     a valid DCR shift."""
     obs = columnar_data['observations']
     counts = np.asarray(columnar_data['obs_counts'])
@@ -170,9 +175,9 @@ def write_dump_dcr(columnar_data, version_name, output_dir, to_written_cid):
 
 
 def write_dump_rate(config, version_name, output_dir):
-    """SNANA SIMGEN_DUMP_RATE (wr_SIMGEN_DUMP_RATE, snlc_sim.c:15622): genz_wgt
+    """SNANA SIMGEN_DUMP_RATE (wr_SIMGEN_DUMP_RATE, snlc_sim.c:15640): genz_wgt
     on a 0.01 z-grid over GENRANGE_REDSHIFT: the volumetric rate times the
-    full DNDZ reweight/scale chain (genz_wgt, snlc_sim.c:17791-17851)."""
+    full DNDZ reweight/scale chain (genz_wgt, snlc_sim.c:17809-17869)."""
     z0, z1 = config.rates.redshift_range
     dndz_params = config.dndz_params()
     zs = []
@@ -199,7 +204,7 @@ def write_dump_rate(config, version_name, output_dir):
 
 
 def write_dump_mwcl(version_name, output_dir):
-    """SNANA SIMGEN_DUMP_MWCL (wr_SIMGEN_DUMP_MWCL, snlc_sim.c:15681): MW mag
+    """SNANA SIMGEN_DUMP_MWCL (wr_SIMGEN_DUMP_MWCL, snlc_sim.c:15701): MW mag
     extinction A(λ)=AV·A(λ)/A(V) (AV=0.1 fixed) over an RV×WAVE grid for 5
     colour laws."""
     RV_MIN, RV_MAX, RV_BIN = 1.0, 6.0, 1.0
@@ -234,7 +239,7 @@ def write_dump_mwcl(version_name, output_dir):
 
 
 def write_dump_trainsalt(columnar_data, version_name, output_dir, to_written_cid):
-    """SNANA SIMGEN_DUMP_TRAINSALT (wr_SIMGEN_DUMP_TRAINSALT, snlc_sim.c:15559):
+    """SNANA SIMGEN_DUMP_TRAINSALT (wr_SIMGEN_DUMP_TRAINSALT, snlc_sim.c:15579):
     one row per SN with the estimated PEAKMJD (PEAKMJD_SMEAR = the reported
     peak_mjd) and the true PEAKMJD. SNANA hard-wires ADD_PKMJD_TRUE=true."""
     params = columnar_data['parameters']
@@ -314,9 +319,9 @@ def noise_dump_rows(config, results, selection, global_start_idx):
 
 def write_dump_noise(full_results, config, resources, version_name,
                      output_dir):
-    """SNANA SIMGEN_DUMP_NOISE (wr_SIMGEN_DUMP_NOISE, snlc_sim.c:15236),
+    """SNANA SIMGEN_DUMP_NOISE (wr_SIMGEN_DUMP_NOISE, snlc_sim.c:15256),
     from the rows the batches collected (`noise_dump_rows`). The CID is
-    GENLC.CID, CIDOFF plus the event's (:15362)."""
+    GENLC.CID, CIDOFF plus the event's (:15380)."""
     rows = full_results['noise_rows']
     mode = config.output.simgen_dump_noise
     cid = rows['cid'] + config.output.cidoff
@@ -375,7 +380,7 @@ def _build_peak_magnitude_dict(kcor_filter_names, peak_magnitudes,
     peak_mags = {}
     if include_all:
         peakmags_all = np.asarray(selection_result['peakmags_masked'])
-        # -9 for events rejected before flux generation (snlc_sim.c:12992, :9639)
+        # -9 for events rejected before flux generation (snlc_sim.c:12992, :9650)
         reached_flux = np.asarray(selection_result['reached_flux'], dtype=bool)
         name_to_idx = {fn: i for i, fn in enumerate(kcor_filter_names)}
         for filt in filter_names:
@@ -424,6 +429,14 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
                 "unavailable.", function_name='_prepare_dump_data')
         params_raw = full_results['parameters']
         params = {k: np.asarray(v) for k, v in params_raw.items()}
+        # an event rejected before the host draw keeps the per-event host
+        # initialisation (init_event_GENLC, snlc_sim.c:9841-9842)
+        host_drawn = reached_host(params)
+        if config.host.hostlib_file is not None:
+            params['drawn_GALID'] = np.where(host_drawn, params['drawn_GALID'],
+                                             config.host.galid_null)
+            params['host_ZTRUE'] = np.where(host_drawn, params['host_ZTRUE'],
+                                            _HOST_ZTRUE_UNDRAWN)
         n_events = len(params['sim_redshift_cmb'])
         obs_schedule = full_results['observation_schedule']
 
@@ -453,7 +466,7 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
     band_tables = {'PEAKMAG_': None, 'SNRMAX_': stats['snrmax_by_band']}
     galmag = full_results['host_galmag_total']
     if galmag is not None:
-        # HOSTLIB columns (snlc_sim.c:16255-16284); aperture 0 is the total mag
+        # HOSTLIB columns (snlc_sim.c:16275-16304); aperture 0 is the total mag
         total_mag = _take_rows(galmag, keep_events)
         sb_fluxcal = _take_rows(full_results['host_sb_fluxcal_stacked'], keep_events)
         zp = config.instrument.zp_fluxcal
@@ -466,7 +479,7 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
             for i, f in enumerate(kcor_filter_names)}
 
     sn_ids = to_written_cid(params['cid']).astype(np.int64)
-    # the HEAD's GENTYPE and SNTYPE (snlc_sim.c:16573-16584)
+    # the HEAD's GENTYPE and SNTYPE (snlc_sim.c:16591-16602)
     sim_gentype, sntypes = per_event_types(
         config, resources, params, n_events, specid_pass_dump)
     gentypes = sim_gentype.astype(np.int32)
@@ -483,17 +496,13 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
     libids = metadata['field_id'].astype(np.int32)
     ras = metadata['ra'].astype(np.float64)
     decs = metadata['dec'].astype(np.float64)
-    # MWEBV is GENLC.MWEBV_SMEAR (snlc_sim.c:16023)
+    # MWEBV is GENLC.MWEBV_SMEAR (snlc_sim.c:16041)
     mwebvs = np.asarray(params['sim_mwebv'], dtype=np.float32)
     mwebv_map = np.asarray(params['mwebv'], dtype=np.float32)
     mwebv_errs = np.asarray(params['mwebv_err'], dtype=np.float32)
-    # SIMLIB_HEADER.FIELD (snlc_sim.c:16008)
-    field_name_table = np.array(
-        [f.field_name for f in resources.fields], dtype='U20')
-    field_names_per_sn = field_name_table[
+    # SIMLIB_HEADER.FIELD (snlc_sim.c:16030)
+    field_names_per_sn = np.array([f.field_name for f in resources.fields])[
         np.asarray(params['field_idx'], dtype=np.int32)]
-    field_names_per_sn = np.where(
-        field_names_per_sn == 'FIELD_NONAME', 'VOID', field_names_per_sn)
     distance_moduli = np.asarray(params['mu'], dtype=np.float64)
     model_params = {
         key: np.array(value) for key, value in model_header_params(config, model, params).items()
@@ -526,7 +535,7 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
         if 'passing_mask' in params:
             params['passing_mask'] = params['passing_mask'].astype(np.int32)
     # SNANA's initial values where the run makes none: no lensing map
-    # (GENLC.LENSDMU) and no spectra (GENSPEC.SNRSUM_REST_V, snlc_sim.c:9753)
+    # (GENLC.LENSDMU) and no spectra (GENSPEC.SNRSUM_REST_V, snlc_sim.c:9767)
     for key in ('lensdmu', 'snrsum_rest_v'):
         params.setdefault(key, np.zeros(n_events, dtype=np.float32))
 
@@ -564,7 +573,7 @@ def _prepare_dump_data(columnar_data, config, resources, full_results,
         return data
     keep = np.asarray(rows, dtype=bool)
     data['n_events'] = int(keep.sum())
-    # APPLY_CUTWIN_OPT=3 keeps the accepted-set label (snlc_sim.c:14897)
+    # APPLY_CUTWIN_OPT=3 keeps the accepted-set label (snlc_sim.c:14915)
     data['selection_label'] = (
         "PASS_TRIGGER+CUTS  (write accepted events passing these criteria)")
     for key, value in data.items():
@@ -677,7 +686,7 @@ def _resolve_requested_columns(config, model):
     """The VARNAMES column list: the user's `SIMGEN_DUMP: N col1 col2 …`
     list, with host-property names written as `<name>_TRUE`, plus the
     model-contributed columns. The dump only exists
-    when the user configured columns (wr_SIMGEN_DUMP, snlc_sim.c:14833)."""
+    when the user configured columns (wr_SIMGEN_DUMP, snlc_sim.c:14851)."""
     user_cols = config.output.simgen_dumpall_columns
     # SNANA renames host-property basenames before matching, so a
     # requested LOGMASS or LOGMASS_TRUE is written as LOGMASS_TRUE.
@@ -728,7 +737,7 @@ def resolve_dump_content(columnar_data, config, resources, full_results,
     ]
 
     varnames_line = 'VARNAMES:  ' + ' '.join(varnames) + '\n'
-    # Header lines follow wr_SIMGEN_DUMP (snlc_sim.c:14893-14911): the real
+    # Header lines follow wr_SIMGEN_DUMP (snlc_sim.c:14913-14931): the real
     # GENMODEL and PRESCALE_SIMGEN_DUMP, and SNANA's two selection labels.
     header = (
         '#\n'
@@ -783,7 +792,7 @@ _STATIC_DUMP_VARIABLES = (
 
 def print_simgen_dump_variables(config, resources):
     """List the available SIMGEN_DUMP variables, for `SIMGEN_DUMP: 0`
-    (PREP_SIMGEN_DUMP(0), snlc_sim.c:14860-14862). The caller exits after."""
+    (PREP_SIMGEN_DUMP(0), snlc_sim.c:14878-14880). The caller exits after."""
     model, kcor_filter_names = resources.model, resources.filter_names
     names = list(_STATIC_DUMP_VARIABLES)
     prefixes = ['PEAKMAG_', 'SNRMAX_']

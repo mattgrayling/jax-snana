@@ -168,7 +168,7 @@ _WINDOW_WITH_DZTOL = (0.15 - (0.002 + 0.04 * 0.15), 0.35 + (0.002 + 0.04 * 0.35)
 def test_bit_16_hosts_stay_in_the_simlib_entry_window(tmp_path):
     """Under bit 16 an entry's GENRANGE_REDSHIFT redraws z inside its window
     at the DNDZ rate, peculiar or not (regen_SIMLIB_GENRANGES,
-    snlc_sim.c:22316-22371), and the host is then picked within DZTOL of
+    snlc_sim.c:22355-22410), and the host is then picked within DZTOL of
     that z, so the event's z stays inside the window give or take DZTOL.
 
     Stock SNANA on this input with 2000 events and both entries windowed to
@@ -185,7 +185,7 @@ def test_bit_16_hosts_stay_in_the_simlib_entry_window(tmp_path):
 def test_matching_entry_window_uses_dndz(
         tmp_path):
     """An entry's GENRANGE_REDSHIFT redraws z whenever its lower edge is
-    above 1e-5 (regen_SIMLIB_GENRANGES, snlc_sim.c:22361-22362), even when
+    above 1e-5 (regen_SIMLIB_GENRANGES, snlc_sim.c:22400-22401), even when
     it equals the input's range, so PEC1A events there follow DNDZ, not
     DNDZ_PEC1A. Without the window their mean z is about 0.10 lower."""
     z, pec1a, _ = _run_pec1a(tmp_path, 16, windows=("TOY_A", "TOY_B"),
@@ -229,7 +229,7 @@ def test_bit_16_entries_with_one_window_share_its_host_draw(tmp_path):
 
 def test_bit_16_nrepeat_follower_keeps_its_leaders_host(tmp_path):
     """Under HOSTLIB_NREPEAT_GALID_SNPOS a follower takes its leader's host
-    without a draw (GEN_SNHOST_GALID returns early, sntools_host.c:6137),
+    without a draw (GEN_SNHOST_GALID returns early, sntools_host.c:6504),
     even from a SIMLIB entry with another redshift window."""
     simlib = tmp_path / "nrepeat.SIMLIB"
     _write_simlib(simlib, {"TOY_A": "GENRANGE_REDSHIFT: 0.15 0.20",
@@ -293,8 +293,8 @@ def _hostlib_ztrue():
 
 def test_bit_16_fixed_simlib_redshift_hosts(tmp_path):
     """Under bit 16 an entry's REDSHIFT sets zCMB (regen_SIMLIB_GENRANGES,
-    snlc_sim.c:22360-22370), the host is picked within DZTOL of the entry's
-    zHEL (GEN_SNHOST_GALID, sntools_host.c:6144-6290) and the event takes
+    snlc_sim.c:22399-22409), the host is picked within DZTOL of the entry's
+    zHEL (GEN_SNHOST_GALID, sntools_host.c:6520-6691) and the event takes
     the host's ZTRUE. Without a weight map every galaxy strictly inside the
     window is equally likely.
 
@@ -333,7 +333,7 @@ def test_bit_16_fixed_and_unfixed_simlib_entries(tmp_path):
 
 def test_bit_16_last_simlib_redshift_key_wins(tmp_path):
     """REDSHIFT and GENRANGE_REDSHIFT on one entry: the one read last sets
-    the window (parse_SIMLIB_GENRANGES, snlc_sim.c:22138-22165). Stock
+    the window (parse_SIMLIB_GENRANGES, snlc_sim.c:22177-22204). Stock
     SNANA with 2000 events: zCMB 0.1902-0.2090 where REDSHIFT: 0.20 comes
     last, and 0.2875-0.4142 where GENRANGE_REDSHIFT: 0.30 0.40 does."""
     zhel, zcmb, entry = _run_simlib_redshift(tmp_path, "order", {
@@ -402,8 +402,8 @@ def _marginal_share(resources, entry=None):
 def test_bit_16_host_draw_with_a_redshift_dependent_dztol(tmp_path):
     """Under bit 16 each galaxy's share of hosts is the DZTOL-window draw
     integrated over zHEL, with DZTOL evaluated at the supernova's zHEL
-    (GEN_SNHOST_GALID, sntools_host.c:6145) and the window strict on both
-    sides (:6182-6223). DZTOL = 0.02 + 0.2z over GENRANGE_REDSHIFT 0.20-0.30,
+    (GEN_SNHOST_GALID, sntools_host.c:6521) and the window strict on both
+    sides (:6558-6599). DZTOL = 0.02 + 0.2z over GENRANGE_REDSHIFT 0.20-0.30,
     with no dipole and no peculiar velocity, so zHEL follows dN/dz for the
     POWERLAW rate in flat LCDM.
 
@@ -447,7 +447,7 @@ def _fixed_redshift_resources(tmp_path, gensigma_vpec):
 
 def test_bit_16_peculiar_velocity_widens_a_fixed_redshift_host(tmp_path):
     """A fixed SIMLIB redshift reaches the host draw as zHEL times
-    1 + vpec/c (gen_redshift_helio, snlc_sim.c:17235-17243), so with
+    1 + vpec/c (gen_redshift_helio, snlc_sim.c:17253-17261), so with
     GENSIGMA_VPEC the host follows the window draw averaged over a Gaussian
     zHEL rather than at one zHEL.
 
@@ -492,7 +492,7 @@ def _empty_window_input(tmp_path, mskopt, dztol):
 
 
 def test_empty_dztol_window_aborts_the_run(tmp_path):
-    """SNANA aborts when the host lies beyond DZTOL (sntools_host.c:6497),
+    """SNANA aborts when the host lies beyond DZTOL (sntools_host.c:6929),
     which an empty window forces; the run aborts after the batch."""
     cfg = dict(n_sne=50, random_seed=3)
     sim = sim_run.prepare(str(_empty_window_input(tmp_path, 0, 0.000001)), **cfg)
@@ -526,7 +526,7 @@ def test_galid_force_outside_dztol_aborts(tmp_path, z_range, dztol, aborts):
 
 def test_galid_priority_wins_over_galid_force(tmp_path):
     """SNANA takes a GALID_PRIORITY galaxy in the DZTOL window before the
-    forced one (sntools_host.c:6302-6317): GALID 104800 at ZTRUE=0.2005 is
+    forced one (sntools_host.c:6703-6718): GALID 104800 at ZTRUE=0.2005 is
     within DZTOL=0.02 of every SN at z 0.199-0.201."""
     inp = tmp_path / "force.input"
     _write_input(inp, mskopt=0, z_min=0.199, z_max=0.201, n_sne=50,
@@ -541,7 +541,7 @@ def test_galid_priority_wins_over_galid_force(tmp_path):
 
 def test_empty_dztol_window_refuses_the_bit_16_host_cdf(tmp_path):
     """Under bit 16 SNANA zeroes ZDIF before its DZTOL check
-    (sntools_host.c:6488, :6497), so an empty window silently gives a host
+    (sntools_host.c:6920, :6929), so an empty window silently gives a host
     outside DZTOL. Here a zHEL the draw can reach with an empty window
     refuses the host CDF at initialisation. The fixture HOSTLIB has gaps of
     up to 0.0008 in redshift between 0.1 and 0.3."""
@@ -683,7 +683,7 @@ def test_mindaysep_with_bit_16_enforces_spacing(tmp_path):
 
 
 def test_mindaysep_unplaceable_host_rejects(tmp_path):
-    """MINDAYSEP no-host matches SNANA (sntools_host.c:6429): the SN is
+    """MINDAYSEP no-host matches SNANA (sntools_host.c:6858): the SN is
     rejected under the HOSTLIB reason code (4), prefilter_pass=False —
     not aborted, not kept on a colliding host."""
     n_sne = 500
@@ -703,7 +703,7 @@ def test_mindaysep_unplaceable_host_rejects(tmp_path):
 
 
 def test_useonce_exhaustion_aborts(tmp_path):
-    """USEONCE no-host matches SNANA (sntools_host.c:6432): when the host
+    """USEONCE no-host matches SNANA (sntools_host.c:6861): when the host
     pool is exhausted, SNANA aborts — so jax raises SNANAError rather than
     rejecting or reusing."""
     n_sne = 500

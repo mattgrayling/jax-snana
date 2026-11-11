@@ -16,7 +16,7 @@ from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import read_fits_table, resolve_fits_path
 
 
-def test_resolve_prefers_plain_then_gz_then_passthrough(tmp_path):
+def test_resolve_plain_or_gz_then_passthrough(tmp_path):
     plain = tmp_path / "a_HEAD.FITS"
     gz = tmp_path / "b_HEAD.FITS"
 
@@ -28,9 +28,13 @@ def test_resolve_prefers_plain_then_gz_then_passthrough(tmp_path):
     (tmp_path / "b_HEAD.FITS.gz").write_bytes(b"x")
     assert resolve_fits_path(str(gz)) == str(gz) + ".gz"
 
-    # both present -> plain wins (deterministic, no ambiguity abort)
+    # both present -> ambiguous, as SNANA's open_TEXTgz and
+    # rd_snfitsio_check_gzip abort
     plain.with_suffix(".FITS.gz").write_bytes(b"x")
-    assert resolve_fits_path(str(plain)) == str(plain)
+    with pytest.raises(SNANAError, match="found both"):
+        resolve_fits_path(str(plain))
+    # unless SNANA opens it with CFITSIO directly, which takes the plain file
+    assert resolve_fits_path(str(plain), plain_first=True) == str(plain)
 
     # neither present -> passed through unchanged (caller raises naturally)
     missing = tmp_path / "none_HEAD.FITS"
@@ -74,12 +78,13 @@ def test_read_fits_table_matches_astropy(tmp_path, gzipped):
         np.testing.assert_array_equal(table[name], reference[name])
 
 
-def test_read_fits_table_refuses_a_scaled_column(tmp_path):
-    """SNANA writes no TSCAL/TZERO columns, so one is refused rather than read raw."""
+def test_read_fits_table_scales_columns(tmp_path):
+    """A TZERO/TSCAL column, here an unsigned integer, reads as CFITSIO
+    returns it to SNANA."""
     path = tmp_path / "X_HEAD.FITS"
     _snana_style_file(path, scaled=True)
-    with pytest.raises(SNANAError, match="scaled columns \\['CCDNUM'\\]"):
-        read_fits_table(path)
+    _, table = read_fits_table(path)
+    np.testing.assert_array_equal(table["CCDNUM"], fits.getdata(path, 1)["CCDNUM"])
 
 
 def test_read_fits_table_aborts_on_a_truncated_file(tmp_path):
@@ -101,9 +106,6 @@ def test_open_text_resolves_compressed_name(tmp_path):
     for name in (path, compressed):
         with open_text(name) as stream:
             assert stream.read() == 'compressed\n'
-    path.write_text('plain\n')
-    with open_text(path) as stream:
-        assert stream.read() == 'plain\n'
 
 
 def test_read_fits_table_handles_empty_tables(tmp_path):

@@ -107,6 +107,10 @@ def run_fitting(config: FitConfig, timings=None, process_start=None):
 
     start = time.perf_counter()
     sim_dirs, data_path, kcor, model = _inputs(config)
+    if config.data.version_photometry_wildcard:
+        # the tables name the first match, as SNANA's VERSION_PHOTOMETRY(1) (snana.F90:6433)
+        config = dataclasses.replace(config, data=dataclasses.replace(
+            config.data, version_photometry=Path(sim_dirs[0]).name))
     # checks the keys against the model before any data are read
     resolved_config(config, model)
     timings['model'] = time.perf_counter() - start

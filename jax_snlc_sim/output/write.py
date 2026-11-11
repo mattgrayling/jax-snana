@@ -70,7 +70,7 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
     start_time = time.time()
 
     snana_output_dir = Path(output_dir) / version_name
-    # clr_VERSION, sntools.c:8784
+    # clr_VERSION, sntools.c:8479
     if not combined and (snana_output_dir / f'{version_name}.LIST').exists():
         log.line(logger, f"removing previous {snana_output_dir}")
         shutil.rmtree(snana_output_dir)
@@ -83,7 +83,7 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
     total_observations = np.sum(columnar_data['obs_counts'])
     check_output_schema(columnar_data, n_sne, int(total_observations))
     zp_fluxcal = config.instrument.zp_fluxcal
-    # SIM_SNRMAG%2.2d, snlc_sim.c:7441
+    # SIM_SNRMAG%2.2d, snlc_sim.c:7453
     _magmon = config.output.magmonitor_snr
     snrmon_colname = f'SIM_SNRMAG{_magmon:02d}' if _magmon else None
     gentype = effective_gentype(config)
@@ -123,7 +123,7 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
     if not writes_spectra:
         spectra_by_sn = {}
 
-    # BLINDTEST(8): data-like output, drop SIM_* truth, FAKE=3 (snlc_sim.c:7428)
+    # BLINDTEST(8): data-like output, drop SIM_* truth, FAKE=3 (snlc_sim.c:7440)
     if flags['blindtest']:
         for c in [c for c in header_cols if c.startswith('SIM_')]:
             del header_cols[c]
@@ -132,7 +132,7 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
         for c in [c for c in phot_cols if c.startswith('SIM_')]:
             del phot_cols[c]
     # COMPACT(64): only the WRFULL columns go; SIM_MAGOBS and the SNR monitor
-    # are added outside that block (sntools_dataformat_fits.c:820-906)
+    # are added outside that block (sntools_dataformat_fits.c:824-910)
     if flags['compact'] and flags['fits']:
         keep = {'MJD', 'BAND', 'FLUXCAL', 'FLUXCALERR', 'SIM_MAGOBS'}
         if snrmon_colname:
@@ -208,7 +208,7 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
                          dat_names or [], suffix='', append=combined)
     else:
         # The FITS-mode LIST carries the actual HEAD file name
-        # (WR_SNFITSIO_INIT returns it, snlc_sim.c:31000-31008).
+        # (WR_SNFITSIO_INIT returns it, snlc_sim.c:31058-31066).
         _write_list_file(version_name, snana_output_dir,
                          [f'{file_prefix}_HEAD'], append=combined)
     n_spectra = sum(len(v) for v in spectra_by_sn.values())
@@ -246,10 +246,10 @@ def write_snana_outputs(output_dir: str, version_name: str, columnar_data: Dict,
 
 
 def _spectra_write_flags(config, flags, makes_spectra):
-    """Whether spectra, and the true SED, are written (snlc_sim.c:30958-30985).
+    """Whether spectra, and the true SED, are written (snlc_sim.c:31016-31043).
     Under DCR the spectrograph runs for the atmosphere alone, so both follow
     the user's own SPECTROGRAPH_OPTMASK rather than the effective one. The
-    mask's NOSPEC bit skips the spectra (snlc_sim.c:10294), so nothing is
+    mask's NOSPEC bit skips the spectra (snlc_sim.c:10314), so nothing is
     written either."""
     if config.instrument.atmos_optmask > 0:
         asked = bool(config.spectra.spectrograph_optmask & 128)
@@ -447,7 +447,7 @@ def _output_summary(config, resources, full_results, selection_result,
 
 def _hostmatch_lines(config, params, passing, pad) -> List[str]:
     """Hostless and multi-host counts of the written events in three redshift
-    bins over GENRANGE_REDSHIFT (update_hostmatch_counters, snlc_sim.c:30788;
+    bins over GENRANGE_REDSHIFT (update_hostmatch_counters, snlc_sim.c:30846;
     readme_docana_hostmatch, sntools_sim_readme.c:692)."""
     zmin, zmax = config.rates.redshift_range
     zbin = (zmax - zmin) / 3
@@ -612,7 +612,7 @@ def draw_cidran(simulation, cids):
     redrawn, all such draws at once per round; not byte-matched to SNANA.
     SNANA never draws either end of the range (snlc_sim.c:23430-23431) and
     aborts once CIDOFF - CIDRAN_MIN plus the event count reaches CIDRAN_MAX
-    (:23366), and so does this.
+    (:23419), and so does this.
     """
     cids = np.asarray(cids)
     n = len(cids)
@@ -625,7 +625,7 @@ def draw_cidran(simulation, cids):
     off = coff - cmin
     m = off + n
     if m >= cmax:
-        # init_CIDRAN's NSTORE_ALL bound (snlc_sim.c:23366)
+        # init_CIDRAN's NSTORE_ALL bound (snlc_sim.c:23419)
         raise SNANAError(f"CIDOFF-CIDRAN_MIN + {n} events = {m} reaches "
                          f"CIDRAN_MAX={cmax}")
     # SNANA never draws either end of the range (snlc_sim.c:23430-23431)
@@ -658,8 +658,8 @@ def draw_cidran(simulation, cids):
 
 def to_written_cid(simulation, cids, fmt):
     """Return the map from event CID to the CID written to file, SNANA's
-    GENLC.CID_FINAL (snlc_sim.c:13007): CIDOFF added (GENLC.CID = CIDOFF +
-    ilc, :12863) unless FORMAT_MASK CIDRAN(16) draws them. `cid` itself stays
+    GENLC.CID_FINAL (snlc_sim.c:13027): CIDOFF added (GENLC.CID = CIDOFF +
+    ilc, :12881) unless FORMAT_MASK CIDRAN(16) draws them. `cid` itself stays
     the working identity that GALID_UNIQUE and the spectra keys derive from,
     as GENLC.CID does."""
     if not fmt['cidran']:
@@ -671,7 +671,7 @@ def to_written_cid(simulation, cids, fmt):
 
 def write_filter_transmission_files(simulator, base_dir, version_name):
     """FORMAT_MASK FILTERS(256): write per-band transmission curves
-    (wr_SIMGEN_FILTERS, snlc_sim.c:14636)."""
+    (wr_SIMGEN_FILTERS, snlc_sim.c:14656)."""
     kcor = simulator.kcor
     out = Path(base_dir) / version_name / f'{version_name}.FILTERS'
     out.mkdir(parents=True, exist_ok=True)
@@ -685,7 +685,7 @@ def write_filter_transmission_files(simulator, base_dir, version_name):
 
 def write_verify_sed_true(simulator, base_dir, version_name, spectra_by_sn,
                           results):
-    """Write the VERIFY_SED_TRUE table (wr_VERIFY_SED_TRUE, snlc_sim.c:11538):
+    """Write the VERIFY_SED_TRUE table (wr_VERIFY_SED_TRUE, snlc_sim.c:11558):
     one row per spectrum epoch with broadband MAG and synthetic MAG_VERIFY."""
     params = results['parameters']
     obs = results['observation_schedule']
@@ -721,14 +721,14 @@ def write_verify_sed_true(simulator, base_dir, version_name, spectra_by_sn,
                 f"SN: {cid:8d}  {z:.3f}  {spec.mjd:.3f}  {trest:6.2f}  "
                 f"{mean_wl[bi] / z1:6.0f}  {band}   "
                 f"{genmag:.5f} {synmag:.5f} {synmag - genmag:8.5f}\n")
-    # SNANA's own VERFIY spelling (snlc_sim.c:11569)
+    # SNANA's own VERFIY spelling (snlc_sim.c:11587)
     path = Path(base_dir) / f"{version_name}_VERFIY_SED_TRUE.DAT"
     with open(path, 'w') as f:
         f.writelines(lines)
 
 
 def validate_format_mask(simulation) -> None:
-    """Enforce SNANA FORMAT_MASK rules (snlc_sim.c:7451-7468, :30986-30994)."""
+    """Enforce SNANA FORMAT_MASK rules (snlc_sim.c:7463-7480, :31044-31052)."""
     m = int(simulation.output.format_mask)
     f = parse_format_mask(m)
     if f['vbose']:
@@ -744,9 +744,9 @@ def validate_format_mask(simulation) -> None:
 
 def write_yaml_summary(simulator, version_name, counts, n_spec, seconds,
                        output_dir=None):
-    """SNANA WRFLAG_YAML_FILE (wr_SIMGEN_YAML_SUMMARY, snlc_sim.c:14736):
+    """SNANA WRFLAG_YAML_FILE (wr_SIMGEN_YAML_SUMMARY, snlc_sim.c:14756):
     `{GENVERSION}.YAML` job summary consumed by batch/pipeline scripts.
-    SNANA writes it with a bare GENVERSION name (snlc_sim.c:30917), i.e. to
+    SNANA writes it with a bare GENVERSION name (snlc_sim.c:30981), i.e. to
     the process working directory, so batch scripts find it locally;
     ``output_dir`` is how a caller owning its own run directory says
     otherwise. ``counts`` is `event_counts`; ``seconds`` is the time since
@@ -897,7 +897,7 @@ def save_snana_outputs(simulator, results,
     )
     write_timing.update(phases)
 
-    # independent of FORMAT_MASK (snlc_sim.c:11295-11298)
+    # independent of FORMAT_MASK (snlc_sim.c:11313-11316)
     if (spectra_by_sn
             and simulation.effective_spectrograph_optmask & 128
             and simulation.spectra.verify_sed_true):

@@ -6,7 +6,7 @@ NEVT_REJECT_BIASCOR:   0
 ABORT_IF_ZERO:         1568
 NWARN_CRAZYERR:        1
 NFIT_EXEC:             1
-CPU_MINUTES:           0.00
+CPU_MINUTES:           0.02
 ISDATA_REAL:           0
 
 SAMPLE_LIST:              ALL, DES-zSPEC, DES-zPHOT

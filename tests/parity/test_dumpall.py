@@ -157,7 +157,7 @@ def test_replay_needs_av_when_the_sim_generates_dust(snana_fixture):
 def test_replay_reads_any_name_the_dump_used(snana_fixture):
     """A dump written with ZCMB, S2x1 and S2c replays as one written with GENZ,
     SALT2x1 and SALT2c: SNANA registers each pair as one variable
-    (snlc_sim.c:16050, :16083, :16486-16500), and the Foundation input of
+    (snlc_sim.c:16068, :16101, :16504-16518), and the Foundation input of
     DES-SN5YR writes the first spellings."""
     from jax_snlc_core.logging import SNANAError
 
@@ -235,7 +235,7 @@ def test_dump_column_resolution_by_source():
     with pytest.raises(SNANAError, match='Unknown DUMP column'):
         resolve('NOT_A_COLUMN')
 
-    # a legacy name SNANA registers only to refuse (snlc_sim.c:16658-16663)
+    # a legacy name SNANA registers only to refuse (snlc_sim.c:16678-16683)
     with pytest.raises(SNANAError, match="legacy name; use 'TRESTMAX'"):
         resolve('TMAX')
 
@@ -244,13 +244,13 @@ def test_the_rest_frame_range_covers_the_whole_cadence(snana_fixture, tmp_path):
     """TRESTMIN/TRESTMAX span every epoch the SIMLIB kept, not the ones
     gen_cutwin goes on to accept.
 
-    SNANA fills them in the cadence loop (snlc_sim.c:20766-20771) and
-    gen_cutwin's own min/max (:24238-24240) runs over a subset of the same
+    SNANA fills them in the cadence loop (snlc_sim.c:20808-20813) and
+    gen_cutwin's own min/max (:24290-24292) runs over a subset of the same
     epochs, so it never narrows them. Taking the accepted subset instead put
     the range up to 13.9 days inside SNANA's on 61 of these 80 events. What
     is left is a few hundredths of a day: the cadence loop divides by
     1 + zCMB where the rest of the simulation uses 1 + zHELIO
-    (snlc_sim.c:20499 against :24132), which on this fixture is a difference
+    (snlc_sim.c:20539 against :24184), which on this fixture is a difference
     of about 1e-3 in redshift and so up to 0.05 days at Trest = 50.
     """
     fx = snana_fixture("dumpall_listed_cols")
@@ -271,7 +271,7 @@ def test_peakmjd_exclude_window_and_season(snana_fixture):
     out of the season the expected count is scaled by.
 
     SNANA redraws any peak inside the window (gen_peakmjd, snlc_sim.c:17030)
-    and shortens the season by the window's span (SNcount_model, :17926).
+    and shortens the season by the window's span (SNcount_model, :17944).
     The fixture cuts 400 days from a 920-day range, so what is left splits
     260 days either side of the hole: the peaks jax draws must all fall
     outside it, the two sides must be populated evenly, and the README's

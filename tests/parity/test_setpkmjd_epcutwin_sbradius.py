@@ -6,12 +6,12 @@ SNR fixtures switch the flux and zero-point smear off, which makes both codes
 see the same noiseless photometry and the quantity under test deterministic.
 
 - OPT_SETPKMJD 16 sets the reported PEAKMJD from the Fmax-clump estimator
-  (get_obs_atFLUXMAX, sntools.c:1595). Its window and both SNR cuts are
+  (get_obs_atFLUXMAX, sntools.c:1590). Its window and both SNR cuts are
   hard-wired in SNANA, so this is the only knob the estimator has.
-- EPCUTWIN_SNRMIN filters the epochs gen_cutwin counts (snlc_sim.c:24234),
+- EPCUTWIN_SNRMIN filters the epochs gen_cutwin counts (snlc_sim.c:24286),
   which moves the NEPOCH bit of CUTMASK.
 - HOSTLIB_SBRADIUS is the aperture the host surface brightness integrates
-  over (GEN_SNHOST_GALMAG, sntools_host.c:9343), which sets
+  over (GEN_SNHOST_GALMAG, sntools_host.c:9740), which sets
   HOSTGAL_SB_FLUXCAL.
 """
 

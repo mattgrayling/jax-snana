@@ -105,8 +105,8 @@ def test_cut_resolution(tmp_path):
 
 def test_cutwin_forms(tmp_path):
     """A CUTWIN is four words wherever it comes from, a later one on the same
-    variable replaces the earlier (parseLine_SELECT_VAR, SALT2mu.c:21128), and
-    CUTWIN NONE is a two-word switch (:21012); the qualified forms are refused."""
+    variable replaces the earlier (parseLine_SELECT_VAR, SALT2mu.c:21142), and
+    CUTWIN NONE is a two-word switch (:21026); the qualified forms are refused."""
     cfg = parse_bbc_input(_write(tmp_path, "CUTWIN zHD 0.02 0.6\n"),
                           overrides=["CUTWIN zHD 0.05 0.5", "CUTWIN SNRMAX1 20 1000"])
     assert cfg.cutwin == [("zHD", 0.05, 0.5), ("SNRMAX1", 20.0, 1000.0)]
@@ -295,7 +295,7 @@ def test_sigmb_aliases_sigint(tmp_path):
 def test_two_spellings_of_one_key_take_the_later(tmp_path, key, legacy, later,
                                                  expected):
     """SALT2mu reads both spellings into one INPUTS variable, item by item, so
-    the one given later wins (SALT2mu.c:19473, :20062, :20090, :19902)."""
+    the one given later wins (SALT2mu.c:19487, :20076, :20104, :19916)."""
     for first, second in ((key, legacy), (legacy, key)):
         cfg = parse_bbc_input(_write(
             tmp_path, f"nzbin=10\n{first}=3\n{second}={later}\n"))
@@ -304,15 +304,15 @@ def test_two_spellings_of_one_key_take_the_later(tmp_path, key, legacy, later,
 
 def test_command_line_beats_both_spellings_in_the_file(tmp_path):
     """SALT2mu reads the command line after the file (override_parFile,
-    SALT2mu.c:19380), so a command-line value of the earlier file spelling
-    still wins (:19473, :19477)."""
+    SALT2mu.c:19394), so a command-line value of the earlier file spelling
+    still wins (:19487, :19491)."""
     path = _write(tmp_path, "nzbin=10\ncatfile_out=f1\ncat_file_out=f2\n")
     assert parse_bbc_input(path, ["catfile_out=cli"]).cat_file_out == "cli"
     assert parse_bbc_input(path, ["cat_file_out=cli"]).cat_file_out == "cli"
 
 
 def test_survey_group_has_two_spellings(tmp_path):
-    """surveygroup_biascor= and surveyGroup_biascor= set one key (SALT2mu.c:19666-19667)."""
+    """surveygroup_biascor= and surveyGroup_biascor= set one key (SALT2mu.c:19680-19681)."""
     group = "LSST(zbin=0.15:x1bin=2.0:cbin=0.2)"
     for key in ("surveygroup_biascor", "surveyGroup_biascor"):
         cfg = parse_bbc_input(_write(tmp_path, f"nzbin=10\n{key}={group}\n"))
@@ -333,7 +333,7 @@ def test_photoz_idsample_keys(tmp_path):
 
 
 def test_zbin_forms_are_mutually_exclusive(tmp_path):
-    """Exactly one of nzbin/nlogzbin/zbinuser (SALT2mu.c:21951)."""
+    """Exactly one of nzbin/nlogzbin/zbinuser (SALT2mu.c:21965)."""
     for text in ("nzbin=10\nnlogzbin=8\n", "nzbin=10\nzbinuser=0.1,0.5,1.0\n"):
         with pytest.raises(SNANAError, match="redshift bins"):
             parse_bbc_input(_write(tmp_path, text))
@@ -341,7 +341,7 @@ def test_zbin_forms_are_mutually_exclusive(tmp_path):
 
 def test_varname_gamma_and_scalepcc_by_name(tmp_path):
     """varname_gamma picks the mass-step column; scalePCC is settable by name as
-    well as via the p13 slot (SALT2mu.c:19970)."""
+    well as via the p13 slot (SALT2mu.c:19984)."""
     cfg = parse_bbc_input(_write(tmp_path, "nzbin=10\nvarname_gamma=HOSTGAL_LOGMASS\n"
                                            "scalePCC=0.5\n"))
     assert cfg.varname_gamma == "HOSTGAL_LOGMASS"
@@ -359,7 +359,7 @@ def test_scalar_knob_keys(tmp_path):
 
 
 def test_select_trueIa_disables_cc_machinery(tmp_path):
-    """prep_input_trueIa (SALT2mu.c:22539): reject every CC event via the >9999
+    """prep_input_trueIa (SALT2mu.c:22553): reject every CC event via the >9999
     prescale, and drop the CC prior/classifier with it."""
     cfg = parse_bbc_input(_write(tmp_path, "nzbin=10\nselect_trueIa=1\n"
                                            "varname_pIa=PROBIA\n"))
@@ -406,7 +406,7 @@ def test_diagnostic_keys_are_wired(tmp_path):
 
 def test_surveygroup_abortflag_rejects_empty_group():
     """surveygroup_biascor_abortflag aborts when a requested survey has no data
-    (SALT2mu.c:10479). Without the flag the empty group is simply absent."""
+    (SALT2mu.c:10489). Without the flag the empty group is simply absent."""
     cfg = BBCConfig()
     cfg.opt_biascor = MASK_BIASCOR_SAMPLE
     cfg.surveygroup_biascor = "LSST,PS1MD"     # no PS1MD events below
@@ -460,7 +460,7 @@ def test_unknown_key_still_only_warns(tmp_path, caplog):
 
 
 def test_unknown_command_line_key_aborts(tmp_path):
-    """override_parFile (SALT2mu.c:19428) aborts on a command-line item ppar
+    """override_parFile (SALT2mu.c:19442) aborts on a command-line item ppar
     does not recognise."""
     path = _write(tmp_path, "nzbin=10\n")
     for bad in (["nosuchkey=3"], ["typo"]):
@@ -472,8 +472,8 @@ def test_unknown_command_line_key_aborts(tmp_path):
 
 def test_repeated_key_aborts(tmp_path):
     """uniqueOverlap aborts on a key repeated within the file or within the
-    command line (SALT2mu.c:19334, :19402); the command line may still
-    override the file, and chi2max keys may repeat (:19810)."""
+    command line (SALT2mu.c:19348, :19416); the command line may still
+    override the file, and chi2max keys may repeat (:19824)."""
     with pytest.raises(SNANAError, match="more than once: nzbin"):
         parse_bbc_input(_write(tmp_path, "nzbin=10\nnzbin=12\n"))
     path = _write(tmp_path, "nzbin=10\n")
@@ -485,7 +485,7 @@ def test_repeated_key_aborts(tmp_path):
 
 
 def test_dmubin_ccprior_truncates_the_dmu_window():
-    """The CC-prior dmu axis spans [-3,+4] with nbin=int(7/width) (SALT2mu.c:17290),
+    """The CC-prior dmu axis spans [-3,+4] with nbin=int(7/width) (SALT2mu.c:17304),
     so a width that does not divide 7 leaves the remainder uncovered -- and those
     events out of DMUAVG/DMURMS, which is the whole effect of this key."""
     assert dmu_window_max(0.5) == pytest.approx(4.0)      # SNANA's default: exact
@@ -541,7 +541,7 @@ def test_vpec_sign_rms_matches_salt2mu(name):
 
 
 def test_vpec_sign_guard_accepts_consistent_data():
-    """check_vpec_sign (SALT2mu.c:4131) runs by default and passes clean input."""
+    """check_vpec_sign (SALT2mu.c:4134) runs by default and passes clean input."""
     _run_vpec("vpec_ok")
 
 
@@ -553,7 +553,7 @@ def test_vpec_sign_guard_aborts_on_inverted_vpec():
 
 
 def test_vpec_sign_guard_is_disabled_by_a_zero_window():
-    """zwin_vpec_check=0,0 switches the check off (SALT2mu.c:4160)."""
+    """zwin_vpec_check=0,0 switches the check off (SALT2mu.c:4163)."""
     _run_vpec("vpec_bad", extra=["zwin_vpec_check=0,0"])
 
 
@@ -582,7 +582,7 @@ def _resolved(overrides):
 ])
 def test_an_unimplemented_opt_biascor_bit_aborts_with_its_reason(bit, phrase):
     """These bits change the fit in SNANA (print_biascor_options,
-    SALT2mu.c:11642) and do nothing here, which the rejected-key table cannot
+    SALT2mu.c:11652) and do nothing here, which the rejected-key table cannot
     catch because it covers key names, not key values."""
     with pytest.raises(SNANAError, match=phrase):
         _resolved(_OPT_KEYS + [f"opt_biascor={16 + bit}"])
@@ -609,7 +609,7 @@ def test_opt_biascor_ignores_a_bit_salt2mu_does_not_define():
 
 
 def test_bias_on_mu_names_one_bias_parameter():
-    """Bit 128 puts the bias on mu alone (ILCPAR_MIN/MAX, SALT2mu.c:11315);
+    """Bit 128 puts the bias on mu alone (ILCPAR_MIN/MAX, SALT2mu.c:11325);
     BayeSN's only LC parameter is already the distance, so its bias vector is
     the same either way."""
     assert bias_parameters(SALTModel, _resolved(_OPT_KEYS + ["opt_biascor=144"])) == ("mu",)
@@ -621,7 +621,7 @@ def test_alpha1_is_refused_because_its_meaning_changed_upstream():
     """alpha1= has pointed at different slots in different SALT2mu releases,
     so it is refused; dalpha_dz=, p3= and u3= set the redshift slope, and the
     older beta1=/alphaHost=/betaHost= spellings still reach their slots
-    (SALT2mu.c:19960-19977)."""
+    (SALT2mu.c:19974-19991)."""
     with pytest.raises(SNANAError, match="alpha1"):
         parse_bbc_input(None, overrides=["nzbin=4", "zmin=0.1", "zmax=1.0",
                                          "alpha1=0.1"])

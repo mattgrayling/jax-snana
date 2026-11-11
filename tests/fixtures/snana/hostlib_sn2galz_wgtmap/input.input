@@ -1,5 +1,5 @@
 # SN2GAL_Z with a weight map on x1, so the model is drawn before the host
-# (snlc_sim.c:12889) while the dust still follows it: RV, with a redshift
+# (snlc_sim.c:12909) while the dust still follows it: RV, with a redshift
 # variation and no width, reads the final zCMB.
 GENVERSION:  JAX_TEST_HOSTLIB_SN2GALZ_WGTMAP
 NGENTOT_LC:  300

@@ -279,11 +279,14 @@ def _survey_fits(directory, source, labels, shifts):
     labelling them."""
     version = directory / "VERSION"
     version.mkdir(parents=True)
-    table = read_fitres(source).df
+    fitres = read_fitres(source)
+    table = fitres.df
     for i, shift in enumerate((0.0, *shifts)):
         df = table.assign(c=table["c"] + shift)
         write_varnames_table(str(version / f"FITOPT{i:03d}.FITRES"), list(df),
-                             {name: df[name].to_numpy() for name in df}, fmt={})
+                             {name: df[name].to_numpy() for name in df}, fmt={},
+                             header_comments=[
+                                 f"VERSION_PHOTOMETRY: {fitres.meta['VERSION_PHOTOMETRY']}"])
     (directory / "SUBMIT.INFO").write_text(yaml.safe_dump({"FITOPT_LIST": [
         [f"FITOPT{i:03d}", label, None]
         for i, label in enumerate((None, *labels))]}))
@@ -410,8 +413,8 @@ def test_exported_bbc_grid_builds_the_same_covariance(distances, tmp_path):
     actual = create_covariance(load_config(config_path))
     reference = results["covariance"]["hubble_diagram"]
     np.testing.assert_allclose(actual.hubble_diagram["MU"], reference["MU"])
-    for label, entry in actual.covariances.items():
-        cov = entry["matrix"]
+    for label in actual.covariances:
+        cov = actual.covsys(label)
         total = cov + np.diag(actual.hubble_diagram["MUERR"].to_numpy() ** 2)
         np.testing.assert_allclose(
             np.linalg.inv(total), _inverse(results["covariance"], label),
@@ -577,10 +580,10 @@ def test_partitions_are_disjoint_complete_and_keep_corrections(tmp_path):
 
 
 def _inverse(held, label="ALL"):
-    entry = held["covariances"][label]
-    if entry["kind"] == "factorized":
-        return np.linalg.inv(dense_factorized_covariance(entry))
-    return entry["matrix"]
+    forms = held["covariances"][label]
+    if "factorized" in forms:
+        return np.linalg.inv(dense_factorized_covariance(forms["factorized"]))
+    return forms["total_inverse"]["matrix"]
 
 
 def test_muopt_reordering_invalidates_cached_labels(tmp_path):

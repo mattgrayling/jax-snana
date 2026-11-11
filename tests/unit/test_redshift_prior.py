@@ -18,7 +18,7 @@ def test_chi2_z_prior_gaussian_quadratic():
 
 def test_chi2_z_prior_gaussian_survives_a_zero_error():
     """PRIOR_ZPULL protects the width before scaling it, so a zero-error
-    event still widens with PRIOR_ZERRSCALE (snlc_fit.F90:12515)."""
+    event still widens with PRIOR_ZERRSCALE (snlc_fit.F90:12670)."""
     tight, loose = (
         float(chi2_z_prior_gaussian(jnp.float64(0.35), jnp.float64(0.30),
                                     jnp.float64(0.0), jnp.float64(scale)))
@@ -83,7 +83,7 @@ def test_steffen_pdf_never_dips_below_zero():
 
 def test_quantile_prior_charges_1000_where_the_pdf_is_zero():
     """SNANA's CHI2PRIOR is -2 ln PDF where the PDF is positive and 1000
-    where it is not (snlc_fit.F90:4893), and the wall's derivatives are
+    where it is not (snlc_fit.F90:4944), and the wall's derivatives are
     finite. The natural spline's overshoot on skewed quantiles leaves a
     stretch of zero PDF inside the support."""
     from jax_snlc_core.interpolation import compute_catmullrom_slopes

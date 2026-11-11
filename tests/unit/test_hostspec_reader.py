@@ -36,7 +36,6 @@ def test_reads_wavelength_and_template_columns(tmp_path, mode):
     assert np.allclose(t.wave, [2000.0, 2010.0, 2020.0], atol=0)
     assert np.allclose(t.flam[0], [1.0, 2.0, 3.0], atol=0)
     assert np.allclose(t.flam[1], [10.0, 20.0, 30.0], atol=0)
-    assert list(t.index) == [0, 1]
 
 
 def test_flam_scale_and_powz1_give_the_redshift_normalisation(tmp_path):
@@ -51,16 +50,36 @@ def test_flam_scale_and_powz1_give_the_redshift_normalisation(tmp_path):
 
 def test_wavelength_column_detected_by_name(tmp_path):
     """SNANA accepts wave/WAVE/lam/LAM as substrings
-    (sntools_host.c:1885-1888)."""
+    (sntools_host.c:1896-1899)."""
     text = _TABLE.format(p='SPECBASIS').replace('WAVELENGTH', 'lam_rest')
     t = read_host_spec_table(_write(tmp_path, text=text), 'SPECBASIS')
     assert np.allclose(t.wave, [2000.0, 2010.0, 2020.0], atol=0)
 
 
+def test_any_table_row_key_and_header_keys_sharing_a_line(tmp_path):
+    """SNANA reads the header as a stream of words and the table with its
+    generic reader, which takes any row key (sntools_host.c:1765, 1862)."""
+    text = ("FLAM_SCALE: 2.0E-30 FLAM_SCALE_POWZ1: -2\n"
+            "VARNAMES: ROW WAVELENGTH SPECBASIS00 SPECBASIS01\n"
+            "SN: 1  2000.0  1.0  10.0\n"
+            "SN: 2  2010.0  2.0  20.0   # a comment\n")
+    t = read_host_spec_table(_write(tmp_path, text=text), 'SPECBASIS')
+    assert t.flam_scale == 2.0e-30 and t.flam_scale_powz1 == -2.0
+    assert np.allclose(t.flam, [[1.0, 2.0], [10.0, 20.0]], atol=0)
+
+
+def test_two_wavelength_columns_abort(tmp_path):
+    """SNANA aborts unless exactly one name holds wave, WAVE, lam or LAM
+    (sntools_host.c:1938-1943)."""
+    text = _TABLE.format(p='SPECBASIS').replace('ROW WAVELENGTH', 'LAMBDA WAVELENGTH')
+    with pytest.raises(SNANAError, match="2 wavelength columns"):
+        read_host_spec_table(_write(tmp_path, text=text), 'SPECBASIS')
+
+
 def test_eazy_templates_list_resolves_against_the_list_files_directory(tmp_path):
     """SNANA keeps only each row's basename and resolves it against the list
     file's own directory, ignoring both the row's relative path and its scale
-    column (sntools_host.c:2021). The row order, not the index column, numbers
+    column (sntools_host.c:2032). The row order, not the index column, numbers
     the basis vectors.
     """
     (tmp_path / "t1.dat").write_text("DOCUMENTATION:\nPURPOSE: template\nDOCUMENTATION_END:\n"
@@ -76,7 +95,6 @@ def test_eazy_templates_list_resolves_against_the_list_files_directory(tmp_path)
     assert np.allclose(t.wave, [100.0, 200.0], atol=0)
     assert np.allclose(t.flam[0], [10.0, 20.0], atol=0)   # t2 read first
     assert np.allclose(t.flam[1], [1.0, 2.0], atol=0)
-    assert list(t.index) == [0, 1]
 
 
 def test_shipped_eazy_basis_matches_what_snana_loads(tmp_path):
@@ -93,7 +111,7 @@ def test_shipped_eazy_basis_matches_what_snana_loads(tmp_path):
 
 
 def test_bin_edges_sit_midway_between_centres(tmp_path):
-    """sntools_host.c:1814 — interior edges are midpoints; the first and last
+    """sntools_host.c:1825 — interior edges are midpoints; the first and last
     bins mirror their single neighbour's half-width."""
     t = read_host_spec_table(_write(tmp_path), 'SPECBASIS')
     assert np.allclose(t.wave_min, [1995.0, 2005.0, 2015.0], atol=0)
@@ -109,7 +127,7 @@ def test_grid_is_truncated_at_the_sedmodel_maximum(tmp_path):
 
 
 def test_upper_truncation_uses_the_last_bins_lower_edge(tmp_path):
-    """SNANA bounds the grid by WAVE_MIN at *both* ends (sntools_host.c:2288),
+    """SNANA bounds the grid by WAVE_MIN at *both* ends (sntools_host.c:2299),
     so the last basis bin's own upper half is treated as off-grid. Pinned
     because it is an asymmetry, not an obvious consequence of the binning.
     """
@@ -123,12 +141,17 @@ def test_upper_truncation_uses_the_last_bins_lower_edge(tmp_path):
 
 def test_hostlib_column_names_follow_snanas_spelling(tmp_path):
     """snlc_sim.exe aborts with "Could not find required HOSTLIB var
-    'COEFF_SPECBASIS00'", so the prefix and the 2-digit read-order index are
-    both pinned by SNANA's own message.
+    'COEFF_SPECBASIS00'" for a basis column SPECBASIS00: each coefficient is
+    COEFF_ and the basis column's name (sntools_host.c:766-770).
     """
     from jax_snlc_sim.hostlib.spectra import hostlib_column_names
     t = read_host_spec_table(_write(tmp_path), 'SPECBASIS')
     assert hostlib_column_names(t) == ['COEFF_SPECBASIS00', 'COEFF_SPECBASIS01']
+    # the basis file's own column names, however they are numbered
+    text = _TABLE.format(p='SPECBASIS').replace('SPECBASIS00 SPECBASIS01',
+                                                'SPECBASIS1 specbasis_red')
+    t = read_host_spec_table(_write(tmp_path, text=text), 'SPECBASIS')
+    assert hostlib_column_names(t) == ['COEFF_SPECBASIS1', 'COEFF_specbasis_red']
     d = read_host_spec_table(_write(tmp_path, 'SPECDATA'), 'SPECDATA')
     assert hostlib_column_names(d) == ['IDSPECDATA']
 

@@ -23,7 +23,7 @@ def test_joint_sigint_bounds_from_config():
 def test_bbc_own_parameters_take_their_bounds_from_the_shared_table():
     """scalePCC and the H11 coefficients are declared like a model's nuisance
     parameters, so fit_bounds needs no branch for them (prep_fitpar,
-    SALT2mu.c:22368, :22373)."""
+    SALT2mu.c:22368, :22387)."""
     lo, hi = fit_bounds(SALTModel, ["alpha0", "scalePCC", "H11mucc2"], 0, -30.0,
                         "snana_secant", 0.05, 1.5)
     assert (float(lo[1]), float(hi[1])) == (-0.10, 15.0)

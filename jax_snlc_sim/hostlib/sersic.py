@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Maximum number of Sersic profile components (sntools_host.h MXSERSIC_HOSTLIB)
 MXSERSIC_HOSTLIB = 9
 
-# All possible Sersic component columns (Sersic_names, sntools_host.c:1183-1194)
+# All possible Sersic component columns (Sersic_names, sntools_host.c:1194-1205)
 SERSIC_COMPONENT_COLUMNS = [
     f'{p}{j}_Sersic' for j in range(MXSERSIC_HOSTLIB) for p in 'abwn'
 ] + ['a_rot']
@@ -44,10 +44,10 @@ GAUSS2D_FILE = "simlib/Gauss2dIntegrals.dat"
 def apply_fixsersic_columns(fixsersic, columns, scale_sersic_size=1.0):
     """HOSTLIB_FIXSERSIC writes the fixed values back into the catalogue
     columns, as SNANA writes them into VALUE_ZSORTED (get_Sersic_info,
-    sntools_host.c:5303-5330), so every consumer of catalogue values
+    sntools_host.c:5600-5627), so every consumer of catalogue values
     (profiles, STOREPAR, SIMGEN_DUMP) reports the override. SCALE_SERSIC_SIZE
     then scales the half-light sizes, as SNANA scales SERSIC->a/b for the
-    same struct (sntools_host.c:5328-5329), so the position, DDLR and GALMAG
+    same struct (sntools_host.c:5625-5626), so the position, DDLR and GALMAG
     paths share one set of sizes. Weight columns are untouched. Mutates and
     returns ``columns``.
     """
@@ -63,7 +63,7 @@ def apply_fixsersic_columns(fixsersic, columns, scale_sersic_size=1.0):
                     columns[name] = np.full_like(np.asarray(arr), fix)
             elif name == 'a_rot' and fang > -998.0:
                 columns[name] = np.full_like(np.asarray(arr), fang)
-    # a FIXSERSIC size is scaled too (sntools_host.c:5303-5329)
+    # a FIXSERSIC size is scaled too (sntools_host.c:5600-5626)
     if scale_sersic_size != 1.0:
         for name, arr in columns.items():
             if re.match(r'[ab]\d+_Sersic$', name):
@@ -76,8 +76,8 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
                           fixed_n: Dict[int, float]) -> Optional[Dict]:
     """Discover, validate, and pack the HOSTLIB's Sersic components.
 
-    Mirrors init_Sersic_VARNAMES (sntools_host.c:5004-5110) and
-    get_Sersic_info (sntools_host.c:5263-5436), vectorised over the whole
+    Mirrors init_Sersic_VARNAMES (sntools_host.c:5301-5407) and
+    get_Sersic_info (sntools_host.c:5560-5733), vectorised over the whole
     catalogue at build time:
 
     - components j with both a{j}_Sersic and b{j}_Sersic columns are packed;
@@ -89,7 +89,7 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
     - weight sums off unity beyond 1e-3 are fatal; smaller truncation slop
       is renormalised away
     - a_rot is required alongside any profile (GEN_SNHOST_POS aborts
-      without it, sntools_host.c:7630-7636)
+      without it, sntools_host.c:8068-8074)
 
     Returns a dict with 'n_prof', 'a', 'b', 'n', 'w' (each (ngal, n_prof)
     float32, w normalised to sum 1) and 'a_rot' (ngal,), or None when the
@@ -111,7 +111,7 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
 
     if not comps:
         # A fixed index without a matching a/b pair is fatal
-        # (sntools_host.c:5073-5077).
+        # (sntools_host.c:5370-5374).
         if fixed_n:
             raise SNANAError(
                 f"{len(fixed_n)} FIXED Sersic indices defined (n#_Sersic) but 0 "
@@ -134,7 +134,7 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
     ngal = a.shape[0]
 
     # Sersic index per component: column or fixed value, never both
-    # (sntools_host.c:5081-5110)
+    # (sntools_host.c:5378-5407)
     n_cols = []
     for j in comps:
         n_name = f'n{j}_Sersic'
@@ -175,7 +175,7 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
             function_name=fnam)
 
     # Weights: NPROF or NPROF-1 declared, the missing one inferred
-    # (sntools_host.c:5350-5396)
+    # (sntools_host.c:5647-5693)
     w_present = [f'w{j}_Sersic' in varnames for j in comps]
     nwgt = sum(w_present)
     if nwgt < n_prof - 1:
@@ -209,7 +209,7 @@ def build_sersic_profiles(sorted_column_data: Dict[str, np.ndarray],
             f"Sum of Sersic weights = {wtot[first]:.6f} (ne 1) for "
             f"{int(bad_sum.sum())} galaxies. Check values of w1, w2, etc.",
             function_name=fnam)
-    # Renormalise HOSTLIB truncation slop (sntools_host.c:5427-5434)
+    # Renormalise HOSTLIB truncation slop (sntools_host.c:5724-5731)
     w = (w / wtot[:, None]).astype(np.float32)
 
     log.line(logger, f"Sersic profiles: {n_prof} component(s) "
@@ -229,7 +229,7 @@ def load_sersic_bn_table() -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Exact b_n lookup for low Sersic indices from Sersic_bn.dat.
 
     SNANA reads the same file at init (read_Sersic_bn,
-    sntools_host.c:5194) and aborts when it is missing. Called from the
+    sntools_host.c:5491) and aborts when it is missing. Called from the
     hostlib build path, never at import.
     """
     path = sndata_root() / SERSIC_BN_FILE
@@ -248,7 +248,7 @@ def load_gauss2d_table() -> jnp.ndarray:
     51 entries: R from 0.0 to 5.0 in steps of 0.1, SIG always 0.5; each row
     is the fraction of a 2D Gaussian within the unit circle at offset R.
     SNANA reads the same table at init (init_Gauss2d_Overlap,
-    sntools_host.c:4815) and aborts when it is missing. Called from the
+    sntools_host.c:5100) and aborts when it is missing. Called from the
     hostlib build path, never at import.
     """
     path = sndata_root() / GAUSS2D_FILE
@@ -266,12 +266,12 @@ def load_gauss2d_table() -> jnp.ndarray:
     return jnp.array(integ_vals, dtype=jnp.float32)
 
 
-NMAGPSF_HOSTLIB = 9
-NRBIN_GALMAG = 100
+NMAGPSF_HOSTLIB = 13
+NRBIN_GALMAG = 200
 NTHBIN_GALMAG = 36
-PSFMAX_SNANA = 5.0
+PSFMAX_SNANA = 10.0
 
-# PSF sigma (arcsec) per aperture; index 0 is the total
+# PSF sigma (arcsec) per aperture, from PSF FWHM; index 0 is the total
 APERTURE_PSFSIG = np.array([
     0.0,
     0.03 / 2.35,
@@ -282,6 +282,10 @@ APERTURE_PSFSIG = np.array([
     0.80 / 2.35,
     1.30 / 2.35,
     2.10 / 2.35,
+    3.0 / 2.35,
+    4.0 / 2.35,
+    6.0 / 2.35,
+    8.0 / 2.35,
     PSFMAX_SNANA / 2.35
 ], dtype=np.float32)
 
@@ -457,19 +461,20 @@ def _interp_gauss2d(rcen_frac, gauss2d_integ):
 
 
 def _compute_galfrac_single(x_sn, y_sn, a_half, b_half, sersic_n, sersic_w,
-                            sersic_bn, integ_sum_fixed, gauss2d_integ):
-    """Compute GALFRAC at 9 PSF apertures for a single SN.
+                            sersic_bn, integ_sum, gauss2d_integ):
+    """Compute GALFRAC at each PSF aperture for a single SN.
 
     Matches SNANA GEN_SNHOST_GALMAG polar grid integration.
 
     ``x_sn``/``y_sn`` is the SN position in the galaxy intrinsic frame
     (arcsec); ``a_half``/``b_half`` the half-light semi-major/minor axes
-    per component, and ``sersic_n``/``sersic_w``/``sersic_bn`` the other
-    per-component parameters, all shape (n_prof,). ``integ_sum_fixed`` is
-    the scalar SNANA fixed INTEG_SUM[NSERSIC_TABLE-1]; ``gauss2d_integ`` is
-    the (51,) Gauss2d overlap table (load_gauss2d_table).
+    per component, ``sersic_n``/``sersic_w``/``sersic_bn`` the other
+    per-component parameters, and ``integ_sum`` each component's Sersic
+    integral at its own index (get_GALFLUX_HOSTLIB), all shape (n_prof,).
+    ``gauss2d_integ`` is the (51,) Gauss2d overlap table (load_gauss2d_table).
 
-    Returns the (10,) GALFRAC for each PSF aperture (index 0 unused).
+    Returns the (NMAGPSF_HOSTLIB + 1,) GALFRAC for each PSF aperture
+    (index 0 unused).
     """
     # polar grid out to twice the largest aperture radius
     rbin = 2.0 * APERTURE_RADIUS[NMAGPSF_HOSTLIB] / NRBIN_GALMAG
@@ -478,42 +483,40 @@ def _compute_galfrac_single(x_sn, y_sn, a_half, b_half, sersic_n, sersic_w,
     xgal = (x_sn + r_centers[:, None] * _COS_TH[None, :])[:, :, None]
     ygal = (y_sn + r_centers[:, None] * _SIN_TH[None, :])[:, :, None]
 
-    # FGAL_TOT = a * b * INTEG_SUM[NSERSIC_TABLE-1] for every component, as SNANA
+    # each component's total flux is a * b * its Sersic integral
     sqsum = (xgal / a_half)**2 + (ygal / b_half)**2
     arg = jnp.power(sqsum, 0.5 / sersic_n) - 1.0
-    amp = sersic_w / (a_half * b_half * integ_sum_fixed)
+    amp = sersic_w / (a_half * b_half * integ_sum)
     fgal_sum_th = jnp.sum(amp * jnp.exp(-sersic_bn * arg), axis=(1, 2))
 
     jac = r_centers * rbin * _THBIN
     rcen_frac_all = r_centers[:, None] / APERTURE_RADIUS[None, 1:NMAGPSF_HOSTLIB + 1]
-    galfrac_1_9 = (jac * fgal_sum_th) @ _interp_gauss2d(rcen_frac_all,
-                                                        gauss2d_integ)
+    galfrac = (jac * fgal_sum_th) @ _interp_gauss2d(rcen_frac_all, gauss2d_integ)
 
-    return jnp.concatenate([jnp.array([1.0]), jnp.minimum(galfrac_1_9, 1.0)])
+    return jnp.concatenate([jnp.array([1.0]), jnp.minimum(galfrac, 1.0)])
 
 
 @jax.jit
 def compute_galfrac(
     x_sn, y_sn, a_half, b_half, sersic_n, sersic_w, sersic_bn,
-    integ_sum_fixed, gauss2d_integ
+    integ_sum, gauss2d_integ
 ):
-    """Compute GALFRAC at 9 PSF apertures for a batch of SNe.
+    """Compute GALFRAC at each PSF aperture for a batch of SNe.
 
     Matches SNANA GEN_SNHOST_GALMAG polar grid integration. ``x_sn``/
     ``y_sn`` are (n_sne,), the intrinsic major/minor-axis offsets (arcsec);
-    ``a_half``/``b_half``/``sersic_n``/``sersic_w``/``sersic_bn`` are
-    (n_sne, n_prof), the per-component half-light axes, Sersic index,
-    weight and b_n. ``integ_sum_fixed`` is the scalar SNANA
-    INTEG_SUM[NSERSIC_TABLE-1] (fixed for all components); ``gauss2d_integ``
-    is the (51,) Gauss2d overlap table (load_gauss2d_table).
+    ``a_half``/``b_half``/``sersic_n``/``sersic_w``/``sersic_bn``/``integ_sum``
+    are (n_sne, n_prof), the per-component half-light axes, Sersic index,
+    weight, b_n and Sersic integral; ``gauss2d_integ`` is the (51,) Gauss2d
+    overlap table (load_gauss2d_table).
 
-    Returns the (n_sne, 10) GALFRAC for each PSF aperture.
+    Returns the (n_sne, NMAGPSF_HOSTLIB + 1) GALFRAC for each PSF aperture.
     """
     return jax.vmap(
-        lambda x, y, a, b, n, w, bn: _compute_galfrac_single(
-            x, y, a, b, n, w, bn, integ_sum_fixed, gauss2d_integ
+        lambda x, y, a, b, n, w, bn, integ: _compute_galfrac_single(
+            x, y, a, b, n, w, bn, integ, gauss2d_integ
         )
-    )(x_sn, y_sn, a_half, b_half, sersic_n, sersic_w, sersic_bn)
+    )(x_sn, y_sn, a_half, b_half, sersic_n, sersic_w, sersic_bn, integ_sum)
 
 
 @jax.jit
@@ -567,7 +570,7 @@ def generate_sn_position(
         log_r_reduced = log_r_at_k0 + frac_n * (log_r_at_k1 - log_r_at_k0)
         return 10.0 ** log_r_reduced
 
-    # radial uniform -> [MN,MX]INTFLUX_SNPOS window (GEN_SNHOST_POS, sntools_host.c:7713)
+    # radial uniform -> [MN,MX]INTFLUX_SNPOS window (GEN_SNHOST_POS, sntools_host.c:8151)
     random_radius_capped = mnintflux + random_radius * (mxintflux - mnintflux)
 
     reduced_r = jax.vmap(_sample_radius_single)(sersic_n, random_radius_capped)
@@ -578,7 +581,7 @@ def generate_sn_position(
     y_ellipse = b_half * r_circle * jnp.sin(theta_circle)
     phi = jnp.arctan2(y_ellipse, x_ellipse)
     phi = jnp.where(phi < 0, phi + 2.0 * jnp.pi, phi)
-    # FIXRAN_PHI: phi = 2*pi*ran directly (GEN_SNHOST_ANGLE, sntools_host.c:7922)
+    # FIXRAN_PHI: phi = 2*pi*ran directly (GEN_SNHOST_ANGLE, sntools_host.c:8360)
     phi = jnp.where(fixran_phi >= 0.0, 2.0 * jnp.pi * fixran_phi, phi)
 
     cos_phi = jnp.cos(phi)
