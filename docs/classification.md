@@ -44,8 +44,8 @@ photometry tables. These examples use the DES names `DES-g`, `DES-r`,
 
 Prediction requires the settings and normalisation files saved alongside
 `model.pt`, so keep the trained-model directory intact. Its `cli_args.json`
-records the training filter labels under `list_filters`; the supplied
-photometry must use those labels.
+records the training filter labels under `list_filters`. In prediction,
+bands are matched by their last character, so `g` matches `DES-g`.
 
 In Python, `data` is a `Sim` or `Data` stage and `data_fit` its corresponding
 `Fit` stage, constructed as shown in {doc}`building_pipelines`:
@@ -61,14 +61,13 @@ results = run(classified, outdir="classification")
 classified_fits = results["classified"]["nominal"].df
 ```
 
-In Python, pass a `band_map` to `SuperNNova` if the photometry's filter
-labels need renaming to match the trained model. For example, for a model
-trained with single-letter band names:
+Pass a `band_map` (`BAND_MAP` in a Pippin configuration) to rename
+labels whose last character differs from the model's band:
 
 ```python
 supernnova = SuperNNova(
-    filters=("DES-g", "DES-r", "DES-i", "DES-z"),
-    band_map={"DES-g": "g", "DES-r": "r", "DES-i": "i", "DES-z": "z"},
+    filters=("CSP-B/u", "CSP-g/y"),
+    band_map={"CSP-B/u": "B", "CSP-g/y": "g"},
 )
 ```
 

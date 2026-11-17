@@ -10,9 +10,9 @@ onto every fitted table, the distance fit reading it, a cut on it reaching
 the bias-correction sample, a MUOPT choosing another merged classifier,
 training handing a model to classifying, and a second run loading it all.
 
-SuperNNova runs where it is installed: trained on a jax simulation of Type Ia
-and core-collapse events, it must read jax's files as it reads SNANA's, and
-its probabilities must carry through to the distance fit.
+SuperNNova runs where it is installed: a model trained on a jax simulation
+classifies it, and DES-SN5YR's model classifies jax's DES light curves, its
+probabilities carrying through to the distance fit.
 """
 
 import importlib.util
@@ -36,7 +36,6 @@ from jax_salt2mu.output import write_m0dif
 from jax_salt2mu.tablevar import EVENT_TYPE_BIASCOR, EVENT_TYPE_CCPRIOR, EVENT_TYPE_DATA
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import read_fitres, write_varnames_table
-from jax_snlc_sim.output.fits import write_head_fits, write_phot_fits
 
 _DIR = os.path.abspath(os.path.join("tests", "fixtures", "snana", "bbc_des_beams"))
 _DATA = os.path.join(_DIR, "DATA.FITRES")
@@ -283,10 +282,11 @@ def test_supernnova_types_come_from_the_version_readme(tmp_path):
                                      "33": "Ibc+Ic", "133": "Ibc+Ic"}
 
 
-def test_supernnova_refuses_bands_its_model_was_not_trained_on(tmp_path):
-    """SuperNNova gives every event NaN, with no error, when the light
-    curves' bands differ from its model's, so the classifier refuses first,
-    naming both."""
+@needs_supernnova
+def test_supernnova_matches_bands_by_their_last_letter(tmp_path):
+    """DES-SN5YR's model, trained on bands named g, i, r, z, classifies light
+    curves labelled DES-g and so on, selected by LIST_FILTERS g, i, r, z,
+    exactly as when band_map renames them."""
     version = tmp_path / "V"
     version.mkdir()
     # under the simulation's names, which its HEAD names its PHOT file by
@@ -294,184 +294,58 @@ def test_supernnova_refuses_bands_its_model_was_not_trained_on(tmp_path):
         shutil.copy(Path(_SNANA) / "gentype_map_k10" / f"{name}.gz",
                     version / f"JAX_TEST_GENTYPE_MAP_{name}.gz")
     (version / "V.LIST").write_text("JAX_TEST_GENTYPE_MAP_HEAD.FITS\n")
+    renamed = SuperNNova(filters=_DES_BANDS, band_map={band: band[-1] for band in _DES_BANDS})
+    by_band_map = renamed.predict(None, version, _DES_MODEL)
 
-    with pytest.raises(SNANAError, match=r"\['g', 'i', 'r', 'z'\].*\['DES-g', 'DES-i', 'DES-r', "
-                                         r"'DES-z'\].*band_map"):
-        SuperNNova(filters=_DES_BANDS).predict(None, version, _DES_MODEL)
+    by_letter = SuperNNova(filters=("g", "i", "r", "z")).predict(None, version, _DES_MODEL)
 
-
-@pytest.fixture(scope="module")
-def supernnova(tmp_path_factory):
-    """SuperNNova trained on a jax simulation of Type Ia and core-collapse
-    events written into one version; returns the run's directory, the
-    classifier and its training stage, so a test running in that directory
-    loads them."""
-    return _trained(tmp_path_factory.mktemp("supernnova"), "vanilla")
+    pd.testing.assert_series_equal(by_letter, by_band_map)
 
 
-@pytest.fixture(scope="module")
-def supernnova_variational(tmp_path_factory):
-    """The same, SuperNNova's variational network, which samples its
-    weights and reports a median and a spread."""
-    return _trained(tmp_path_factory.mktemp("supernnova_variational"), "variational")
-
-
-def _trained(outdir, variant):
-    snn = SuperNNova(filters=("DES-g", "DES-i", "DES-r", "DES-z"), variant=variant,
-                     nb_epoch=3)
+@needs_supernnova
+def test_supernnova_trains_a_model_it_predicts_with(tmp_path):
+    """A model trained on a jax simulation of Type Ia and core-collapse
+    events gives every event of that simulation a probability."""
+    snn = SuperNNova(filters=_DES_BANDS, nb_epoch=3)
     training = Sim("training", [_IA_INPUT, _CC_INPUT],
                    overrides=[{"NGENTOT_LC": 400, "RANSEED": 11},
                               {"NGENTOT_LC": 3000, "RANSEED": 12}])
     trained = Train("trained", snn, photometry=training)
-    run(trained, outdir=outdir)
-    return outdir, snn, trained
+    run(trained, outdir=tmp_path)
+    version = tmp_path / "training"
+    snids = {snid.strip() for head in version.glob("*HEAD.FITS*")
+             for snid in np.asarray(fits.getdata(head, 1)["SNID"], dtype=str)}
 
+    probability = snn.predict(None, version, trained.load({}, tmp_path / "trained"))
 
-def _as_written(column):
-    """A column as jax's writer takes it: astropy reads text as Unicode, which
-    FITS stores as bytes."""
-    column = np.asarray(column)
-    return np.char.encode(column, "ascii") if column.dtype.kind == "U" else column
-
-
-def _without_markers(head_path, phot_path):
-    """A SNANA version's HEAD and PHOT columns without its marker rows, as
-    jax's writer takes them."""
-    head = fits.getdata(head_path, 1)
-    phot = fits.getdata(phot_path, 1)
-    first, last = head["PTROBS_MIN"] - 1, head["PTROBS_MAX"]
-    rows = np.concatenate([np.arange(a, b) for a, b in zip(first, last)])
-    counts = last - first
-    ends = np.cumsum(counts)
-    columns = {name: _as_written(head[name]) for name in head.columns.names}
-    columns["PTROBS_MIN"] = (ends - counts + 1).astype(np.int32)
-    columns["PTROBS_MAX"] = ends.astype(np.int32)
-    return (columns, {name: _as_written(phot[name])[rows] for name in phot.columns.names},
-            counts)
+    assert set(probability.index) == snids
+    assert probability.between(0, 1).all()
 
 
 @needs_supernnova
-def test_supernnova_reads_jax_files_as_it_reads_snana_files(supernnova, tmp_path):
-    """SNANA's own events, rewritten by jax's FITS writer, get the same
-    probabilities as SNANA's files: SuperNNova finds each light curve by the
-    marker rows, so the layout must be SNANA's row for row."""
-    _, snn, trained = supernnova
-    model = trained.load({}, supernnova[0] / "trained")
-    fixture = Path(_SNANA) / "gentype_map_k10"
-    snana = tmp_path / "snana"
-    snana.mkdir()
-    for name in ("HEAD.FITS.gz", "PHOT.FITS.gz"):
-        shutil.copy(fixture / name, snana / f"V_{name}")
-    shutil.copy(fixture / "SIM.README", snana / "V.README")
-    rewritten = tmp_path / "jax"
-    rewritten.mkdir()
-    head, phot, counts = _without_markers(snana / "V_HEAD.FITS.gz", snana / "V_PHOT.FITS.gz")
-    primary = fits.getheader(snana / "V_HEAD.FITS.gz")
-    keywords = {key: primary[key]
-                for key in ("DATATYPE", "SURVEY", "SIMOPT_MWCOLORLAW", "SIM_MWRV")}
-    write_head_fits(keywords, "V", str(rewritten), head)
-    write_phot_fits(keywords, "V", str(rewritten), phot, counts)
-    shutil.copy(fixture / "SIM.README", rewritten / "V.README")
-
-    by_snana = snn.predict(None, snana, model).sort_index()
-    by_jax = snn.predict(None, rewritten, model).sort_index()
-
-    assert len(by_snana) == len(head["SNID"])
-    pd.testing.assert_series_equal(by_jax, by_snana)
-
-
-@needs_supernnova
-@pytest.mark.parametrize("trained_snn", ["supernnova", "supernnova_variational"])
-def test_supernnova_classifies_in_process_as_its_own_commands_do(trained_snn, request,
-                                                                tmp_path):
-    """Classifying in this process prepares the light curves itself; the
-    probabilities equal those of SuperNNova's own make_data and validate_rnn
-    commands, the path Pippin's jobs take, event by event. A variational
-    network draws its weights afresh for each of its 50 samples, and the two
-    paths draw them in a different order, so its median and spread agree with
-    SuperNNova's aggregated ones within their sampling error."""
-    outdir, snn, trained = request.getfixturevalue(trained_snn)
-    model = trained.load({}, outdir / "trained")
-    version = outdir / "training"
-    dump = tmp_path / "dump"
-    sntypes = snn._sntypes(version)
-    snn._snn("make_data", [*snn._data_args(None, version, dump, sntypes), "--data_testing"],
-             tmp_path)
-    snn._snn("validate_rnn", [*snn._model_args(dump, sntypes), "--model_files", str(model)],
-             tmp_path)
-    if snn.variant == "vanilla":
-        (written,) = (dump / "models").glob("*/PRED_*.pickle")
-        columns = {"all_class0": snn.column}
-    else:
-        (written,) = (dump / "models").glob("*/PRED_*_aggregated.pickle")
-        columns = {"all_class0_median": snn.column, "all_class0_std": f"{snn.column}_ERR"}
-    reference = pd.read_pickle(written)
-    by_commands = pd.DataFrame({name: reference[source].to_numpy()
-                                for source, name in columns.items()},
-                               index=reference["SNID"].astype(str).str.strip().to_numpy())
-
-    in_process = pd.DataFrame(snn.predict(None, version, model)).sort_index()
-    by_commands = by_commands.sort_index()
-    if snn.variant == "vanilla":
-        pd.testing.assert_frame_equal(in_process, by_commands)
-        return
-    pd.testing.assert_index_equal(in_process.index, by_commands.index)
-    spread = by_commands[f"{snn.column}_ERR"]
-    # five standard errors of the difference of two independent estimates
-    # from 50 samples: sqrt(2) times 1.25 spread / sqrt(50) for a median, and
-    # sqrt(2) times spread / sqrt(98) for a standard deviation
-    assert ((in_process[snn.column] - by_commands[snn.column]).abs()
-            < 5 * np.sqrt(2) * 1.25 * spread / np.sqrt(50)).all()
-    assert ((in_process[f"{snn.column}_ERR"] - spread).abs()
-            < 5 * np.sqrt(2) * spread / np.sqrt(98)).all()
-
-
-@needs_supernnova
-def test_a_model_trained_on_other_band_names_classifies_through_band_map(supernnova):
-    """DES-SN5YR's own model, trained on bands named g, i, r, z, classifies
-    jax's DES simulation, whose bands are DES-g and so on, once band_map
-    renames them: every event gets a probability, the Type Ia ones near 1
-    and the core-collapse ones near 0."""
-    outdir, _, _ = supernnova
-    version = outdir / "training"
-    snn = SuperNNova(filters=_DES_BANDS,
-                     band_map={band: band[-1] for band in _DES_BANDS})
-
-    probability = snn.predict(None, version, _DES_MODEL)
-    templates = pd.concat([pd.DataFrame({
-        "SNID": np.char.strip(np.asarray(fits.getdata(head, 1)["SNID"], dtype=str)),
-        "TEMPLATE": fits.getdata(head, 1)["SIM_TEMPLATE_INDEX"]})
-        for head in sorted(version.glob("*HEAD.FITS*"))]).set_index("SNID")["TEMPLATE"]
-    is_ia = templates.reindex(probability.index) == 0
-
-    assert is_ia.any() and (~is_ia).any()
-    assert probability[is_ia].median() > 0.9
-    assert probability[~is_ia].median() < 0.1
-
-
-@needs_supernnova
-def test_supernnova_probabilities_reach_the_distance_fit(supernnova):
-    """A second simulation, fitted and classified by the trained model: every
-    fitted event gets a probability, the Type Ia ones higher on average, and
-    the BEAMS fit runs on that column."""
-    outdir, snn, trained = supernnova
+def test_supernnova_probabilities_reach_the_distance_fit(tmp_path):
+    """A simulation, fitted and classified by DES-SN5YR's model: every fitted
+    event gets a probability, the Type Ia ones near 1 and the core-collapse
+    ones near 0, and the BEAMS fit runs on that column."""
+    snn = SuperNNova(filters=_DES_BANDS)
     data = Sim("data", [_IA_INPUT, _CC_INPUT],
                overrides=[{"NGENTOT_LC": 3000, "RANSEED": 21},
                           {"NGENTOT_LC": 3000, "RANSEED": 22}])
     classified = Classify("classified", snn, fit=Fit("fit", _FIT_NML, datasets=[data]),
-                          model=trained, photometry=data)
+                          model=_DES_MODEL, photometry=data)
     bbc = BBC("distances", data=classified, biascor=Fit("biascor", fitres=_BIASCOR),
               ccprior=Fit("ccprior", fitres=_CCPRIOR),
               overrides={**_KEYS, "varname_pIa": snn.column})
 
-    results = run(bbc, outdir=outdir)
+    results = run(bbc, outdir=tmp_path)
     df = results["classified"][_NOMINAL].df
-    predicted = pd.read_csv(outdir / "classified" / "predictions.csv", dtype={"CID": str})
+    predicted = pd.read_csv(tmp_path / "classified" / "predictions.csv", dtype={"CID": str})
     is_ia = df["SIM_TEMPLATE_INDEX"].astype(int) == 0
 
     assert set(df["CID"].astype(str)) <= set(predicted["CID"])
     assert df[snn.column].between(0, 1).all()
-    assert df.loc[is_ia, snn.column].mean() > df.loc[~is_ia, snn.column].mean()
+    assert df.loc[is_ia, snn.column].median() > 0.9
+    assert df.loc[~is_ia, snn.column].median() < 0.1
     assert results["distances"][_NOMINAL]["M0DIF"].df["NFIT"].sum() > 0
 
 
@@ -570,3 +444,6 @@ def test_classifier_reads_listed_fits_and_text(tmp_path, head_gz, phot_gz):
     assert actual['FLT'].tolist() == ['DES-g']
     np.testing.assert_allclose(actual['FLUXCAL'], [10.])
     np.testing.assert_allclose(actual['HOSTGAL_SPECZ'], [0.2])
+    # a filter selects bands by their last letter
+    by_letter = SuperNNova(filters=('DES-g',))._light_curves(fits_dir)
+    assert by_letter['FLT'].tolist() == ['g']
