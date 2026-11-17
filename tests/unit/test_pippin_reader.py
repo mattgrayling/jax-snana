@@ -509,9 +509,9 @@ def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
     """SuperNNova reads light curves, so Pippin matches its tasks against the
     simulations and joins a prediction onto every fit of the matched one.
     The training writes PROB_<task>_<simulation>; the prediction takes that
-    column and the training's name as a suffix. Unset options take Pippin's
-    defaults, and a training task whose name extends the named one's is not
-    taken for it."""
+    column and the training's name as a suffix, and BAND_MAP reaches its
+    classifier. Unset options take Pippin's defaults, and a training task
+    whose name extends the named one's is not taken for it."""
     config = {"SIM": {"TRAINSIM": _sim(), "DATASIM": _sim()},
               "LCFIT": {"D": {"BASE": str(_NML)}, "E": {"BASE": str(_NML)}},
               "CLASSIFICATION": {
@@ -522,7 +522,8 @@ def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
                   "SNNTRAIN_B": {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "train",
                                  "MASK_SIM": "TRAIN"},
                   "SNNTEST": {"CLASSIFIER": "SuperNNovaClassifier", "MODE": "predict",
-                              "MASK": "DATA", "OPTS": {"MODEL": "SNNTRAIN"}}}}
+                              "MASK": "DATA", "OPTS": {"MODEL": "SNNTRAIN",
+                                                       "BAND_MAP": {"DES-g": "g"}}}}}
 
     stages = _by_name(read(_write(tmp_path, config)))
 
@@ -540,6 +541,7 @@ def test_supernnova_trains_on_a_simulation_and_predicts_for_its_fits(tmp_path):
     assert classified.photometry is stages["DATASIM"]
     assert classified.model is trained
     assert classified.classifier.column == "PROB_SNNTRAIN_TRAINSIM"
+    assert classified.classifier.band_map == {"DES-g": "g"}
 
     config["CLASSIFICATION"]["SNNTEST"]["OPTS"]["DATA_YML"] = "x.yml"
     with pytest.raises(SNANAError, match="DATA_YML"):

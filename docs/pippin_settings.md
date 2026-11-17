@@ -167,9 +167,9 @@ described in {doc}`classification`.
 ### SuperNNova options
 
 Under `OPTS`, SuperNNova accepts `LIST_FILTERS`, `VARIANT`, `REDSHIFT`,
-`NORM`, `CYCLIC`, `SEED`, `BATCH_SIZE`, `NUM_LAYERS`, `HIDDEN_DIM` and
-`SNTYPES`. See {doc}`classification` for examples and links to the
-SuperNNova settings documentation and API defaults.
+`NORM`, `CYCLIC`, `SEED`, `BATCH_SIZE`, `NUM_LAYERS`, `HIDDEN_DIM`,
+`SNTYPES` and `BAND_MAP`. See {doc}`classification` for examples and links
+to the SuperNNova settings documentation and API defaults.
 
 ## `BIASCOR`
 

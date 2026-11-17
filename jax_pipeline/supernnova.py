@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from jax_snlc_core.filters import filter_band
 from jax_snlc_core.logging import SNANAError
 from jax_snlc_core.snana_files import write_varnames_table
 from jax_snlc_fit.loader import version_sources
@@ -51,7 +52,8 @@ def _pippin_sntypes(sntypes, source_types) -> dict[int, str]:
 class SuperNNova:
     """Train or apply a SuperNNova light-curve classifier.
 
-    ``filters`` lists the bands as named in the PHOT files. ``sntypes``
+    ``filters`` lists the bands to classify on. In prediction, bands are
+    matched by their last character, so ``g`` matches ``DES-g``. ``sntypes``
     maps type codes to names, using ``Ia`` for type Ia supernovae; if omitted,
     training reads this mapping from the simulation's README.
 
@@ -63,7 +65,7 @@ class SuperNNova:
 
     ``phot_reject_bits`` identifies flagged epochs to exclude, and
     ``redshift_label`` names the redshift column. ``band_map`` renames bands
-    for prediction, for example ``{'DES-g': 'g'}``, to match those used in
+    for prediction whose names do not end in the band letter used in
     training. The trained model requires its accompanying ``cli_args.json``
     and normalisation files.
 
@@ -92,7 +94,7 @@ class SuperNNova:
     #: the OPTS of Pippin's SuperNNovaClassifier read by from_pippin
     PIPPIN_OPTS: ClassVar[tuple[str, ...]] = (
         "LIST_FILTERS", "VARIANT", "REDSHIFT", "NORM", "CYCLIC", "SEED", "BATCH_SIZE",
-        "NUM_LAYERS", "HIDDEN_DIM", "SNTYPES")
+        "NUM_LAYERS", "HIDDEN_DIM", "SNTYPES", "BAND_MAP")
 
     @classmethod
     def from_pippin(cls, name, opts, types, locate) -> "SuperNNova":
@@ -136,7 +138,8 @@ class SuperNNova:
         hidden_dim = opts.get("HIDDEN_DIM", 32)
         return cls(filters=tuple(filters), variant=variant.lower(), redshift=redshift, norm=norm,
                    cyclic=cyclic, seed=seed, batch_size=batch_size, num_layers=num_layers,
-                   hidden_dim=hidden_dim, sntypes=_pippin_sntypes(sntypes, types))
+                   hidden_dim=hidden_dim, sntypes=_pippin_sntypes(sntypes, types),
+                   band_map=opts.get("BAND_MAP", {}))
 
     def __post_init__(self):
         if self.variant not in ("vanilla", "variational", "bayesian"):
@@ -178,10 +181,13 @@ class SuperNNova:
         # differ from those the model was trained on
         trained_on = json.loads((Path(model).parent / "cli_args.json").read_text())["list_filters"]
         bands = sorted(set(light_curves["FLT"]))
-        if not set(trained_on) <= set(bands):
+        letters = light_curves["FLT"].map(filter_band)
+        model_bands = {filter_band(band): band for band in trained_on}
+        if not set(model_bands) <= set(letters):
             raise SNANAError(f"the model {model} was trained on bands {trained_on}, but "
                              f"the light curves of {photometry} have {bands}; give "
                              f"band_map to rename them", function_name="SuperNNova")
+        light_curves["FLT"] = letters.map(model_bands)
         # an optional dependency, imported only by a run that classifies with it
         from supernnova.validation.validate_onthefly import classify_lcs
 
@@ -201,12 +207,14 @@ class SuperNNova:
                             index=index)
 
     def _light_curves(self, photometry) -> pd.DataFrame:
-        """Every event's epochs in ``filters`` with its host redshifts, as
+        """Every event's epochs in ``filters``, matched by band letter, with
+        its host redshifts, as
         SuperNNova's dataset step prepares them (process_single_FITS): the
         epochs with any of ``phot_reject_bits`` dropped, and
         ``redshift_label`` in place of the spectroscopic host redshift. The
         bands are then renamed by ``band_map``."""
         reject = sum(self.phot_reject_bits)
+        wanted = {filter_band(name) for name in self.filters}
         tables = []
         for _, read in version_sources(photometry, {}):
             head, phot, _ = read()
@@ -229,7 +237,7 @@ class SuperNNova:
                 "FLT": np.char.strip(np.asarray(phot[band], dtype=str))[rows],
                 "PEAKMJD": np.asarray(head["PEAKMJD"], dtype=np.float64)[event],
                 **{name: values[event] for name, values in hosts.items()}})
-            keep = (table["FLT"].isin(self.filters).to_numpy()
+            keep = (table["FLT"].map(filter_band).isin(wanted).to_numpy()
                     & ((np.asarray(phot["PHOTFLAG"])[rows] & reject) == 0))
             tables.append(table[keep])
         light_curves = pd.concat(tables, ignore_index=True)
