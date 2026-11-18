@@ -35,7 +35,7 @@ from jax_snlc_sim.photometry import (check_crazy_flux, check_finite_flux, simula
 from jax_snlc_sim.inputs import parse_input
 from jax_snlc_sim.lensing import apply_lensdmu_smear
 from jax_snlc_sim.simulation import run_key
-from jax_snlc_sim.sampler import (NO_SBI_INPUTS, draw_dust,
+from jax_snlc_sim.sampler import (NO_SBI_INPUTS, draw_dust, draw_grey_scatter, 
                                   draw_grey_offset, draw_input_checks, draw_input_failures,
                                   draw_model, draw_placement, drawn_dust_parameters,
                                   prepare_population_functions, reached_host, sbi_value)
@@ -212,6 +212,8 @@ def photometry_stage(simulator, key, start_index, n_events,
         # them or as the input file does
         functions = {name: (kind, function) for name, kind, function in population_functions}
         global_indices = batch_parameters['sn_global_idx']
+
+        #Legibility
         batch_parameters['gammaDM'] = sbi_value(
             'gammaDM', sbi_inputs, functions,
             event_keys(key, stream_name('gammaDM', MAGNITUDE_SHIFTS), global_indices),
@@ -221,6 +223,14 @@ def photometry_stage(simulator, key, start_index, n_events,
             event_keys(key, stream_name('genmag_off', MAGNITUDE_SHIFTS), global_indices),
             batch_parameters,
             lambda: draw_grey_offset(simulator, batch_parameters, host_properties))
+        #Legibility
+        batch_parameters['sigint'] = sbi_value(
+            'sigint', sbi_inputs, functions,
+            event_keys(key, stream_name('sigint', MAGNITUDE_SHIFTS), global_indices),
+            batch_parameters,
+            lambda: draw_grey_scatter(simulator, batch_parameters, host_properties))
+
+        #
     batch_obs_schedule['phases'] = epoch_phases(batch_obs_schedule,
                                                 batch_parameters)
     apply_random_coord_shift(simulator, batch_parameters,
