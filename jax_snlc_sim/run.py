@@ -228,9 +228,7 @@ def photometry_stage(simulator, key, start_index, n_events,
             'sigint', sbi_inputs, functions,
             event_keys(key, stream_name('sigint', MAGNITUDE_SHIFTS), global_indices),
             batch_parameters,
-            lambda: draw_grey_scatter(simulator, batch_parameters, host_properties))
-
-        #
+            lambda: draw_grey_scatter(simulator,batch_parameters,scatter_sigma=batch_parameters['sigint'],key=key))
     batch_obs_schedule['phases'] = epoch_phases(batch_obs_schedule,
                                                 batch_parameters)
     apply_random_coord_shift(simulator, batch_parameters,
