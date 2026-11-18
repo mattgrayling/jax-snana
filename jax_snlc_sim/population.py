@@ -58,7 +58,8 @@ HOST_DUST_PARAMETERS = (
 #: The magnitude shifts SBI can set besides the population parameters, the
 #: global offset and the host mass step, by result name with SNANA's spellings.
 MAGNITUDE_SHIFTS = {'genmag_off': ('GENMAG_OFF_GLOBAL',),
-                    'gammaDM': ('SALT2gammaDM', 'SNMAGSHIFT')}
+                    'gammaDM': ('SALT2gammaDM', 'SNMAGSHIFT'),
+                    'sigint': ('GENMAG_SMEAR')}
 
 
 @jax.tree_util.register_dataclass

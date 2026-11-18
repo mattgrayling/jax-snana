@@ -106,6 +106,7 @@ def sbi_value(name, sbi_inputs, functions, keys, events, usual_draw):
     else:
         return usual_draw()
     if value.shape != (keys.shape[0],):
+        print(value, keys.shape[0])
         raise SNANAError(f"The sampler for {name} must return one value per event",
                          function_name="sbi_value")
     return value
@@ -673,7 +674,6 @@ def grey_offset(simulator, subpop_index, redshifts, host_properties, drawn,
                            else jnp.where(subpop_index == index, shift, 0.0))
     return grey
 
-
 def drawn_dust_parameters(simulator):
     """The host-dust population parameters the dust draw samples: RV, and EBV
     or else AV, unless GENAV_WV07 draws AV itself."""
@@ -1128,3 +1128,13 @@ def draw_grey_offset(simulator, params,
                        params['sim_redshift_cmb'], host_properties,
                        _population_values(simulator, params),
                        params['sim_redshift_cmb'].shape[0])
+
+def draw_grey_scatter(simulator, params, host_properties, *, key):
+    """Draw independent Gaussian grey scatter for each SN."""
+
+    global_indices = params['sn_global_idx']
+    keys = event_keys(key, 'GREY_SCATTER', global_indices)
+
+    return jax.vmap(
+        lambda k: jax.random.normal(k)
+    )(keys)
