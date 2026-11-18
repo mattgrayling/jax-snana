@@ -1129,15 +1129,12 @@ def draw_grey_offset(simulator, params,
                        _population_values(simulator, params),
                        params['sim_redshift_cmb'].shape[0])
 
-def draw_grey_scatter(simulator, params, scatter_sigma, *, key):
-    """Draw independent Gaussian grey scatter for each SN.
+def draw_grey_scatter(simulator, params, host_properties, *, key):
+    """Draw independent Gaussian grey scatter for each SN."""
 
-    Each SN receives a zero-mean Gaussian magnitude offset with
-    standard deviation scatter_sigma.
-    """
     global_indices = params['sn_global_idx']
     keys = event_keys(key, 'GREY_SCATTER', global_indices)
 
-    return scatter_sigma * jax.vmap(
+    return jax.vmap(
         lambda k: jax.random.normal(k)
     )(keys)
