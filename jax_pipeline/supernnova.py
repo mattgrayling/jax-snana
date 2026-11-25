@@ -96,7 +96,7 @@ class SuperNNova:
     phot_reject_bits: tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512)
     redshift_label: str = "REDSHIFT_FINAL"
     band_map: Mapping[str, str] = field(default_factory=dict)
-    batch_events: int = 5_000
+    batch_events: int = 20_000
 
     #: the OPTS of Pippin's SuperNNovaClassifier read by from_pippin
     PIPPIN_OPTS: ClassVar[tuple[str, ...]] = (
