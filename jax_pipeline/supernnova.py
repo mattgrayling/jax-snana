@@ -69,6 +69,12 @@ class SuperNNova:
     training. The trained model requires its accompanying ``cli_args.json``
     and normalisation files.
 
+    ``batch_events`` bounds the memory of prediction: events are prepared and
+    classified in batches of that many, since a whole simulation's epochs as one
+    table can need more than 100 GB. Each event is classified independently,
+    so it does not change the probabilities. A batch must contain epochs in
+    every band the model uses.
+
     If supplied, the fitted table identifies the successfully fitted events
     for SuperNNova's training-sample split. See :doc:`classification` for
     installation, examples and links to SuperNNova's settings.
@@ -90,6 +96,7 @@ class SuperNNova:
     phot_reject_bits: tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512)
     redshift_label: str = "REDSHIFT_FINAL"
     band_map: Mapping[str, str] = field(default_factory=dict)
+    batch_events: int = 5_000
 
     #: the OPTS of Pippin's SuperNNovaClassifier read by from_pippin
     PIPPIN_OPTS: ClassVar[tuple[str, ...]] = (
@@ -146,6 +153,9 @@ class SuperNNova:
             raise SNANAError(f"SuperNNova variant must be vanilla, variational "
                              f"or bayesian, not {self.variant}",
                              function_name="SuperNNova")
+        if self.batch_events < 1:
+            raise SNANAError(f"SuperNNova batch_events must be at least 1, not "
+                             f"{self.batch_events}", function_name="SuperNNova")
         if self.norm not in ("global", "cosmo", "perfilter", "cosmo_quantile", "none"):
             raise SNANAError(f"SuperNNova norm must be global, cosmo, perfilter, "
                              f"cosmo_quantile or none, not {self.norm}",
@@ -176,23 +186,33 @@ class SuperNNova:
             raise SNANAError("SuperNNova classifies a version's light curves with "
                              "a trained model; give the stage both",
                              function_name="SuperNNova")
-        light_curves = self._light_curves(photometry)
         # SuperNNova gives every event NaN, with no error, when the bands
         # differ from those the model was trained on
         trained_on = json.loads((Path(model).parent / "cli_args.json").read_text())["list_filters"]
-        bands = sorted(set(light_curves["FLT"]))
-        letters = light_curves["FLT"].map(filter_band)
         model_bands = {filter_band(band): band for band in trained_on}
-        if not set(model_bands) <= set(letters):
-            raise SNANAError(f"the model {model} was trained on bands {trained_on}, but "
-                             f"the light curves of {photometry} have {bands}; give "
-                             f"band_map to rename them", function_name="SuperNNova")
-        light_curves["FLT"] = letters.map(model_bands)
         # an optional dependency, imported only by a run that classifies with it
         from supernnova.validation.validate_onthefly import classify_lcs
 
-        snids, preds = classify_lcs(light_curves, str(model),
-                                    "cuda" if self.use_cuda else "cpu")
+        device = "cuda" if self.use_cuda else "cpu"
+        batch_snids, batch_preds = [], []
+        for light_curves in self._light_curve_batches(photometry):
+            letters = light_curves["FLT"].map(filter_band)
+            if not set(model_bands) <= set(letters):
+                bands = sorted(set(light_curves["FLT"]))
+                raise SNANAError(f"the model {model} was trained on bands {trained_on}, but "
+                                 f"the light curves of {photometry} have {bands}; give "
+                                 f"band_map to rename them (if only some events lack a "
+                                 f"band, raise batch_events)", function_name="SuperNNova")
+            light_curves["FLT"] = letters.map(model_bands)
+            ids, probs = classify_lcs(light_curves, str(model), device)
+            batch_snids.append(np.asarray(ids))
+            batch_preds.append(probs)
+            print(f"SuperNNova: classified {sum(map(len, batch_snids))} events", flush=True)
+        if not batch_snids:
+            raise SNANAError(f"{photometry} has no epochs in {self.filters} to classify",
+                             function_name="SuperNNova")
+        snids = np.concatenate(batch_snids)
+        preds = np.concatenate(batch_preds, axis=0)
         unclassified = int(np.isnan(preds).any(axis=(1, 2)).sum())
         if unclassified:
             raise SNANAError(f"SuperNNova gave {unclassified} of {len(snids)} events in "
@@ -207,42 +227,54 @@ class SuperNNova:
                             index=index)
 
     def _light_curves(self, photometry) -> pd.DataFrame:
-        """Every event's epochs in ``filters``, matched by band letter, with
-        its host redshifts, as
-        SuperNNova's dataset step prepares them (process_single_FITS): the
-        epochs with any of ``phot_reject_bits`` dropped, and
-        ``redshift_label`` in place of the spectroscopic host redshift. The
-        bands are then renamed by ``band_map``."""
+        """Every event's epochs as one table (see ``_light_curve_batches``).
+        Prediction uses the batches, as this table can be very large."""
+        return pd.concat(self._light_curve_batches(photometry), ignore_index=True)
+
+    def _light_curve_batches(self, photometry):
+        """Yields the epochs of up to ``batch_events`` events at a time, each as
+        a table: the epochs in ``filters``, matched by band letter, with the
+        event's host redshifts, as SuperNNova's dataset step prepares them
+        (process_single_FITS): the epochs with any of ``phot_reject_bits``
+        dropped, and ``redshift_label`` in place of the spectroscopic host
+        redshift. The bands are then renamed by ``band_map``. Only one batch's
+        table is built at a time; batches with no epochs are skipped."""
         reject = sum(self.phot_reject_bits)
         wanted = {filter_band(name) for name in self.filters}
-        tables = []
         for _, read in version_sources(photometry, {}):
             head, phot, _ = read()
-            first, last = head["PTROBS_MIN"] - 1, head["PTROBS_MAX"]
-            rows = np.concatenate([np.arange(a, b) for a, b in zip(first, last)])
-            event = np.repeat(np.arange(len(head)), last - first)
-            # SuperNNova keeps those the HEAD has
-            hosts = {name: np.asarray(head[name], dtype=np.float64)
-                     for name in _HOST_REDSHIFTS if name in head.colnames}
-            if self.redshift_label != "none":
-                hosts["HOSTGAL_SPECZ"] = np.asarray(head[self.redshift_label], dtype=np.float64)
-                hosts["HOSTGAL_SPECZ_ERR"] = np.asarray(head[f"{self.redshift_label}_ERR"],
-                                                        dtype=np.float64)
             band = "BAND" if "BAND" in phot.colnames else "FLT"
-            table = pd.DataFrame({
-                "SNID": np.char.strip(np.asarray(head["SNID"], dtype=str))[event],
-                "MJD": np.asarray(phot["MJD"], dtype=np.float64)[rows],
-                "FLUXCAL": np.asarray(phot["FLUXCAL"], dtype=np.float64)[rows],
-                "FLUXCALERR": np.asarray(phot["FLUXCALERR"], dtype=np.float64)[rows],
-                "FLT": np.char.strip(np.asarray(phot[band], dtype=str))[rows],
-                "PEAKMJD": np.asarray(head["PEAKMJD"], dtype=np.float64)[event],
-                **{name: values[event] for name, values in hosts.items()}})
-            keep = (table["FLT"].map(filter_band).isin(wanted).to_numpy()
-                    & ((np.asarray(phot["PHOTFLAG"])[rows] & reject) == 0))
-            tables.append(table[keep])
-        light_curves = pd.concat(tables, ignore_index=True)
-        light_curves["FLT"] = light_curves["FLT"].replace(dict(self.band_map))
-        return light_curves
+            # views of the epoch columns; only a batch's rows are copied below
+            mjd, fluxcal, fluxcalerr = (np.asarray(phot[name])
+                                        for name in ("MJD", "FLUXCAL", "FLUXCALERR"))
+            filters, photflag = np.asarray(phot[band]), np.asarray(phot["PHOTFLAG"])
+            for start in range(0, len(head), self.batch_events):
+                part = head[start:start + self.batch_events]
+                first, last = part["PTROBS_MIN"] - 1, part["PTROBS_MAX"]
+                rows = np.concatenate([np.arange(a, b) for a, b in zip(first, last)])
+                event = np.repeat(np.arange(len(part)), last - first)
+                # SuperNNova keeps those the HEAD has
+                hosts = {name: np.asarray(part[name], dtype=np.float64)
+                         for name in _HOST_REDSHIFTS if name in part.colnames}
+                if self.redshift_label != "none":
+                    hosts["HOSTGAL_SPECZ"] = np.asarray(part[self.redshift_label],
+                                                        dtype=np.float64)
+                    hosts["HOSTGAL_SPECZ_ERR"] = np.asarray(part[f"{self.redshift_label}_ERR"],
+                                                            dtype=np.float64)
+                table = pd.DataFrame({
+                    "SNID": np.char.strip(np.asarray(part["SNID"], dtype=str))[event],
+                    "MJD": mjd[rows].astype(np.float64),
+                    "FLUXCAL": fluxcal[rows].astype(np.float64),
+                    "FLUXCALERR": fluxcalerr[rows].astype(np.float64),
+                    "FLT": np.char.strip(filters[rows].astype(str)),
+                    "PEAKMJD": np.asarray(part["PEAKMJD"], dtype=np.float64)[event],
+                    **{name: values[event] for name, values in hosts.items()}})
+                keep = (table["FLT"].map(filter_band).isin(wanted).to_numpy()
+                        & ((photflag[rows] & reject) == 0))
+                table = table[keep]
+                if len(table):
+                    table["FLT"] = table["FLT"].replace(dict(self.band_map))
+                    yield table.reset_index(drop=True)
 
     def _data_args(self, fit, photometry, dump: Path, sntypes) -> list[str]:
         args = ["--dump_dir", str(dump), "--raw_dir", str(photometry),
